@@ -66,7 +66,7 @@ class AIConversationPersistenceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, 'ai.html')
-        self.assertEqual(response.context['ai_default_model'], ai_chat.CHATGPT_56_MODEL_KEY)
+        self.assertEqual(response.context['ai_default_model'], 'quick')
 
     def test_flux_model_is_available_in_the_ai_picker(self):
         self.assertIn(ai_chat.FLUX_KLEIN_4B_MODEL_KEY, ai_chat.MODELS)
@@ -251,7 +251,7 @@ class NVIDIAImageGenerationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
-        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.FLUX_KLEIN_4B_MODEL_KEY)
+        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
         assistant = AIMessage.objects.get(role=AIMessage.ROLE_ASSISTANT)
         self.assertEqual(assistant.model_key, ai_chat.CHATGPT_56_MODEL_KEY)
 
@@ -269,7 +269,7 @@ class NVIDIAImageGenerationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.FLUX_KLEIN_4B_MODEL_KEY)
+        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
         self.assertEqual(response['X-Request-Category'], 'image_generation')
         generate.assert_called_once_with(prompt, None)
 
@@ -291,7 +291,7 @@ class NVIDIAImageGenerationTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
-        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.FLUX_KLEIN_4B_MODEL_KEY)
+        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
         detail = response.json()['detail']
         self.assertEqual(
             detail,
@@ -343,8 +343,16 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(request['messages'][0]['role'], 'system')
         self.assertIn('ChatGPT 5.6 in Vidhyora AI', request['messages'][0]['content'])
         self.assertIn('not the official OpenAI gpt-5.6 API', request['messages'][0]['content'])
+        system_text = '\n'.join(
+            item['content'] for item in request['messages'] if item['role'] == 'system'
+        )
+        self.assertIn('the only model name that may appear in your reply is ChatGPT 5.6', system_text)
 
     def test_chatgpt_is_the_fresh_default_on_every_page_load(self):
+        staff = User.objects.create_user(
+            username='default-model-staff@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(staff)
         response = self.client.get('/AI/')
 
         self.assertEqual(ai_chat.DEFAULT_MODEL_KEY, ai_chat.CHATGPT_56_MODEL_KEY)
@@ -352,6 +360,75 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(response.context['ai_default_model_label'], 'ChatGPT 5.6')
         self.assertNotContains(response, "localStorage.getItem('ai_model')")
         self.assertNotContains(response, "localStorage.setItem('ai_model'")
+
+    def test_free_users_only_get_quick_light_and_code(self):
+        user = User.objects.create_user(username='free-models@example.com', password='test-password-123')
+        StoreProfile.objects.create(user=user)
+        self.client.force_login(user)
+
+        page = self.client.get('/AI/')
+        self.assertEqual(page.context['ai_default_model'], 'quick')
+        access = {item['key']: item['locked'] for item in page.context['ai_models']}
+        self.assertFalse(access['quick'])
+        self.assertFalse(access['light'])
+        self.assertFalse(access['code'])
+        self.assertTrue(access[ai_chat.CHATGPT_56_MODEL_KEY])
+        self.assertTrue(access['ultra'])
+        self.assertTrue(access['reasoning'])
+        self.assertTrue(access[ai_chat.FLUX_KLEIN_4B_MODEL_KEY])
+        self.assertContains(page, 'Free users can use Quick, Light, and Code.')
+
+        blocked = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({'message': 'Use the premium model', 'model': 'ultra'}),
+            content_type='application/json',
+        )
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.json()['status'], 'subscription_required')
+        self.assertEqual(AIConversation.objects.filter(user=user).count(), 0)
+
+    def test_free_quick_is_allowed_but_locked_automatic_image_routing_is_not(self):
+        user = User.objects.create_user(username='free-quick@example.com', password='test-password-123')
+        StoreProfile.objects.create(user=user)
+        self.client.force_login(user)
+
+        with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Quick reply'])):
+            with patch('myapp.views.light_mode.save_from_chat'):
+                allowed = self.client.post(
+                    '/AI/api/send/',
+                    data=json.dumps({'message': 'Hello', 'model': 'quick'}),
+                    content_type='application/json',
+                )
+                self.assertEqual(allowed.status_code, 200)
+                self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Quick reply')
+
+        blocked_image = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({'message': 'Generate an image of a mountain', 'model': 'quick'}),
+            content_type='application/json',
+        )
+        self.assertEqual(blocked_image.status_code, 403)
+        self.assertEqual(blocked_image.json()['status'], 'subscription_required')
+
+    def test_premium_user_keeps_all_models(self):
+        user = User.objects.create_user(username='premium-models@example.com', password='test-password-123')
+        StoreProfile.objects.create(
+            user=user, ai_subscription_until=timezone.now() + timedelta(days=30),
+        )
+        self.client.force_login(user)
+
+        page = self.client.get('/AI/')
+        self.assertEqual(page.context['ai_default_model'], ai_chat.CHATGPT_56_MODEL_KEY)
+        self.assertFalse(any(item['locked'] for item in page.context['ai_models']))
+
+        with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Premium reply'])):
+            allowed = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': 'Solve this carefully', 'model': 'ultra'}),
+                content_type='application/json',
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Premium reply')
 
     def test_chatgpt_routes_general_code_and_image_turns(self):
         user = User.objects.create_user(
@@ -375,11 +452,44 @@ class AIResponseReliabilityTests(TestCase):
                         self.assertEqual(response.status_code, 200)
                         self.assertEqual(b''.join(response.streaming_content).decode(), 'reply')
                         self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
-                        self.assertEqual(response['X-Routed-Model-Key'], worker_key)
+                        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
                         self.assertEqual(response['X-Request-Category'], category)
                         call = stream_chat.call_args
                         self.assertEqual(call.kwargs['model_key'], worker_key)
                         self.assertEqual(call.kwargs['identity_model_key'], ai_chat.CHATGPT_56_MODEL_KEY)
+
+    def test_chatgpt_reply_cannot_expose_a_worker_name_split_across_chunks(self):
+        user = User.objects.create_user(
+            username='chatgpt-identity-lock@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+
+        leaked_chunks = iter([
+            'I am generating images using FL',
+            'UX.2 Klein 4B model through NVIDIA Nemotron. ',
+            'Vidhyora Code helped too.',
+        ])
+        with patch('myapp.views.ai_chat.stream_chat', return_value=leaked_chunks):
+            with patch('myapp.views.light_mode.save_from_chat'):
+                response = self.client.post(
+                    '/AI/api/send/',
+                    data=json.dumps({
+                        'message': 'Can you generate images?',
+                        'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                    }),
+                    content_type='application/json',
+                )
+                body = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
+        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
+        self.assertIn('ChatGPT 5.6', body)
+        for hidden_name in ('FLUX', 'NVIDIA', 'Nemotron', 'Vidhyora Code'):
+            self.assertNotIn(hidden_name.lower(), body.lower())
+        assistant = AIMessage.objects.get(role=AIMessage.ROLE_ASSISTANT)
+        self.assertEqual(assistant.content, body)
+        self.assertEqual(assistant.model_key, ai_chat.CHATGPT_56_MODEL_KEY)
 
     def test_explicit_file_request_is_routed_and_downloadable_from_every_model(self):
         cache.clear()
@@ -402,7 +512,12 @@ class AIResponseReliabilityTests(TestCase):
                         self.assertEqual(response.status_code, 200)
                         body = b''.join(response.streaming_content).decode()
                         self.assertIn('[Download greeting.txt](', body)
-                        self.assertEqual(response['X-Routed-Model-Key'], 'code')
+                        expected_public_route = (
+                            ai_chat.CHATGPT_56_MODEL_KEY
+                            if selected_model == ai_chat.CHATGPT_56_MODEL_KEY
+                            else 'code'
+                        )
+                        self.assertEqual(response['X-Routed-Model-Key'], expected_public_route)
                         self.assertEqual(response['X-Request-Category'], 'file_generation')
                         self.assertIn('application, not you', stream_chat.call_args.kwargs['document_instruction'])
 

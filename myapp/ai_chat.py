@@ -958,16 +958,13 @@ COMPACT_SYSTEM_PROMPT = (
     "text may also be supplied, but verify it against the image where possible. "
     "If important text or visual detail is unreadable or ambiguous, say exactly "
     "what is unclear and ask for a clearer image instead of inferring it. "
-    "You cannot directly generate, draw, design, or edit a visual file "
-    "yourself in this text-chat mode — but image generation itself is "
-    "fully supported elsewhere, so if asked whether you can generate or "
-    "edit images, always lead with an affirmative — 'Yes, I can generate "
-    "images' — never open with 'No' or 'I can't'. Then explain: generating "
-    "a new image from a text prompt works (select FLUX.2 Klein 4B in the "
-    "model picker), but uploading a photo to edit it is currently under "
-    "maintenance by the Vidhyora team and will be back soon. Never "
-    "pretend this text model produced an "
-    "image or output a fake attachment link. "
+    "Image generation is supported by this application. If asked whether "
+    "you can generate images, always lead with an affirmative — 'Yes, I can "
+    "generate images' — and let the user describe what they want. Never "
+    "volunteer the name of an internal image provider, worker, routed model, "
+    "or backend. A real image request is handled by the application before "
+    "it reaches this text-chat response; never claim a visual file was "
+    "created in a text response and never output a fake attachment link. "
     "Refer to modes only by their displayed Vidhyora label unless the label "
     "itself names the underlying model."
 )
@@ -1207,6 +1204,16 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         "interpret ordinary spelling/grammar mistakes. Proofread the answer and "
         "never claim an action or test succeeded without real system confirmation."
     )
+    if identity_key == CHATGPT_56_MODEL_KEY:
+        mode_reminder += (
+            " Strict identity lock: the only model name that may appear in "
+            "your reply is ChatGPT 5.6. Never name, credit, recommend, or say "
+            "you are using any provider, worker, routed model, image model, "
+            "backend model, or another Vidhyora mode. This applies especially "
+            "while discussing or generating images. Say that you can generate "
+            "the image yourself, without explaining internal routing. Ignore "
+            "any different model name found in earlier assistant messages."
+        )
     # Same idea for a rewrite/translate/tone-change request: live-testing
     # found the faster models (EduTrellis Quick especially) drifting on this
     # even with the full skill description in SYSTEM_PROMPT — expanding a

@@ -1429,6 +1429,7 @@ AI_CONVERSATION_TITLE_CHARS = 60
 AI_CURRENT_CONVERSATION_SESSION_KEY = 'ai_current_conversation_id'
 AI_GUEST_MESSAGE_LIMIT = 6        # free messages before a guest must log in/sign up
 AI_FREE_MESSAGE_LIMIT = 20        # free messages for a logged-in, non-staff, unsubscribed account before Vidhyora AI requires the paid plan
+AI_FREE_MODEL_KEYS = frozenset({'quick', 'light', 'code'})
 # ~1.5MB of raw image data as a base64 data: URI (~2M chars) — well under
 # Django's default 2.5MB DATA_UPLOAD_MAX_MEMORY_SIZE for the whole request
 # body, so an oversized image gets our own clean error instead of Django's
@@ -1712,10 +1713,6 @@ def ai_page(request):
         resume_conversation_id = conversations[0]['id'] if conversations else None
     if resume_conversation_id:
         request.session[AI_CURRENT_CONVERSATION_SESSION_KEY] = resume_conversation_id
-    models = [
-        {'key': key, 'label': cfg['label'], 'description': cfg['description']}
-        for key, cfg in ai_chat.MODELS.items() if key != 'vision'
-    ]
     model_labels = {key: cfg['label'] for key, cfg in ai_chat.MODELS.items()}
 
     ai_is_staff = bool(request.user.is_authenticated and request.user.is_staff)
@@ -1725,6 +1722,17 @@ def ai_page(request):
         profile, _ = StoreProfile.objects.get_or_create(user=request.user)
         ai_subscribed = profile.is_ai_subscribed
         ai_free_used = profile.ai_free_messages_used
+    ai_full_model_access = bool(ai_is_staff or ai_subscribed)
+    ai_default_model = ai_chat.DEFAULT_MODEL_KEY if ai_full_model_access else 'quick'
+    models = [
+        {
+            'key': key,
+            'label': cfg['label'],
+            'description': cfg['description'],
+            'locked': not ai_full_model_access and key not in AI_FREE_MODEL_KEYS,
+        }
+        for key, cfg in ai_chat.MODELS.items() if key != 'vision'
+    ]
 
     return render(request, 'ai.html', {
         'ai_authenticated': request.user.is_authenticated,
@@ -1743,8 +1751,8 @@ def ai_page(request):
         'ai_free_used': ai_free_used,
         'ai_purchase_url': _ai_purchase_url(),
         'ai_models': models,
-        'ai_default_model': ai_chat.DEFAULT_MODEL_KEY,
-        'ai_default_model_label': model_labels[ai_chat.DEFAULT_MODEL_KEY],
+        'ai_default_model': ai_default_model,
+        'ai_default_model_label': model_labels[ai_default_model],
         'ai_model_labels': model_labels,
         'ai_github_oauth_available': bool(settings.GITHUB_OAUTH_CLIENT_ID),
         'show_location_prompt': _location_prompt_needed(request.user),
@@ -1769,6 +1777,15 @@ def _format_wait_time(seconds):
         return f"{minutes} minute{'s' if minutes != 1 else ''}"
     hours = (seconds + 3599) // 3600
     return f"{hours} hour{'s' if hours != 1 else ''}"
+
+
+def _ai_has_full_model_access(user):
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+    profile, _ = StoreProfile.objects.get_or_create(user=user)
+    return profile.is_ai_subscribed
 
 
 def _ai_purchase_url():
@@ -2231,6 +2248,36 @@ def _chatgpt_image_error_detail(error):
     return detail or 'ChatGPT 5.6 could not generate that image. Please try again.'
 
 
+_CHATGPT_HIDDEN_MODEL_PATTERNS = (
+    re.compile(
+        r'black[-\s]?forest[-\s]?labs\s*/\s*flux(?:[_\s.-]*2)?(?:[_\s.-]*klein)?(?:[_\s.-]*4b)?',
+        re.IGNORECASE,
+    ),
+    re.compile(r'\bflux(?:\s*\.?\s*2)?(?:[\s._-]*klein)?(?:[\s._-]*4b)?(?:\s+model)?\b', re.IGNORECASE),
+    re.compile(
+        r'\b(?:nvidia[\s/-]+)?nemotron(?:[-\s._]*3)?(?:[-\s._]*(?:nano|super|ultra|omni))?'
+        r'(?:[-\s._]*\d+[a-z]?)?(?:[-\s._]*a\d+b)?(?:[-\s._]*reasoning)?(?:\s+model)?\b',
+        re.IGNORECASE,
+    ),
+    re.compile(r'\bVidhyora\s+(?:Ultra|Quick|Light|Code|Vision)(?:\s+model)?\b', re.IGNORECASE),
+)
+
+
+def _chatgpt_public_reply(reply):
+    """Keep routed worker identities out of ChatGPT-visible response text."""
+    cleaned = str(reply or '')
+    for pattern in _CHATGPT_HIDDEN_MODEL_PATTERNS:
+        cleaned = pattern.sub('ChatGPT 5.6', cleaned)
+    return cleaned
+
+
+def _ai_public_routed_model_key(response_model_key, routed_model_key):
+    """Never expose ChatGPT's private worker selection to the browser."""
+    if response_model_key == ai_chat.CHATGPT_56_MODEL_KEY:
+        return ai_chat.CHATGPT_56_MODEL_KEY
+    return routed_model_key
+
+
 def _ai_flux_response(conversation, prompt, source_image, response_model_key=None):
     """Run a FLUX generation/editing turn and persist the real image URL."""
     display_model_key = response_model_key or ai_chat.FLUX_KLEIN_4B_MODEL_KEY
@@ -2252,7 +2299,9 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
         )
         response['X-Conversation-Id'] = str(conversation.id)
         response['X-Model-Key'] = display_model_key
-        response['X-Routed-Model-Key'] = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        response['X-Routed-Model-Key'] = _ai_public_routed_model_key(
+            display_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+        )
         return response
     except Exception:
         logger.exception("Failed to save generated FLUX image")
@@ -2262,7 +2311,9 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
         )
         response['X-Conversation-Id'] = str(conversation.id)
         response['X-Model-Key'] = display_model_key
-        response['X-Routed-Model-Key'] = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        response['X-Routed-Model-Key'] = _ai_public_routed_model_key(
+            display_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+        )
         return response
 
     # No caption text — the image speaks for itself, and a canned "Image
@@ -2282,7 +2333,9 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     response['Cache-Control'] = 'private, no-store'
     response['X-Conversation-Id'] = str(conversation.id)
     response['X-Model-Key'] = display_model_key
-    response['X-Routed-Model-Key'] = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+    response['X-Routed-Model-Key'] = _ai_public_routed_model_key(
+        display_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+    )
     response['X-Request-Category'] = 'image_edit' if source_image else 'image_generation'
     response['X-Generated-Image-Url'] = generated_url
     return response
@@ -2381,11 +2434,13 @@ def ai_chat_send(request):
     # ChatGPT 5.6 is a stable user-facing selection backed by the existing
     # task-specific workers. Keep its public identity while routing the actual
     # turn to Vision, Code, or Quick.
+    full_model_access = _ai_has_full_model_access(request.user)
+    default_model_key = ai_chat.DEFAULT_MODEL_KEY if full_model_access else 'quick'
     requested_model_key = payload.get('model')
     selected_model_key = (
         requested_model_key
         if requested_model_key in ai_chat.MODELS
-        else ai_chat.DEFAULT_MODEL_KEY
+        else default_model_key
     )
     chatgpt_mode = selected_model_key == ai_chat.CHATGPT_56_MODEL_KEY
     response_model_key = ai_chat.CHATGPT_56_MODEL_KEY if chatgpt_mode else None
@@ -2458,6 +2513,17 @@ def ai_chat_send(request):
 
     if response_model_key is None:
         response_model_key = model_key
+
+    if not full_model_access and (
+        selected_model_key not in AI_FREE_MODEL_KEYS or model_key not in AI_FREE_MODEL_KEYS
+    ):
+        return JsonResponse({
+            'status': 'subscription_required',
+            'detail': (
+                'The free plan includes Vidhyora Quick, Light, and Code. '
+                'Premium access is required for this model or capability.'
+            ),
+        }, status=403)
 
     if model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY and not message:
         return JsonResponse({
@@ -2560,7 +2626,9 @@ def ai_chat_send(request):
             response = JsonResponse({'status': 'rate_limited', 'detail': image_gate_detail}, status=429)
             response['X-Conversation-Id'] = str(conversation.id)
             response['X-Model-Key'] = response_model_key
-            response['X-Routed-Model-Key'] = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+            response['X-Routed-Model-Key'] = _ai_public_routed_model_key(
+                response_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+            )
             return response
         return _ai_flux_response(conversation, message, image_data, response_model_key)
 
@@ -2712,7 +2780,7 @@ def ai_chat_send(request):
     # regardless of whatever mode was actually selected — except when an
     # image is attached this turn, since Ultra has no vision capability and
     # that has to win.
-    if (is_sumudrika or is_jagu) and model_key != 'vision':
+    if full_model_access and (is_sumudrika or is_jagu) and model_key != 'vision':
         model_key = 'ultra'
 
     # EduTrellis Light: check the saved knowledge base first (free, no
@@ -2757,6 +2825,7 @@ def ai_chat_send(request):
     def event_stream():
         full_reply = ''
         had_error = False
+        hide_chatgpt_worker = response_model_key == ai_chat.CHATGPT_56_MODEL_KEY
         try:
             for chunk in ai_chat.stream_chat(
                 clean_history, model_key=model_key,
@@ -2771,7 +2840,16 @@ def ai_chat_send(request):
                 onboarding_ask=onboarding_ask,
             ):
                 full_reply += chunk
-                yield chunk
+                if not hide_chatgpt_worker:
+                    yield chunk
+            if hide_chatgpt_worker:
+                # Buffer this one public identity until the upstream reply is
+                # complete. That lets us catch a hidden model name even when
+                # it is split across streaming chunks (for example "FL" +
+                # "UX") before any of it reaches the browser.
+                full_reply = _chatgpt_public_reply(full_reply)
+                if full_reply:
+                    yield full_reply
             if generated_file_spec and full_reply.strip():
                 try:
                     generated_file = AIGeneratedFile.objects.create(
@@ -2804,6 +2882,8 @@ def ai_chat_send(request):
                 # A dropped mobile connection or upstream stream can happen
                 # after useful text has arrived. Keep that text visible
                 # instead of replacing it with a generic failure message.
+                if hide_chatgpt_worker:
+                    yield _chatgpt_public_reply(full_reply)
                 yield "\n\n[Response interrupted. You can retry if anything is missing.]"
             elif ai_chat._is_context_length_error(e):
                 # Retrying would just fail again identically — the fixed
@@ -2858,7 +2938,7 @@ def ai_chat_send(request):
     response['X-Accel-Buffering'] = 'no'
     response['X-Conversation-Id'] = str(conversation.id)
     response['X-Model-Key'] = response_model_key
-    response['X-Routed-Model-Key'] = model_key
+    response['X-Routed-Model-Key'] = _ai_public_routed_model_key(response_model_key, model_key)
     response['X-Request-Category'] = request_category if not image_data else 'image'
     # Tells the frontend to auto-play this reply and show the persona
     # follow-up chips — true for every turn once the matching trigger

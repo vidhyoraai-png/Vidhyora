@@ -458,9 +458,12 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 .model-option{display:flex;flex-direction:column;align-items:flex-start;gap:.15rem;width:100%;text-align:left;border:none;background:none;padding:.55rem .65rem;border-radius:10px;cursor:pointer}
 .model-option:hover{background:var(--bg-alt)}
 .model-option.active{background:var(--tint)}
+.model-option.locked{opacity:.62;cursor:not-allowed}
+.model-option.locked:hover{background:none}
 .model-option-label{font-size:.82rem;font-weight:700;color:var(--head)}
 .model-option.active .model-option-label{color:var(--red)}
 .model-option-desc{font-size:.7rem;color:#9aa3b0;line-height:1.35}
+.model-option-lock{display:inline-flex;align-items:center;gap:.25rem;margin-top:.2rem;color:var(--red);font-size:.64rem;font-weight:800;text-transform:uppercase;letter-spacing:.03em}
 .msg-model-tag{font-size:.66rem;font-weight:800;color:var(--red);margin-bottom:.35rem;text-transform:uppercase;letter-spacing:.04em}
 
 /* ---- one-time "we have multiple models" popup for new visitors ---- */
@@ -1019,9 +1022,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           </button>
           <div class="model-dropdown" id="modelDropdown" hidden>
             {% for m in ai_models %}
-            <button type="button" class="model-option{% if m.key == ai_default_model %} active{% endif %}" data-model="{{ m.key }}" data-label="{{ m.label }}">
+            <button type="button" class="model-option{% if m.key == ai_default_model %} active{% endif %}{% if m.locked %} locked{% endif %}" data-model="{{ m.key }}" data-label="{{ m.label }}" data-locked="{% if m.locked %}1{% else %}0{% endif %}"{% if m.locked %} aria-disabled="true"{% endif %}>
               <span class="model-option-label">{{ m.label }}</span>
               <span class="model-option-desc">{{ m.description }}</span>
+              {% if m.locked %}<span class="model-option-lock"><i class="fas fa-lock"></i> Premium</span>{% endif %}
             </button>
             {% endfor %}
           </div>
@@ -1031,7 +1035,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
             <div class="model-intro-list">
               {% for m in ai_models %}
               <div class="model-intro-item">
-                <span class="model-intro-item-label">{{ m.label }}</span>
+                <span class="model-intro-item-label">{{ m.label }}{% if m.locked %} <i class="fas fa-lock" aria-label="Premium"></i>{% endif %}</span>
                 <span class="model-intro-item-desc">{{ m.description }}</span>
               </div>
               {% endfor %}
@@ -2189,6 +2193,11 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     modelDropdown.addEventListener('click', function(e){
       var opt = e.target.closest('.model-option');
       if (!opt || state.streaming || state.gated) return;
+      if (opt.getAttribute('data-locked') === '1') {
+        closeDropdown();
+        showAiToast('Free users can use Quick, Light, and Code. Request premium access for this model.', true);
+        return;
+      }
       applyModelSelection(opt.getAttribute('data-model'), true);
       closeDropdown();
     });
