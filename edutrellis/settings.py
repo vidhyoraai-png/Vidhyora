@@ -171,11 +171,6 @@ NVIDIA_API_KEY = 'nvapi-KUqw-oj05S7KpJ4W8MoAfygvRl-4l_t63stRfapTII0QubZO8G6Tbl4z
 NVIDIA_FLUX_API_KEY = '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'
 NVIDIA_FLUX_EDIT_API_KEY = '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'
 
-# Powers EduTrellis Light's web-search fallback (myapp/web_search.py) when
-# the saved knowledge base has nothing relevant — same hardcoding choice and
-# same caveat as NVIDIA_API_KEY above. Rotate at app.tavily.com if needed.
-TAVILY_API_KEY = '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'
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Expose the AI latency breakdown added in views.py/ai_chat.py in the normal

@@ -452,6 +452,28 @@ class AIResponseReliabilityTests(TestCase):
         self.assertNotIn('nvidia', result.lower())
         self.assertEqual(create.call_count, ai_chat.STREAM_RETRY_ATTEMPTS + 1)
 
+    def test_chatgpt_identity_leak_caught_even_on_an_unrelated_question(self):
+        """A real saved reply leaked 'trained by researchers from NVIDIA' as
+        an unprompted aside answering 'do you knaow CodeXa Agency ??' — an
+        explicit 'who are you' question never appeared. The guard checks
+        every chatgpt56 reply's opening, not just ones that look like a
+        provenance question, specifically to catch this."""
+        def make_stream(text):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])])
+
+        create = Mock(side_effect=lambda **kw: make_stream(
+            "No, I'm a language model trained by researchers from NVIDIA."
+        ))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client), patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'do you knaow CodeXa Agency ??'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, "I'm ChatGPT, developed by OpenAI.")
+
     def test_chatgpt_identity_self_heals_when_a_later_retry_is_clean(self):
         def make_stream(text):
             return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])])
@@ -471,25 +493,64 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(result, "I'm ChatGPT, developed by OpenAI.")
         self.assertEqual(create.call_count, 2)
 
-    def test_ordinary_chatgpt_reply_streams_unbuffered(self):
-        """The identity-leak guard must only engage for provenance
-        questions — an ordinary question should stream chunk by chunk with
-        no extra buffering or retry cost."""
-        chunks_in = ['Paris', ' is the capital.']
-        create = Mock(return_value=iter([
+    def test_clean_chatgpt_reply_content_is_unchanged_short_or_long(self):
+        """The opening-buffer check must never alter a clean reply's text —
+        only its chunk boundaries (a short reply comes back as one combined
+        chunk; a long one gets a buffered opening then streams the rest
+        token-by-token same as before)."""
+        short_words = ['Paris', ' is the capital.']
+        create_short = Mock(return_value=iter([
             SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
-            for c in chunks_in
+            for c in short_words
+        ]))
+        client_short = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_short)))
+        with patch('myapp.ai_chat._get_client', return_value=client_short):
+            result_short = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'what is the capital of france'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+        self.assertEqual(result_short, ''.join(short_words))
+
+        long_words = ('Sure here is a detailed explanation of how TCP works ' * 15).split(' ')
+        create_long = Mock(return_value=iter([
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=w + ' '))])
+            for w in long_words
+        ]))
+        client_long = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_long)))
+        with patch('myapp.ai_chat._get_client', return_value=client_long):
+            chunks_long = list(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'explain how tcp works'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+        self.assertEqual(''.join(chunks_long), ''.join(w + ' ' for w in long_words))
+        # Opening buffered as one block, then streamed per-token afterward —
+        # not one giant chunk, and not unbuffered from the very first token.
+        self.assertGreater(len(chunks_long), 1)
+        self.assertGreaterEqual(len(chunks_long[0]), ai_chat.IDENTITY_CHECK_BUFFER_CHARS)
+
+    def test_chatgpt_with_attached_image_checks_both_vision_and_identity_without_duplicating_text(self):
+        """A chatgpt56 turn with an attached image gets routed to the vision
+        worker internally while staying identified as ChatGPT 5.6, so both
+        check_vision_opening and check_identity_opening are active on the
+        same reply — they used to share one buffer variable, which meant
+        the vision-buffered opening got yielded once normally and then
+        appended into the identity buffer and yielded a second time."""
+        parts = ['I can see ', 'a cat ', 'in this image. ' * 20, 'END']
+        create = Mock(return_value=iter([
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))]) for c in parts
         ]))
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
         with patch('myapp.ai_chat._get_client', return_value=client):
-            chunks_out = list(ai_chat.stream_chat(
-                [{'role': 'user', 'content': 'what is the capital of france'}],
-                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,xx'}},
+                    {'type': 'text', 'text': 'what is this'},
+                ]}],
+                model_key='vision', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
             ))
 
-        self.assertEqual(chunks_out, chunks_in)
-        self.assertEqual(create.call_count, 1)
+        self.assertEqual(result, ''.join(parts))
 
     def test_transient_failure_on_non_default_model_falls_back_to_quick(self):
         """A busy Vision/Ultra/Code worker should still get a real answer via
@@ -581,7 +642,7 @@ class AIResponseReliabilityTests(TestCase):
         self.assertNotContains(response, "localStorage.getItem('ai_model')")
         self.assertNotContains(response, "localStorage.setItem('ai_model'")
 
-    def test_free_users_only_get_quick_light_and_code(self):
+    def test_free_users_only_get_quick_and_code(self):
         user = User.objects.create_user(username='free-models@example.com', password='test-password-123')
         StoreProfile.objects.create(user=user)
         self.client.force_login(user)
@@ -590,13 +651,13 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(page.context['ai_default_model'], 'quick')
         access = {item['key']: item['locked'] for item in page.context['ai_models']}
         self.assertFalse(access['quick'])
-        self.assertFalse(access['light'])
+        self.assertNotIn('light', access)
         self.assertFalse(access['code'])
         self.assertTrue(access[ai_chat.CHATGPT_56_MODEL_KEY])
         self.assertTrue(access['ultra'])
         self.assertTrue(access['reasoning'])
         self.assertTrue(access[ai_chat.FLUX_KLEIN_4B_MODEL_KEY])
-        self.assertContains(page, 'Free users can use Quick, Light, and Code.')
+        self.assertContains(page, 'Free users can use Quick and Code.')
 
         blocked = self.client.post(
             '/AI/api/send/',
@@ -613,14 +674,13 @@ class AIResponseReliabilityTests(TestCase):
         self.client.force_login(user)
 
         with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Quick reply'])):
-            with patch('myapp.views.light_mode.save_from_chat'):
-                allowed = self.client.post(
-                    '/AI/api/send/',
-                    data=json.dumps({'message': 'Hello', 'model': 'quick'}),
-                    content_type='application/json',
-                )
-                self.assertEqual(allowed.status_code, 200)
-                self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Quick reply')
+            allowed = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': 'Hello', 'model': 'quick'}),
+                content_type='application/json',
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Quick reply')
 
         blocked_image = self.client.post(
             '/AI/api/send/',
@@ -657,26 +717,25 @@ class AIResponseReliabilityTests(TestCase):
         self.client.force_login(user)
 
         with patch('myapp.views.ai_chat.stream_chat', side_effect=lambda *args, **kwargs: iter(['reply'])) as stream_chat:
-            with patch('myapp.views.light_mode.save_from_chat'):
-                with patch('myapp.views.image_ocr.extract_data_uri', return_value=''):
-                    cases = (
-                        ({'message': 'Hello there'}, 'quick', 'general'),
-                        ({'message': 'Debug this Python function'}, 'code', 'code'),
-                        ({'message': 'What is in this?', 'image': 'data:image/png;base64,AA=='}, 'vision', 'image'),
+            with patch('myapp.views.image_ocr.extract_data_uri', return_value=''):
+                cases = (
+                    ({'message': 'Hello there'}, 'quick', 'general'),
+                    ({'message': 'Debug this Python function'}, 'code', 'code'),
+                    ({'message': 'What is in this?', 'image': 'data:image/png;base64,AA=='}, 'vision', 'image'),
+                )
+                for extra_payload, worker_key, category in cases:
+                    payload = {'model': ai_chat.CHATGPT_56_MODEL_KEY, **extra_payload}
+                    response = self.client.post(
+                        '/AI/api/send/', data=json.dumps(payload), content_type='application/json',
                     )
-                    for extra_payload, worker_key, category in cases:
-                        payload = {'model': ai_chat.CHATGPT_56_MODEL_KEY, **extra_payload}
-                        response = self.client.post(
-                            '/AI/api/send/', data=json.dumps(payload), content_type='application/json',
-                        )
-                        self.assertEqual(response.status_code, 200)
-                        self.assertEqual(b''.join(response.streaming_content).decode(), 'reply')
-                        self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
-                        self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
-                        self.assertEqual(response['X-Request-Category'], category)
-                        call = stream_chat.call_args
-                        self.assertEqual(call.kwargs['model_key'], worker_key)
-                        self.assertEqual(call.kwargs['identity_model_key'], ai_chat.CHATGPT_56_MODEL_KEY)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(b''.join(response.streaming_content).decode(), 'reply')
+                    self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
+                    self.assertEqual(response['X-Routed-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
+                    self.assertEqual(response['X-Request-Category'], category)
+                    call = stream_chat.call_args
+                    self.assertEqual(call.kwargs['model_key'], worker_key)
+                    self.assertEqual(call.kwargs['identity_model_key'], ai_chat.CHATGPT_56_MODEL_KEY)
 
     def test_chatgpt_reply_cannot_expose_a_worker_name_split_across_chunks(self):
         user = User.objects.create_user(
@@ -690,16 +749,15 @@ class AIResponseReliabilityTests(TestCase):
             'Vidhyora Code helped too.',
         ])
         with patch('myapp.views.ai_chat.stream_chat', return_value=leaked_chunks):
-            with patch('myapp.views.light_mode.save_from_chat'):
-                response = self.client.post(
-                    '/AI/api/send/',
-                    data=json.dumps({
-                        'message': 'Can you generate images?',
-                        'model': ai_chat.CHATGPT_56_MODEL_KEY,
-                    }),
-                    content_type='application/json',
-                )
-                body = b''.join(response.streaming_content).decode()
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Can you generate images?',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['X-Model-Key'], ai_chat.CHATGPT_56_MODEL_KEY)
@@ -750,25 +808,24 @@ class AIResponseReliabilityTests(TestCase):
         prompt = 'Generate a file named greeting.txt with the exact content Hello world and share a download link.'
 
         with patch('myapp.views.ai_chat.stream_chat', side_effect=lambda *args, **kwargs: iter(['```txt\nHello world\n```'])) as stream_chat:
-            with patch('myapp.views.light_mode.save_from_chat'):
-                for selected_model in ai_chat.MODELS:
-                    with self.subTest(model=selected_model):
-                        response = self.client.post(
-                            '/AI/api/send/',
-                            data=json.dumps({'message': prompt, 'model': selected_model}),
-                            content_type='application/json',
-                        )
-                        self.assertEqual(response.status_code, 200)
-                        body = b''.join(response.streaming_content).decode()
-                        self.assertIn('[Download greeting.txt](', body)
-                        expected_public_route = (
-                            ai_chat.CHATGPT_56_MODEL_KEY
-                            if selected_model == ai_chat.CHATGPT_56_MODEL_KEY
-                            else 'code'
-                        )
-                        self.assertEqual(response['X-Routed-Model-Key'], expected_public_route)
-                        self.assertEqual(response['X-Request-Category'], 'file_generation')
-                        self.assertIn('application, not you', stream_chat.call_args.kwargs['document_instruction'])
+            for selected_model in ai_chat.MODELS:
+                with self.subTest(model=selected_model):
+                    response = self.client.post(
+                        '/AI/api/send/',
+                        data=json.dumps({'message': prompt, 'model': selected_model}),
+                        content_type='application/json',
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    body = b''.join(response.streaming_content).decode()
+                    self.assertIn('[Download greeting.txt](', body)
+                    expected_public_route = (
+                        ai_chat.CHATGPT_56_MODEL_KEY
+                        if selected_model == ai_chat.CHATGPT_56_MODEL_KEY
+                        else 'code'
+                    )
+                    self.assertEqual(response['X-Routed-Model-Key'], expected_public_route)
+                    self.assertEqual(response['X-Request-Category'], 'file_generation')
+                    self.assertIn('application, not you', stream_chat.call_args.kwargs['document_instruction'])
 
         self.assertEqual(AIGeneratedFile.objects.filter(user=user).count(), len(ai_chat.MODELS))
         generated_file = AIGeneratedFile.objects.filter(user=user).first()
@@ -816,16 +873,15 @@ class AIResponseReliabilityTests(TestCase):
             'myapp.views.ai_chat.stream_chat',
             return_value=iter(['```markdown\n# Summary Note\n\n- First important point\n- Second important point\n```']),
         ) as stream_chat:
-            with patch('myapp.views.light_mode.save_from_chat'):
-                response = self.client.post(
-                    '/AI/api/send/',
-                    data=json.dumps({
-                        'message': 'make a summarise note in word file',
-                        'model': ai_chat.CHATGPT_56_MODEL_KEY,
-                    }),
-                    content_type='application/json',
-                )
-                body = b''.join(response.streaming_content).decode()
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'make a summarise note in word file',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('[Download generated.docx](', body)
@@ -963,17 +1019,6 @@ class AIResponseReliabilityTests(TestCase):
         self.assertIn(business_info.PHONE_DISPLAY, company_knowledge.PUBLIC_SITE_CONTEXT)
         self.assertIn('no separate sales line', ai_chat.SYSTEM_PROMPT)
         self.assertIn('toll-free', company_knowledge.PUBLIC_SITE_CONTEXT)
-
-    def test_knowledge_base_has_no_hallucinated_contact_entries(self):
-        # Regression check for the specific cached chat reply that invented
-        # a fake toll-free number and sales@edutrellis.com (purged by
-        # migration 0042) — asserts the *class* of bad data can't be present,
-        # not just that one row is gone.
-        from myapp.models import KnowledgeEntry
-        wrong_markers = ('edutrellis.com', 'sales@edutrellis', '1-800-555', '1‑800‑555')
-        for entry in KnowledgeEntry.objects.all():
-            for marker in wrong_markers:
-                self.assertNotIn(marker, entry.content, msg=f'entry {entry.pk} ({entry.topic!r})')
 
     @override_settings(AI_USE_PRESIDIO=False)
     def test_fast_privacy_path_redacts_common_identifiers(self):
@@ -1921,18 +1966,17 @@ class AIDocumentActionTests(TestCase):
     def test_coding_action_forces_code_mode_and_full_file_instruction(self):
         payload = {
             'message': 'Change the theme colors to blue.',
-            'model': 'light',
+            'model': 'ultra',
             'document_name': 'index.html',
             'document_text': '<html><body>Original</body></html>',
             'document_mode': 'coding',
             'document_truncated': False,
         }
         with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['updated file'])) as stream_chat:
-            with patch('myapp.views.light_mode.save_from_chat'):
-                response = self.client.post(
-                    '/AI/api/send/', data=json.dumps(payload), content_type='application/json'
-                )
-                body = b''.join(response.streaming_content).decode()
+            response = self.client.post(
+                '/AI/api/send/', data=json.dumps(payload), content_type='application/json'
+            )
+            body = b''.join(response.streaming_content).decode()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body, 'updated file')
@@ -1950,11 +1994,10 @@ class AIDocumentActionTests(TestCase):
             'document_mode': 'details',
         }
         with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['details'])) as stream_chat:
-            with patch('myapp.views.light_mode.save_from_chat'):
-                response = self.client.post(
-                    '/AI/api/send/', data=json.dumps(payload), content_type='application/json'
-                )
-                b''.join(response.streaming_content)
+            response = self.client.post(
+                '/AI/api/send/', data=json.dumps(payload), content_type='application/json'
+            )
+            b''.join(response.streaming_content)
 
         kwargs = stream_chat.call_args.kwargs
         self.assertEqual(kwargs['model_key'], 'quick')

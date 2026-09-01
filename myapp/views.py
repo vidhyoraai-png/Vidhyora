@@ -44,14 +44,14 @@ from myapp.models import (
     ContactLead, StoreProfile, Category, Order, OrderItem,
     Product, AboutUsContent, PolicyPage, PaymentSettings, Payment,
     DropboxSettings, PhoneVerification, PWASettings, FeeSettings, SiteCustomization,
-    AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile, KnowledgeEntry,
+    AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile,
     GitHubConnection, YouTubeDownloadJob,
 )
 from myapp import dropbox_backup
 from myapp import ai_chat
 from myapp import github_ops
 from myapp import doc_extract
-from myapp import light_mode, company_knowledge
+from myapp import company_knowledge
 from myapp import image_ocr
 from myapp import image_generation
 from myapp import privacy
@@ -1000,23 +1000,6 @@ def _ai_report_system_health():
             ),
         })
 
-    learned_failures = KnowledgeEntry.objects.filter(
-        content__in=AIReport.objects.exclude(reported_reply='').values('reported_reply')
-    ).count()
-    if learned_failures:
-        signals.append({
-            'key': 'reported_answer_reuse',
-            'label': 'Reported answers remain in the learning store',
-            'severity': 'high',
-            'count': learned_failures,
-            'evidence': (
-                f'{learned_failures} learned entries exactly match an answer that a user reported.'
-            ),
-            'fix': (
-                'Link learned entries to their source message, quarantine them as soon as a report '
-                'opens, and restore only after a reviewer confirms the answer is safe to reuse.'
-            ),
-        })
     return signals
 
 
@@ -1639,7 +1622,7 @@ AI_CONVERSATION_TITLE_CHARS = 60
 AI_CURRENT_CONVERSATION_SESSION_KEY = 'ai_current_conversation_id'
 AI_GUEST_MESSAGE_LIMIT = 6        # free messages before a guest must log in/sign up
 AI_FREE_MESSAGE_LIMIT = 20        # free messages for a logged-in, non-staff, unsubscribed account before Vidhyora AI requires the paid plan
-AI_FREE_MODEL_KEYS = frozenset({'quick', 'light', 'code'})
+AI_FREE_MODEL_KEYS = frozenset({'quick', 'code'})
 # ~1.5MB of raw image data as a base64 data: URI (~2M chars) — well under
 # Django's default 2.5MB DATA_UPLOAD_MAX_MEMORY_SIZE for the whole request
 # body, so an oversized image gets our own clean error instead of Django's
@@ -1647,7 +1630,6 @@ AI_FREE_MODEL_KEYS = frozenset({'quick', 'light', 'code'})
 AI_IMAGE_MAX_DATA_URI_CHARS = 2_000_000
 AI_DOCUMENT_MODES = {'coding', 'details'}
 AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS = 6000
-AI_LIGHT_SEARCH_RATE_LIMIT = 20   # live web searches per IP per AI_CHAT_RATE_WINDOW — the paid/metered part of Light mode
 AI_IMAGE_GEN_HOURLY_LIMIT = 10       # FLUX generate/edit calls
 AI_IMAGE_GEN_HOURLY_WINDOW = 60 * 60      # per 1 hour, per user (or per IP for guests)
 AI_IMAGE_GEN_LOCKOUT_SECONDS = 6 * 60 * 60  # going over the hourly limit locks image generation out entirely for this long — harsher than the general chat limiter, which just makes you wait out the same window, since FLUX calls are the most expensive thing this endpoint does
@@ -3077,10 +3059,9 @@ def ai_chat_send(request):
     if full_model_access and (is_sumudrika or is_jagu) and model_key != 'vision':
         model_key = 'ultra'
 
-    # EduTrellis Light: check the saved knowledge base first (free, no
-    # external call); only fall back to a live web search — rate-limited
-    # separately since it's the one path here that costs real search-API
-    # quota — when nothing relevant is already saved.
+    # Verified, static business-fact grounding only — never a saved/editable
+    # answer store. No AI reply is ever generated from a knowledge base or
+    # cached past answer.
     retrieved_context = retrieved_source = None
     recent_company_text = ' '.join(
         str(item.get('content') or '') for item in recent[-5:]
@@ -3089,26 +3070,6 @@ def ai_chat_send(request):
     if message and company_knowledge.is_company_query(recent_company_text):
         retrieved_context = company_knowledge.PUBLIC_SITE_CONTEXT
         retrieved_source = 'company_site'
-    elif model_key == 'light' and message:
-        search_started = time.perf_counter()
-        kb_entries = light_mode.search_knowledge_base(
-            message,
-            user=request.user if request.user.is_authenticated else None,
-            session_key=request.session.session_key or '',
-        )
-        if kb_entries:
-            retrieved_context = light_mode.context_from_entries(kb_entries)
-            retrieved_source = 'knowledge_base'
-        else:
-            search_cache_key = f'ai_light_search_rate:{ip}'
-            search_count = cache.get(search_cache_key, 0)
-            if search_count < AI_LIGHT_SEARCH_RATE_LIMIT:
-                cache.set(search_cache_key, search_count + 1, AI_CHAT_RATE_WINDOW)
-                retrieved_context, retrieved_source = light_mode.web_search_and_save(message)
-        logger.info(
-            "AI timing retrieval=%.3fs source=%s",
-            time.perf_counter() - search_started, retrieved_source,
-        )
 
     logger.info(
         "AI timing preprocessing=%.3fs model=%s history=%d image=%s ocr_chars=%d",
@@ -3211,28 +3172,6 @@ def ai_chat_send(request):
                         )
                 except Exception:
                     logger.exception("Failed to save AI assistant reply for conversation %s", conversation.pk)
-
-                # Every real question+answer, from any model, from any user
-                # (guest or logged in) — feeds EduTrellis Light's knowledge
-                # base, not just Light's own conversations. A turn with a
-                # file/image attached, or whose answer touched this user's
-                # own account details, is still saved — just scoped private
-                # to them (see light_mode.save_from_chat) instead of shared.
-                # Skipped for the sumudrika/jagu easter eggs — those replies
-                # are warm, personal content about Rudra and the people
-                # close to him, never something worth remembering as a
-                # reusable "fact". Never blocks or fails the actual chat
-                # reply if this errors.
-                if not is_sumudrika and not is_jagu and retrieved_source != 'company_site':
-                    try:
-                        light_mode.save_from_chat(
-                            message, full_reply, account_context=user_context,
-                            had_attachment=bool(image_data or document_text),
-                            user=request.user if request.user.is_authenticated else None,
-                            session_key=request.session.session_key or '',
-                        )
-                    except Exception:
-                        logger.exception("Failed to save chat turn to the Light knowledge base")
 
     response = StreamingHttpResponse(event_stream(), content_type='text/plain; charset=utf-8')
     response['Cache-Control'] = 'no-cache'

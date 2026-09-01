@@ -207,10 +207,10 @@ class AIReportAdmin(admin.ModelAdmin):
 
 @admin.register(KnowledgeEntry)
 class KnowledgeEntryAdmin(admin.ModelAdmin):
-    # visible_to makes it obvious whether an entry is shared with everyone
-    # or private to one person (from a file/image upload, or their own
-    # account details) — see KnowledgeEntry's docstring and
-    # light_mode.save_from_chat for how that's decided.
+    # Legacy data from the removed EduTrellis Light feature — see
+    # KnowledgeEntry's docstring. Kept browsable here only; no AI reply
+    # reads from this table any more. visible_to makes it obvious whether an
+    # entry was shared with everyone or private to one person.
     list_display = ('topic', 'source', 'visible_to', 'updated_at')
     list_select_related = ('user',)
     list_filter = ('source',)

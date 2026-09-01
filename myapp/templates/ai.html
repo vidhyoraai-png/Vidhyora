@@ -1557,7 +1557,6 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var STATUS_PHRASES = {
     default: ['Thinking', 'Generating answer'],
     chatgpt56: ['Understanding your request', 'Thinking', 'Generating answer'],
-    light: ['Searching', 'Checking knowledge base', 'Generating answer'],
     vision: ['Looking at your image', 'Generating answer'],
     'flux-klein-4b': ['Creating your image', 'Rendering details'],
     code: ['Reading your code', 'Generating answer'],
@@ -2146,28 +2145,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     });
   }
 
-  // GitHub mode always answers using EduTrellis Code server-side regardless
-  // of the picker (see GITHUB_MODEL_KEY in ai_chat.py), but pairing it with
-  // EduTrellis Light doesn't make sense at the concept level — Light is
-  // about answering from the saved knowledge base / a web search, not
-  // editing a codebase, so offering "connect GitHub" there is just
-  // confusing. Disabled (and force-closed/turned off if it was already on)
-  // whenever Light is the active mode; every other mode keeps it available.
-  var GITHUB_DISABLED_MODELS = ['light'];
   function applyGithubAvailability(){
     if (!githubBtn) return;
-    var incompatible = GITHUB_DISABLED_MODELS.indexOf(currentModel) !== -1;
-    githubBtn.disabled = incompatible || state.streaming || state.gated || state.conversationEnded;
-    githubBtn.title = incompatible ? "Not available in Vidhyora Light mode — switch modes first" : 'GitHub';
-    if (!incompatible) return;
-    if (githubPanel) { githubPanel.hidden = true; }
-    githubBtn.setAttribute('aria-expanded', 'false');
-    if (state.githubMode) {
-      state.githubMode = false;
-      githubBtn.classList.remove('active');
-      input.placeholder = 'Message AI';
-      if (githubModeToggle) githubModeToggle.checked = false;
-    }
+    githubBtn.disabled = state.streaming || state.gated || state.conversationEnded;
+    githubBtn.title = 'GitHub';
   }
 
   // ---- model picker (dropdown) ----
@@ -2213,7 +2194,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       if (!opt || state.streaming || state.gated) return;
       if (opt.getAttribute('data-locked') === '1') {
         closeDropdown();
-        showAiToast('Free users can use Quick, Light, and Code. Request premium access for this model.', true);
+        showAiToast('Free users can use Quick and Code. Request premium access for this model.', true);
         return;
       }
       applyModelSelection(opt.getAttribute('data-model'), true);

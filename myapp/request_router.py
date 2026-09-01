@@ -54,7 +54,7 @@ def classify(text):
 
 def choose_model(text, default_model):
     category = classify(text)
-    return {'code': 'code', 'research': 'light'}.get(category, default_model), category
+    return {'code': 'code'}.get(category, default_model), category
 
 
 def choose_chatgpt_worker(text):

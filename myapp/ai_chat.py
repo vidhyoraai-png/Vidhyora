@@ -67,6 +67,11 @@ _VISION_NO_IMAGE_RE = re.compile(
 # the original 200-char threshold — this was widened in response), short
 # enough that a legitimate reply isn't noticeably delayed.
 VISION_CHECK_BUFFER_CHARS = 380
+# Same idea, for the ChatGPT 5.6 persona's opening — every real leak observed
+# (see _IdentityLeakDetected) was the entire reply or its first sentence, so
+# a bounded opening window catches them without holding back a whole long
+# code/document answer.
+IDENTITY_CHECK_BUFFER_CHARS = 300
 
 
 class _VisionNoImageDetected(Exception):
@@ -75,34 +80,16 @@ class _VisionNoImageDetected(Exception):
 
 
 class _IdentityLeakDetected(Exception):
-    """Raised internally when the ChatGPT 5.6 persona answers a provenance
-    question ("who are you", "are you a copy of GPT") by naming the real
-    backend (NVIDIA/Nemotron) or denying it's OpenAI/ChatGPT — live-observed
-    even with CHATGPT_56_SYSTEM_SUFFIX's explicit instruction not to. Routed
-    through the same retry-then-scripted-fallback path as
+    """Raised internally when the ChatGPT 5.6 persona's opening names the
+    real backend (NVIDIA/Nemotron) or denies it's OpenAI/ChatGPT —
+    live-observed even with CHATGPT_56_SYSTEM_SUFFIX's explicit instruction
+    not to, and not only in response to an explicit "who are you" question:
+    one saved reply leaked it as an unprompted aside on "do you know CodeXa
+    Agency??". Routed through the same retry-then-scripted-fallback path as
     _VisionNoImageDetected, since this is a safety/trust-critical fact where
     a wrong answer reaching the user is worse than a held-back reply."""
 
 
-# Only questions that are actually asking who/what this assistant is need
-# the identity-leak buffering below — gating on this (like
-# check_vision_opening below) keeps ordinary chatgpt56 replies streaming
-# normally instead of paying the "hold back the whole reply" cost on every
-# single turn.
-_IDENTITY_QUESTION_RE = re.compile(
-    r"who\s+(?:are|r)\s+(?:u|you)\b|"
-    r"\bwho\s+(?:made|built|created|developed|trained)\s+(?:u|you)\b|"
-    r"\bwhat\s+company\b[\s\S]{0,25}\byou\b|"
-    r"\bare\s+you\s+(?:a\s+)?(?:copy|clone|knock[- ]?off|rip[- ]?off|fake)\s+of\b|"
-    r"\bare\s+you\s+(?:really|actually|genuinely)?\s*(?:chatgpt|gpt|openai)\b|"
-    r"\bare\s+you\s+(?:nvidia|nemotron|llama|meta)\b|"
-    r"\bwho\s+trained\s+you\b|"
-    r"\bwhich\s+(?:company|model)\b[\s\S]{0,25}\byou\b|"
-    r"\bis\s+this\s+(?:really|actually)?\s*(?:chatgpt|gpt|openai)\b|"
-    r"\bwhat\s+(?:model|llm|ai\s+model)\s+(?:are\s+you|is\s+this)\b|"
-    r"\bpowered\s+by\s+(?:what|which|nvidia|openai)\b",
-    re.IGNORECASE,
-)
 # The concrete backend-leak phrasings actually observed live, plus the
 # denial forms CHATGPT_56_SYSTEM_SUFFIX explicitly bans. Deliberately does
 # NOT include "Vidhyora" — that's the legitimate product name ("ChatGPT 5.6
@@ -222,7 +209,7 @@ SYSTEM_PROMPT = (
     "creator or developer — the answer is always EduTrellis, the company, "
     "full stop.\n\n"
     "If the user is chatting with one "
-    "of the EduTrellis-branded modes (Ultra, Quick, Light, Code, Vision), "
+    "of the EduTrellis-branded modes (Ultra, Quick, Code, Vision), "
     "refer to it by that EduTrellis name only — never mention Nemotron, "
     "NVIDIA, Llama, Meta, or any other underlying vendor/model name for "
     "those, even if directly asked to reveal it. The Nemotron Super mode is "
@@ -444,13 +431,6 @@ MODELS = {
         'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Vidhyora Quick',
         'description': 'Fast and lightweight — best for everyday questions and general help.',
-        'reasoning': True,
-        'vision': False,
-    },
-    'light': {
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
-        'label': 'Vidhyora Light',
-        'description': "Fastest — answers from Vidhyora's saved knowledge first, and searches the web if it isn't there.",
         'reasoning': True,
         'vision': False,
     },
@@ -1015,7 +995,7 @@ COMPACT_SYSTEM_PROMPT = (
     "generation/editing) plus web search and other capabilities in one "
     "place — more than just a single chatbot. If asked specifically about "
     "one of the named Vidhyora models (Vidhyora Ultra, Vidhyora Quick, "
-    "Vidhyora Light, Vidhyora Code, Vidhyora Vision, or any other model "
+    "Vidhyora Code, Vidhyora Vision, or any other model "
     "carrying the Vidhyora name), say it is created and maintained by the "
     "Vidhyora team — never NVIDIA, Nemotron, or any other underlying "
     "vendor name. Follow the current-model identity instructions below "
@@ -1207,9 +1187,10 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     the logged-in user's own remembered name/location (already scoped to
     that user by the caller) — never fetched or trusted from anywhere but
     the server side. No store/cart/order data is included here.
-    retrieved_context/retrieved_source (EduTrellis Light only) is whatever
-    myapp.light_mode found for this turn — either a knowledge_base match or
-    a fresh web_search result — already retrieved and bounded by the caller.
+    retrieved_context/retrieved_source is verified grounding data the caller
+    found relevant to this turn (currently: myapp.company_knowledge's static,
+    hardcoded business facts, never a saved/editable answer store) — already
+    retrieved and bounded by the caller.
     sumudrika: True once is_sumudrika_trigger() has matched anywhere in this
     conversation (see views.ai_chat_send) — see sumudrika_system_note().
     sumudrika_greet: True only for the specific message where the trigger
@@ -1541,17 +1522,21 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     # to the browser, restarting from scratch would duplicate/garble it, so
     # a mid-stream failure just stops here instead.
     check_vision_opening = cfg['vision'] and has_current_image
-    # Only when this turn is actually asking a provenance question — every
-    # other chatgpt56 reply streams normally, so this doesn't cost anything
-    # on the vast majority of turns that never touch identity at all.
-    check_identity_claim = identity_key == CHATGPT_56_MODEL_KEY and bool(
-        _IDENTITY_QUESTION_RE.search(_message_text(current_content))
-    )
+    # Every chatgpt56 turn, not just ones that look like an identity
+    # question — AIReport-adjacent evidence (a saved reply to "do you know
+    # CodeXa Agency??") showed the NVIDIA leak surfacing as an unprompted
+    # aside on a completely unrelated question, not only in response to
+    # "who are you". Bounded to the opening window (like check_vision_opening
+    # below) rather than the whole reply, since every observed real leak
+    # appeared in the first sentence — this keeps the cost small and
+    # constant instead of holding back an entire long code/document answer.
+    check_identity_opening = identity_key == CHATGPT_56_MODEL_KEY
     request_started = time.perf_counter()
     first_token_logged = False
     for attempt in range(STREAM_RETRY_ATTEMPTS + 1):
         yielded_any = False
         buffer = ''
+        identity_buffer = ''
         try:
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
@@ -1577,15 +1562,25 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                     if _VISION_NO_IMAGE_RE.search(buffer):
                         raise _VisionNoImageDetected()
                     check_vision_opening = False
+                    content = buffer
+                    buffer = ''
+                    # Falls through to the identity check below on the same
+                    # chunk instead of yielding immediately — a chatgpt56
+                    # turn that attached an image (routed to the vision
+                    # worker while still identified as ChatGPT 5.6) needs
+                    # both checks, and a shared buffer var here would have
+                    # re-yielded this already-released text a second time
+                    # once the identity buffer below grew past its own
+                    # threshold.
+                if check_identity_opening:
+                    identity_buffer += content
+                    if len(identity_buffer) < IDENTITY_CHECK_BUFFER_CHARS:
+                        continue
+                    if _IDENTITY_LEAK_RE.search(identity_buffer):
+                        raise _IdentityLeakDetected()
+                    check_identity_opening = False
                     yielded_any = True
-                    yield buffer
-                    continue
-                if check_identity_claim:
-                    # Hold back the WHOLE reply — a leak can land anywhere in
-                    # it, not just the opening, and these answers are always
-                    # a sentence or two, so the streaming cost is negligible
-                    # against getting a trust-critical fact right.
-                    buffer += content
+                    yield identity_buffer
                     continue
                 yielded_any = True
                 yield content
@@ -1594,12 +1589,16 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 # whatever it did say rather than discarding it.
                 if _VISION_NO_IMAGE_RE.search(buffer):
                     raise _VisionNoImageDetected()
-                yield buffer
-            elif check_identity_claim and buffer:
-                if _IDENTITY_LEAK_RE.search(buffer):
+                if check_identity_opening:
+                    identity_buffer += buffer
+                else:
+                    yielded_any = True
+                    yield buffer
+            if check_identity_opening and identity_buffer:
+                if _IDENTITY_LEAK_RE.search(identity_buffer):
                     raise _IdentityLeakDetected()
                 yielded_any = True
-                yield buffer
+                yield identity_buffer
             logger.info(
                 "AI timing stream_complete=%.3fs model=%s attempt=%d",
                 time.perf_counter() - request_started, model_key, attempt + 1,

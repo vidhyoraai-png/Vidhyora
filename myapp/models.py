@@ -861,24 +861,19 @@ class GitHubConnection(models.Model):
 
 
 class KnowledgeEntry(models.Model):
-    """A saved fact/answer EduTrellis Light checks before anything else.
-    Seeded manually from the admin, and grown automatically three ways: a
-    live web search fallback saves its top result; every real chat Q&A
-    (any model) saves the pair; and a Q&A that involved an uploaded file/
-    image, or a logged-in user's own account details, is saved too — but
-    scoped private to that one user/guest session (see user/session_key
-    below) instead of shared, since that content can be personal or
-    proprietary. A blank user AND blank session_key means shared with
-    everyone; either one set means only that person's own future Light
-    questions can retrieve it. See light_mode.save_from_chat/
-    search_knowledge_base for exactly how this is decided and enforced."""
+    """Legacy data from the removed EduTrellis Light model and its
+    saved-answer retrieval system (light_mode.py, deleted). No AI reply path
+    reads from or writes to this table any more — every response is
+    generated fresh, never retrieved from a saved/cached answer. Kept only
+    as an inert historical record, browsable from the admin; safe to prune
+    or drop entirely if it's no longer wanted."""
     SOURCE_MANUAL = 'manual'
     SOURCE_WEB = 'web_search'
     SOURCE_CHAT = 'chat'
     SOURCE_CHOICES = [(SOURCE_MANUAL, 'Manual'), (SOURCE_WEB, 'Web search'), (SOURCE_CHAT, 'Chat')]
 
     topic       = models.CharField(max_length=200, help_text="Short label/question this answers, e.g. 'refund policy' or 'GST registration steps'.")
-    content     = models.TextField(help_text='The saved text EduTrellis Light will answer from.')
+    content     = models.TextField(help_text='Saved text from the retired EduTrellis Light feature — no longer used by any AI reply.')
     source      = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
     source_url  = models.URLField(blank=True, help_text='Where this was found, if saved from a web search.')
     user        = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='knowledge_entries', help_text='Set only for an entry private to one logged-in person (from a file/image upload, or their own account details). Blank = visible to everyone.')
@@ -889,7 +884,7 @@ class KnowledgeEntry(models.Model):
     class Meta:
         ordering = ['-updated_at']
         verbose_name = 'Knowledge Entry'
-        verbose_name_plural = 'Knowledge Entries (EduTrellis Light)'
+        verbose_name_plural = 'Knowledge Entries (legacy — unused)'
 
     def __str__(self):
         return self.topic
