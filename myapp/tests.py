@@ -19,7 +19,7 @@ from PIL import Image
 
 from . import ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup, image_generation, privacy, request_router
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, Cart, Category, GitHubConnection, Product, StoreProfile
+from .models import AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_generated_file_spec, _extract_ai_generated_file_content,
@@ -88,7 +88,7 @@ class AIConversationPersistenceTests(TestCase):
         session.save()
 
         response = self.client.post(
-            '/store/api/login/',
+            '/AI/api/login/',
             data=json.dumps({
                 'identifier': self.user.email,
                 'password': 'test-password-123',
@@ -564,10 +564,12 @@ class AIResponseReliabilityTests(TestCase):
         self.assertFalse(request_router.is_note_intent('she made a note about it yesterday, what should I do'))
         self.assertFalse(request_router.is_note_intent('I have not opened the store today'))
 
-    def test_company_context_contains_public_contacts_and_prices(self):
+    def test_company_context_contains_verified_ai_contacts(self):
         self.assertTrue(company_knowledge.is_company_query('what is the sales team number?'))
         self.assertIn('+91 96959 53183', company_knowledge.PUBLIC_SITE_CONTEXT)
-        self.assertIn('₹8,999', company_knowledge.PUBLIC_SITE_CONTEXT)
+        self.assertIn('Vidhyora AI is an AI assistant', company_knowledge.PUBLIC_SITE_CONTEXT)
+        self.assertNotIn('/websitecreation', company_knowledge.PUBLIC_SITE_CONTEXT)
+        self.assertNotIn('/store', company_knowledge.PUBLIC_SITE_CONTEXT)
 
     def test_company_query_detection_covers_realistic_contact_phrasings(self):
         # These specific phrasings are what actually reached the AI model
@@ -817,7 +819,7 @@ class AIAccountProfileTests(TestCase):
         Image.new('RGB', (20, 20), (220, 20, 45)).save(image_bytes, format='PNG')
         avatar = SimpleUploadedFile('avatar.png', image_bytes.getvalue(), content_type='image/png')
 
-        response = self.client.post('/store/api/profile/update/', {
+        response = self.client.post('/AI/api/profile/update/', {
             'name': 'Updated Person', 'email': 'updated@example.com',
             'phone': '7777777777', 'avatar': avatar,
         })
@@ -834,7 +836,7 @@ class AIAccountProfileTests(TestCase):
         self.assertContains(response, 'avatar_url')
 
     def test_profile_update_rejects_another_accounts_email(self):
-        response = self.client.post('/store/api/profile/update/', {
+        response = self.client.post('/AI/api/profile/update/', {
             'name': 'Account Owner', 'email': 'other@example.com', 'phone': '9999999999',
         })
 
@@ -845,7 +847,7 @@ class AIAccountProfileTests(TestCase):
 
     def test_password_change_keeps_user_logged_in(self):
         response = self.client.post(
-            '/store/api/profile/password/',
+            '/AI/api/profile/password/',
             data=json.dumps({'current_password': 'old-password', 'new_password': 'new-password'}),
             content_type='application/json',
         )
@@ -1051,7 +1053,7 @@ class LocationConsentTests(TestCase):
     def test_authenticated_user_can_save_one_location_fix(self):
         self.client.force_login(self.user)
 
-        response = self.client.post('/store/api/location/', data=json.dumps({
+        response = self.client.post('/AI/api/location/', data=json.dumps({
             'consent': 'granted', 'latitude': 20.296059,
             'longitude': 85.824539, 'accuracy': 18.6,
         }), content_type='application/json')
@@ -1073,7 +1075,7 @@ class LocationConsentTests(TestCase):
         self.client.force_login(self.user)
 
         response = self.client.post(
-            '/store/api/location/', data=json.dumps({'consent': 'denied'}),
+            '/AI/api/location/', data=json.dumps({'consent': 'denied'}),
             content_type='application/json',
         )
 
@@ -1086,13 +1088,13 @@ class LocationConsentTests(TestCase):
 
     def test_invalid_or_anonymous_location_updates_are_rejected(self):
         anonymous = self.client.post(
-            '/store/api/location/', data=json.dumps({'consent': 'denied'}),
+            '/AI/api/location/', data=json.dumps({'consent': 'denied'}),
             content_type='application/json',
         )
         self.assertEqual(anonymous.status_code, 401)
 
         self.client.force_login(self.user)
-        invalid = self.client.post('/store/api/location/', data=json.dumps({
+        invalid = self.client.post('/AI/api/location/', data=json.dumps({
             'consent': 'granted', 'latitude': 95, 'longitude': 85, 'accuracy': 10,
         }), content_type='application/json')
         self.assertEqual(invalid.status_code, 400)
@@ -1327,61 +1329,42 @@ class DashboardBackupDeletionTests(TestCase):
         dbx.files_delete_v2.assert_any_call('/edutrellis store/backups/db_latest.sqlite3')
 
 
-class PublicPagePerformanceAndSEOTests(TestCase):
-    def test_apex_domain_redirects_permanently_to_canonical_www_host(self):
+class RemovedPublicSurfaceTests(TestCase):
+    def test_storefront_and_websitecreation_urls_are_gone(self):
+        for path in (
+            '/store/', '/store', '/estore', '/estore/',
+            '/websitecreation/', '/websitecreation/contact/',
+            '/contact/', '/store/api/cart/', '/store/product/anything/',
+            '/store/policy/privacy/',
+        ):
+            self.assertEqual(self.client.get(path).status_code, 404, msg=path)
+
+    def test_404_uses_the_saved_ai_frontend_theme(self):
+        response = self.client.get('/missing-page/')
+        self.assertContains(response, "localStorage.getItem('ai_theme')", status_code=404)
+        self.assertContains(response, "localStorage.getItem('ai_color_theme')", status_code=404)
+        self.assertContains(response, 'data-accent="blue"', status_code=404)
+        self.assertContains(response, '--red:#ff7a00', status_code=404)
+
+    def test_ai_and_dashboard_routes_remain(self):
+        self.assertEqual(self.client.get('/').status_code, 200)
+        self.assertEqual(self.client.get('/AI/').status_code, 200)
+
+        staff = User.objects.create_user('dashboard-admin', password='password', is_staff=True)
+        StoreProfile.objects.create(user=staff)
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get('/store/dashboard/').status_code, 200)
+
+    def test_apex_domain_redirects_to_ai_homepage(self):
         middleware = CanonicalHostMiddleware(lambda request: HttpResponse('page'))
-
-        response = middleware(RequestFactory().get(
-            '/store/?category=audio', HTTP_HOST='edutrellis.in', secure=True,
-        ))
-
+        response = middleware(RequestFactory().get('/', HTTP_HOST='edutrellis.in', secure=True))
         self.assertEqual(response.status_code, 301)
-        self.assertEqual(
-            response['Location'],
-            'https://www.edutrellis.in/store/?category=audio',
-        )
+        self.assertEqual(response['Location'], 'https://www.edutrellis.in/')
 
-    def test_estore_alias_and_missing_slash_use_permanent_redirects(self):
-        alias = self.client.get('/estore')
-        missing_slash = self.client.get('/store')
-
-        self.assertRedirects(alias, '/store/', status_code=301, fetch_redirect_response=False)
-        self.assertRedirects(missing_slash, '/store/', status_code=301, fetch_redirect_response=False)
-
-    def test_anonymous_store_view_does_not_create_an_empty_cart(self):
-        response = self.client.get('/store/')
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Cart.objects.count(), 0)
-
-    def test_public_assets_receive_browser_cache_headers(self):
+    def test_ai_assets_receive_browser_cache_headers(self):
         middleware = PublicAssetCacheMiddleware(lambda request: HttpResponse('asset'))
-
-        static_response = middleware(RequestFactory().get('/static/style.css'))
-        media_response = middleware(RequestFactory().get('/media/products/example.webp'))
-
-        self.assertIn('max-age=86400', static_response['Cache-Control'])
-        self.assertIn('max-age=604800', media_response['Cache-Control'])
-
-    def test_product_page_has_canonical_product_structured_data(self):
-        category = Category.objects.create(name='SEO Test Audio', slug='seo-test-audio')
-        product = Product.objects.create(
-            category=category, slug='test-speaker', brand='EduTrellis',
-            name='Test Speaker', short_description='A test product.',
-            price='999.00', mrp='1299.00', is_active=True,
-        )
-
-        response = self.client.get(f'/store/product/{product.slug}/')
-        schema = json.loads(response.context['product_schema_json'])
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(schema['@type'], 'Product')
-        self.assertEqual(schema['offers']['priceCurrency'], 'INR')
-        self.assertContains(
-            response,
-            f'<link rel="canonical" href="https://www.edutrellis.in/store/product/{product.slug}/">',
-            html=True,
-        )
+        response = middleware(RequestFactory().get('/static/ai-icon-192.png'))
+        self.assertIn('max-age=86400', response['Cache-Control'])
 
 
 class HTMLExtractionTests(TestCase):

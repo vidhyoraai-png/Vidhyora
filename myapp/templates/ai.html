@@ -1081,7 +1081,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var AI_SUBSCRIBED = {% if ai_subscribed %}true{% else %}false{% endif %};
   var AI_FREE_LIMIT = {{ ai_free_limit|default:20 }};
   var AI_FREE_USED = {{ ai_free_used|default:0 }};
-  var AI_PURCHASE_URL = '{{ ai_purchase_url|default:"/AI/" }}';
+  var AI_PURCHASE_URL = '{{ ai_purchase_url|default:"mailto:support@edutrellis.in?subject=Vidhyora%20AI%20Premium" }}';
   var AI_DEFAULT_MODEL = '{{ ai_default_model|default:"ultra" }}';
   var AI_RESUME_CONVERSATION_ID = {{ ai_resume_conversation_id|default:"null" }};
   var MODEL_LABELS = JSON.parse(document.getElementById('boot-model-labels').textContent || '{}');
@@ -1515,7 +1515,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     // (see footer conditional in ai.html) — staff/subscribed accounts get
     // the plain foot-note instead and never see this element at all.
     var freeLeft = Math.max(0, AI_FREE_LIMIT - state.freeUsed);
-    guestMeter.innerHTML = freeLeft + ' of ' + AI_FREE_LIMIT + ' free Vidhyora AI messages left — <a href="' + AI_PURCHASE_URL + '">subscribe for Rs 99/month</a> for unlimited access.';
+    guestMeter.innerHTML = freeLeft + ' of ' + AI_FREE_LIMIT + ' free Vidhyora AI messages left — <a href="' + AI_PURCHASE_URL + '">contact support for premium access</a>.';
   }
   updateGuestMeter();
 
@@ -3125,7 +3125,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         '<div class="subscription-stat"><span>Free messages remaining</span><strong>' + escHtml(String(subscription.free_remaining)) + '</strong></div>';
     var action = '';
     if (!subscription.active && subscription.purchase_url) {
-      action = '<a class="account-plan-btn" href="' + escHtml(subscription.purchase_url) + '">View premium plan</a>';
+      action = '<a class="account-plan-btn" href="' + escHtml(subscription.purchase_url) + '">Request premium access</a>';
     }
     panel.innerHTML = '<div class="subscription-card">' +
       '<p class="subscription-plan">' + escHtml(subscription.plan_name) + '</p>' +
@@ -3503,7 +3503,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     wrap.innerHTML = (
       '<div class="gate-card" id="gateCard">' +
         '<p>' + escHtml(detail || ('You\'ve used all ' + AI_FREE_LIMIT + ' free Vidhyora AI messages.')) + '</p>' +
-        '<a href="' + AI_PURCHASE_URL + '" class="auth-submit" style="display:block;text-decoration:none">Purchase Plan — Rs 99/month</a>' +
+        '<a href="' + AI_PURCHASE_URL + '" class="auth-submit" style="display:block;text-decoration:none">Request Premium Access</a>' +
       '</div>'
     );
     col.appendChild(wrap.firstChild);

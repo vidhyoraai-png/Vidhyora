@@ -1773,7 +1773,7 @@ def _format_wait_time(seconds):
 
 def _ai_purchase_url():
     # Premium access is managed by staff from the AI Management dashboard.
-    return '/AI/'
+    return 'mailto:support@edutrellis.in?subject=Vidhyora%20AI%20Premium'
 
 
 def _ip_free_messages_used(ip):
