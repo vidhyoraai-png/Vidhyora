@@ -39,7 +39,7 @@
 {% endblock %}
 
 {% block content %}
-<p class="backup-sub">Back up your SQLite database to Dropbox, or restore from a previous backup. When Dropbox is configured, adding a new account from Signups, AI Management, or Django admin automatically creates a backup.</p>
+<p class="backup-sub">Manually back up your SQLite database to Dropbox, or restore from a previous backup.</p>
 
 {% for message in messages %}
   <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>

@@ -20,7 +20,7 @@ from PIL import Image
 
 from . import ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup, image_generation, privacy, request_router
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, DropboxSettings, GitHubConnection, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, PWASettings, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_generated_file_spec, _extract_ai_generated_file_content,
@@ -1443,6 +1443,90 @@ class AIDashboardOverviewTests(TestCase):
         self.assertEqual(free_profile.manual_amount_paid, Decimal('0.00'))
 
 
+class PWAFrontendSettingsTests(TestCase):
+    def setUp(self):
+        self.media_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.media_dir.cleanup)
+        media_override = override_settings(MEDIA_ROOT=self.media_dir.name)
+        media_override.enable()
+        self.addCleanup(media_override.disable)
+
+        self.admin = User.objects.create_superuser(
+            username='pwa-admin@example.com', email='pwa-admin@example.com',
+            password='admin-password',
+        )
+        StoreProfile.objects.create(user=self.admin, phone='9111111111')
+        self.client.force_login(self.admin)
+
+    def _icon_upload(self):
+        image_bytes = io.BytesIO()
+        Image.new('RGB', (700, 500), (12, 140, 90)).save(image_bytes, format='PNG')
+        return SimpleUploadedFile('custom-pwa.png', image_bytes.getvalue(), content_type='image/png')
+
+    def _save_enabled_settings(self):
+        return self.client.post('/store/dashboard/pwa-settings/', {
+            'is_enabled': 'on',
+            'app_name': 'Rudra Custom AI',
+            'short_name': 'Rudra AI',
+            'description': 'Custom install description from the dashboard.',
+            'theme_color': '#123456',
+            'background_color': '#fedcba',
+            'icon': self._icon_upload(),
+        })
+
+    def test_admin_pwa_settings_appear_on_homepage_and_manifest(self):
+        saved = self._save_enabled_settings()
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(saved.context['saved'])
+
+        homepage = self.client.get('/')
+        self.assertContains(homepage, 'Install Rudra Custom AI as an app')
+        self.assertContains(homepage, '<meta name="theme-color" content="#123456">', html=True)
+        self.assertContains(homepage, '/AI/manifest.json?v=')
+        self.assertContains(homepage, '/AI/pwa-icon/192.png?v=')
+        self.assertContains(homepage, "navigator.serviceWorker.register('/sw.js', { scope: '/' })")
+
+        manifest_response = self.client.get('/AI/manifest.json')
+        manifest = manifest_response.json()
+        self.assertEqual(manifest['name'], 'Rudra Custom AI')
+        self.assertEqual(manifest['short_name'], 'Rudra AI')
+        self.assertEqual(manifest['description'], 'Custom install description from the dashboard.')
+        self.assertEqual(manifest['theme_color'], '#123456')
+        self.assertEqual(manifest['background_color'], '#fedcba')
+        self.assertEqual(manifest['start_url'], '/')
+        self.assertEqual(manifest['scope'], '/')
+        self.assertIn('/AI/pwa-icon/512.png?v=', manifest['icons'][1]['src'])
+        self.assertIn('no-store', manifest_response['Cache-Control'])
+
+    def test_uploaded_icon_is_rendered_at_real_manifest_dimensions(self):
+        self._save_enabled_settings()
+
+        for size in (192, 512):
+            with self.subTest(size=size):
+                response = self.client.get(f'/AI/pwa-icon/{size}.png')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response['Content-Type'], 'image/png')
+                rendered = Image.open(io.BytesIO(response.content))
+                self.assertEqual(rendered.size, (size, size))
+
+    def test_disabling_pwa_removes_manifest_banner_and_registration(self):
+        self._save_enabled_settings()
+        disabled = self.client.post('/store/dashboard/pwa-settings/', {
+            'app_name': 'Rudra Custom AI',
+            'short_name': 'Rudra AI',
+            'description': 'Custom install description from the dashboard.',
+            'theme_color': '#123456',
+            'background_color': '#fedcba',
+        })
+        self.assertEqual(disabled.status_code, 200)
+
+        homepage = self.client.get('/')
+        self.assertNotContains(homepage, 'rel="manifest"')
+        self.assertNotContains(homepage, 'id="installBanner"')
+        self.assertNotContains(homepage, "navigator.serviceWorker.register('/sw.js'")
+        self.assertContains(homepage, 'navigator.serviceWorker.getRegistrations()')
+
+
 class DashboardBackupDeletionTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(
@@ -1517,74 +1601,6 @@ class DashboardBackupDeletionTests(TestCase):
         self.assertEqual(dbx.files_delete_v2.call_count, 2)
         dbx.files_delete_v2.assert_any_call('/edutrellis store/backups/db_20260831.sqlite3')
         dbx.files_delete_v2.assert_any_call('/edutrellis store/backups/db_latest.sqlite3')
-
-
-class AutomaticAccountBackupTests(TestCase):
-    def setUp(self):
-        self.admin = User.objects.create_superuser(
-            username='automatic-backup-admin@example.com',
-            email='automatic-backup-admin@example.com',
-            password='admin-password',
-        )
-        StoreProfile.objects.create(user=self.admin, phone='9222222222')
-        DropboxSettings.objects.create(
-            pk=1, app_key='app-key', app_secret='app-secret', refresh_token='refresh-token',
-        )
-        self.client.force_login(self.admin)
-
-    @patch('myapp.dropbox_backup.create_backup', return_value='db_automatic.sqlite3')
-    def test_dashboard_account_creation_runs_backup_after_commit(self, create_backup):
-        with patch.object(dropbox_backup, 'dropbox', SimpleNamespace()):
-            with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post('/store/dashboard/users/add/', {
-                    'next': 'dashboard_signups',
-                    'name': 'New Customer',
-                    'email': 'new-customer@example.com',
-                    'phone': '9333333333',
-                    'password': 'customer-password',
-                    'amount_paid': '',
-                })
-
-        self.assertRedirects(response, '/store/dashboard/signups/')
-        self.assertTrue(User.objects.filter(email='new-customer@example.com').exists())
-        create_backup.assert_called_once()
-        self.assertEqual(create_backup.call_args.args[0].pk, 1)
-
-    @patch(
-        'myapp.dropbox_backup.create_backup',
-        side_effect=dropbox_backup.BackupError('Dropbox temporarily unavailable'),
-    )
-    def test_backup_failure_does_not_cancel_new_account(self, create_backup):
-        with patch.object(dropbox_backup, 'dropbox', SimpleNamespace()):
-            with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post('/store/dashboard/users/add/', {
-                    'next': 'dashboard_signups',
-                    'name': 'Still Created',
-                    'email': 'still-created@example.com',
-                    'phone': '9444444445',
-                    'password': 'customer-password',
-                    'amount_paid': '',
-                })
-
-        self.assertRedirects(response, '/store/dashboard/signups/')
-        self.assertTrue(User.objects.filter(email='still-created@example.com').exists())
-        create_backup.assert_called_once()
-
-    def test_django_user_admin_schedules_only_for_new_accounts(self):
-        from django.contrib.admin.sites import AdminSite
-        from django.contrib.auth.admin import UserAdmin
-        from myapp.admin import StoreUserAdmin
-
-        user_admin = StoreUserAdmin(User, AdminSite())
-        request = RequestFactory().post('/admin/auth/user/add/')
-        with patch.object(UserAdmin, 'save_related'):
-            with patch('myapp.admin.dropbox_backup.schedule_automatic_backup') as schedule:
-                user_admin.save_related(request, Mock(), [], change=False)
-                schedule.assert_called_once_with('new Django admin account')
-
-                schedule.reset_mock()
-                user_admin.save_related(request, Mock(), [], change=True)
-                schedule.assert_not_called()
 
 
 class RemovedPublicSurfaceTests(TestCase):

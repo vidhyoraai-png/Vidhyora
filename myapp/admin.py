@@ -1,7 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
-from myapp import dropbox_backup
 
 from .models import (
     ContactLead, StoreProfile, Cart, CartItem, Category, Order, OrderItem,
@@ -296,13 +295,6 @@ class StoreUserAdmin(UserAdmin):
     def store_phone(self, obj):
         return getattr(obj.store_profile, 'phone', '')
     store_phone.short_description = 'Phone'
-
-    def save_related(self, request, form, formsets, change):
-        super().save_related(request, form, formsets, change)
-        if not change:
-            # Runs after the User and StoreProfile inline transaction commits,
-            # so the uploaded SQLite snapshot contains the complete account.
-            dropbox_backup.schedule_automatic_backup('new Django admin account')
 
 
 admin.site.unregister(User)

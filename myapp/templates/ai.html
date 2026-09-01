@@ -51,7 +51,10 @@
 })();
 </script>
 {% if SITE_FAVICON_URL %}<link rel="icon" href="{{ SITE_FAVICON_URL }}">{% else %}<link rel="icon" href="{% static 'favicon.ico' %}" type="image/x-icon">{% endif %}
-<link rel="manifest" href="{% url 'ai_manifest' %}">
+{% if ai_pwa_ready %}
+<meta name="theme-color" content="{{ ai_pwa.theme_color }}">
+<link rel="manifest" href="{% url 'ai_manifest' %}?v={{ ai_pwa_version }}">
+{% endif %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=Poppins:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Sora:wght@400;500;600;700;800;900&family=Urbanist:wght@400;500;600;700;800;900&family=Lexend:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Nunito:wght@400;500;600;700;800;900&family=Work+Sans:wght@400;500;600;700;800&family=Figtree:wght@400;500;600;700;800;900&family=Libre+Franklin:wght@400;500;600;700;800;900&family=Epilogue:wght@400;500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -725,12 +728,14 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   <button type="button" class="install-banner-close" id="welcomeBannerClose" aria-label="Dismiss"><i class="fas fa-xmark"></i></button>
 </div>
 
+{% if ai_pwa_ready %}
 <div class="install-banner" id="installBanner" hidden>
-  <img src="{% static 'ai-icon-192.png' %}" alt="" class="install-banner-icon">
-  <span class="install-banner-text">Install Vidhyora AI as an app for quicker access.</span>
+  <img src="{% url 'ai_pwa_icon' 192 %}?v={{ ai_pwa_version }}" alt="" class="install-banner-icon">
+  <span class="install-banner-text">Install {{ ai_pwa.app_name }} as an app for quicker access.</span>
   <button type="button" class="install-banner-btn" id="installBannerBtn">Install</button>
   <button type="button" class="install-banner-close" id="installBannerClose" aria-label="Dismiss"><i class="fas fa-xmark"></i></button>
 </div>
+{% endif %}
 
 <div class="feature-modal-backdrop" id="featureModalBackdrop" hidden></div>
 <div class="feature-modal" id="featureModal" hidden role="dialog" aria-modal="true" aria-label="What Vidhyora AI can do">
@@ -2453,16 +2458,18 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   })();
 
   // ---- install as an app ----
+  {% if ai_pwa_ready %}
   (function setupInstallPrompt(){
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/AI/sw.js', { scope: '/AI/' }).catch(function(){});
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function(){});
     }
     var banner = document.getElementById('installBanner');
     var installBtn = document.getElementById('installBannerBtn');
     var closeBtn = document.getElementById('installBannerClose');
     if (!banner) return;
     var deferredPrompt = null;
-    var dismissed = localStorage.getItem('ai_install_dismissed') === '1';
+    var dismissedKey = 'ai_install_dismissed_{{ ai_pwa_version }}';
+    var dismissed = localStorage.getItem(dismissedKey) === '1';
     window.addEventListener('beforeinstallprompt', function(e){
       e.preventDefault();
       deferredPrompt = e;
@@ -2479,9 +2486,21 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     });
     if (closeBtn) closeBtn.addEventListener('click', function(){
       banner.hidden = true;
-      localStorage.setItem('ai_install_dismissed', '1');
+      localStorage.setItem(dismissedKey, '1');
     });
   })();
+  {% else %}
+  // Turning PWA off in the dashboard also removes an older registration.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(function(registrations){
+      registrations.forEach(function(registration){
+        if (registration.scope === location.origin + '/' || registration.scope === location.origin + '/AI/') {
+          registration.unregister();
+        }
+      });
+    }).catch(function(){});
+  }
+  {% endif %}
 
   // ---- one-time "we have multiple models" popup for new visitors ----
   (function setupModelIntroPopup(){

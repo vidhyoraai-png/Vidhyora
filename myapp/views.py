@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 import requests
 from docx import Document as WordDocument
+from PIL import Image, ImageOps
 
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
@@ -86,7 +87,10 @@ def site_customization_context(request):
 
 
 def pwa_service_worker(request):
-    return render(request, 'sw.js', content_type='application/javascript')
+    response = render(request, 'sw.js', content_type='application/javascript')
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response['Service-Worker-Allowed'] = '/'
+    return response
 
 
 def _user_payload(user):
@@ -765,7 +769,6 @@ def dashboard_user_add(request):
                 first_name=first_name, last_name=last_name,
             )
             StoreProfile.objects.create(user=user, phone=phone, manual_amount_paid=amount_paid)
-            dropbox_backup.schedule_automatic_backup('new dashboard account')
             if form.cleaned_data['password']:
                 messages.success(request, f'Created account for {email}.')
             else:
@@ -1667,34 +1670,67 @@ def _ai_notes_snapshot(request):
 
 
 def ai_manifest(request):
-    # Same brand red as the rest of edutrellis.in's favicon, but as real
-    # 192x192/512x512 PNGs rather than the site's actual favicon.ico (which
-    # is only 48x48). Android Chrome checks the real pixel dimensions of a
-    # manifest icon against its declared size before it'll consider the app
-    # installable — a declared-but-not-actual 192/512 icon is why the
-    # install prompt was never firing on Android at all (desktop Chrome is
-    # more lenient about it, which is why it could look fine there).
-    icon_192 = request.build_absolute_uri(static_url('ai-icon-192.png'))
-    icon_512 = request.build_absolute_uri(static_url('ai-icon-512.png'))
+    pwa = PWASettings.get_solo()
+    version = int(pwa.updated_at.timestamp() * 1_000_000)
+    if pwa.icon:
+        icon_192 = request.build_absolute_uri(
+            f"{reverse('ai_pwa_icon', args=[192])}?v={version}"
+        )
+        icon_512 = request.build_absolute_uri(
+            f"{reverse('ai_pwa_icon', args=[512])}?v={version}"
+        )
+    else:
+        icon_192 = request.build_absolute_uri(static_url('ai-icon-192.png'))
+        icon_512 = request.build_absolute_uri(static_url('ai-icon-512.png'))
     manifest = {
-        'name': 'Vidhyora AI',
-        'short_name': 'Vidhyora AI',
-        'description': 'Chat with Vidhyora AI about our services, your store account, and more.',
-        'start_url': '/AI/',
-        'scope': '/AI/',
+        'id': '/',
+        'name': pwa.app_name or 'Vidhyora AI',
+        'short_name': pwa.short_name or 'Vidhyora AI',
+        'description': pwa.description or 'Chat with Vidhyora AI.',
+        'start_url': '/',
+        'scope': '/',
         'display': 'standalone',
-        'background_color': '#ffffff',
-        'theme_color': '#059669',
+        'background_color': pwa.background_color or '#ffffff',
+        'theme_color': pwa.theme_color or '#059669',
         'icons': [
             {'src': icon_192, 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any'},
             {'src': icon_512, 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any'},
             {'src': icon_512, 'sizes': '512x512', 'type': 'image/png', 'purpose': 'maskable'},
         ],
     }
-    return JsonResponse(manifest, content_type='application/manifest+json')
+    response = JsonResponse(manifest, content_type='application/manifest+json')
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
+
+def ai_pwa_icon(request, size):
+    """Serve the uploaded admin icon at real manifest-required dimensions."""
+    if size not in (192, 512):
+        return JsonResponse({'status': 'error', 'detail': 'Invalid icon size.'}, status=404)
+    pwa = PWASettings.get_solo()
+    if not pwa.icon:
+        return JsonResponse({'status': 'error', 'detail': 'No PWA icon configured.'}, status=404)
+    try:
+        pwa.icon.open('rb')
+        with Image.open(pwa.icon) as source:
+            source = ImageOps.exif_transpose(source).convert('RGBA')
+            rendered = ImageOps.fit(
+                source, (size, size), method=Image.Resampling.LANCZOS,
+            )
+            output = io.BytesIO()
+            rendered.save(output, format='PNG', optimize=True)
+        pwa.icon.close()
+    except Exception:
+        logger.exception('Could not render configured PWA icon')
+        return JsonResponse({'status': 'error', 'detail': 'Could not load the PWA icon.'}, status=404)
+    response = HttpResponse(output.getvalue(), content_type='image/png')
+    response['Cache-Control'] = 'public, max-age=3600'
+    return response
 
 
 def ai_page(request):
+    pwa = PWASettings.get_solo()
+    pwa_version = int(pwa.updated_at.timestamp() * 1_000_000)
     conversations = list(
         AIConversation.objects.filter(_ai_owner_filter(request))
         .values('id', 'title', 'updated_at').order_by('-updated_at')[:100]
@@ -1760,6 +1796,9 @@ def ai_page(request):
         'ai_github_oauth_available': bool(settings.GITHUB_OAUTH_CLIENT_ID),
         'show_location_prompt': _location_prompt_needed(request.user),
         'show_profile_wizard': _profile_wizard_needed(request.user),
+        'ai_pwa': pwa,
+        'ai_pwa_ready': pwa.ready,
+        'ai_pwa_version': pwa_version,
     })
 
 
