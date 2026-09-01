@@ -141,7 +141,7 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 /* ---- one-time "what Vidhyora AI can do" features modal ---- */
 .feature-modal-backdrop{position:fixed;inset:0;background:rgba(10,13,19,.55);z-index:48}
 .feature-modal-backdrop:not([hidden]){display:block}
-.feature-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(380px,90vw);max-height:85vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 20px 50px rgba(17,20,24,.3);padding:1.1rem 1.15rem 1rem;z-index:49}
+.feature-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(420px,calc(100vw - 24px));max-height:min(620px,calc(100vh - 32px));max-height:min(620px,calc(100dvh - 32px));overflow-y:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 20px 50px rgba(17,20,24,.3);padding:1.1rem 1.15rem 1rem;z-index:49}
 .feature-modal:not([hidden]){display:block}
 .feature-modal-close{position:absolute;top:.6rem;right:.65rem;border:none;background:none;color:#9aa3b0;cursor:pointer;font-size:1rem;padding:.35rem}
 .feature-modal-close:hover{color:var(--red)}
@@ -151,7 +151,7 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 .feature-modal-icon{font-size:1rem;color:var(--red);flex-shrink:0;margin-top:.15rem;width:20px;text-align:center}
 .feature-modal-item-label{display:block;font-size:.84rem;font-weight:700;color:var(--head)}
 .feature-modal-item-desc{display:block;font-size:.75rem;color:var(--text);line-height:1.4;margin-top:.1rem}
-.feature-modal-btn{width:100%;border:none;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;font-weight:700;font-size:.85rem;padding:.6rem;border-radius:10px;cursor:pointer}
+.feature-modal-btn{position:sticky;bottom:0;width:100%;border:none;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;font-weight:700;font-size:.85rem;padding:.65rem;border-radius:10px;cursor:pointer;box-shadow:0 -8px 18px var(--surface)}
 @media (max-width:480px){
   .install-banner{padding:.5rem .7rem;font-size:.76rem}
   .install-banner-text{font-size:.76rem}
@@ -467,8 +467,8 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 .model-intro-item-desc{display:block;font-size:.71rem;color:var(--text);line-height:1.35}
 .model-intro-btn{width:100%;border:none;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;font-weight:700;font-size:.8rem;padding:.55rem;border-radius:10px;cursor:pointer}
 @media (max-width:480px){
-  .model-intro-popup{left:auto;right:0;width:min(280px,80vw)}
-  .model-intro-popup::after{left:auto;right:22px}
+  .model-intro-popup{position:fixed;top:50%;left:12px;right:12px;bottom:auto;transform:translateY(-50%);width:auto;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain}
+  .model-intro-popup::after{display:none}
 }
 
 /* ---- GitHub mode (logged-in users) ---- */
@@ -625,7 +625,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   .model-picker-caret{font-size:.55rem}
   /* anchored left, not right — the button sits at the left edge of the
      composer, so the dropdown must grow rightward to stay on-screen */
-  .model-dropdown{left:0;right:auto;min-width:210px}
+  .model-dropdown{position:fixed;top:50%;left:12px;right:12px;bottom:auto;transform:translateY(-50%);width:auto;min-width:0;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overscroll-behavior:contain;z-index:47}
   .input-wrap{gap:.3rem}
   .mic-btn,.github-btn{width:30px;height:30px;font-size:.85rem}
   /* a lower cap than desktop's 140px — on a short phone screen, letting the
@@ -738,6 +738,20 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       <div>
         <span class="feature-modal-item-label">Download from YouTube</span>
         <span class="feature-modal-item-desc">Paste a YouTube link in chat and I'll offer video or MP3 download options.</span>
+      </div>
+    </div>
+    <div class="feature-modal-item">
+      <i class="fas fa-wand-magic-sparkles feature-modal-icon"></i>
+      <div>
+        <span class="feature-modal-item-label">Generate and edit images</span>
+        <span class="feature-modal-item-desc">Describe an image to create, or upload one and tell Vidhyora AI what to change.</span>
+      </div>
+    </div>
+    <div class="feature-modal-item">
+      <i class="fas fa-layer-group feature-modal-icon"></i>
+      <div>
+        <span class="feature-modal-item-label">Access multiple AI models</span>
+        <span class="feature-modal-item-desc">Choose the best model for everyday chat, reasoning, coding, vision, or image work.</span>
       </div>
     </div>
   </div>
@@ -2397,6 +2411,20 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       modal.hidden = true;
       backdrop.hidden = true;
       localStorage.setItem(STORAGE_KEY, '1');
+
+      // The model introduction opens slightly earlier than this modal. It
+      // must not remain behind the backdrop and reappear after this dialog
+      // closes. Also close the real dropdown in case it was already open.
+      var modelIntro = document.getElementById('modelIntroPopup');
+      var modelDropdown = document.getElementById('modelDropdown');
+      var modelButton = document.getElementById('modelPickerBtn');
+      if (modelIntro) modelIntro.hidden = true;
+      if (modelDropdown) modelDropdown.hidden = true;
+      if (modelButton) {
+        modelButton.classList.remove('open');
+        modelButton.setAttribute('aria-expanded', 'false');
+      }
+      localStorage.setItem('ai_model_intro_seen', '1');
     }
     setTimeout(function(){ modal.hidden = false; backdrop.hidden = false; }, 2000);
     if (closeBtn) closeBtn.addEventListener('click', dismiss);

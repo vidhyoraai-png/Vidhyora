@@ -1355,6 +1355,14 @@ class RemovedPublicSurfaceTests(TestCase):
         self.client.force_login(staff)
         self.assertEqual(self.client.get('/store/dashboard/').status_code, 200)
 
+    def test_mobile_feature_intro_lists_images_and_models_and_closes_model_stack(self):
+        response = self.client.get('/AI/')
+        self.assertContains(response, 'Generate and edit images')
+        self.assertContains(response, 'Access multiple AI models')
+        self.assertContains(response, "localStorage.setItem('ai_model_intro_seen', '1')")
+        self.assertContains(response, 'if (modelDropdown) modelDropdown.hidden = true')
+        self.assertContains(response, 'max-height:calc(100dvh - 24px)')
+
     def test_apex_domain_redirects_to_ai_homepage(self):
         middleware = CanonicalHostMiddleware(lambda request: HttpResponse('page'))
         response = middleware(RequestFactory().get('/', HTTP_HOST='edutrellis.in', secure=True))
