@@ -353,8 +353,8 @@ CHATGPT_56_SYSTEM_SUFFIX = (
 
 # Every backing model here is verified against the live NVIDIA account.
 # Being listed in NVIDIA's catalog doesn't mean a given account has invoke
-# access, and several plausible choices (dedicated "coder" checkpoints,
-# nvidia/vila, mistral-large) 404'd for this account.
+# access. All text modes currently use the responsive Lightning endpoint so
+# automatic routing cannot send a request to a retired catalog entry.
 # 'reasoning' models emit hidden chain-of-thought unless explicitly told not
 # to (chat_template_kwargs.enable_thinking=False) — without that flag they
 # dump raw "Let me think..." text into the reply instead of a clean answer.
@@ -363,7 +363,7 @@ MODELS = {
         # A user-facing automatic route, not a separate upstream endpoint.
         # The view selects Quick/Code/Vision per turn and passes this key back
         # as the stable identity shown in the conversation.
-        'id': 'nvidia/nemotron-3-nano-30b-a3b',
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'ChatGPT 5.6',
         'description': "OpenAI's most powerful model — best for everyday questions, reasoning, coding, writing, and images.",
         'reasoning': True,
@@ -371,58 +371,48 @@ MODELS = {
         'router': True,
     },
     'ultra': {
-        'id': 'nvidia/nemotron-3-ultra-550b-a55b',
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Vidhyora Ultra',
         'description': 'Most capable — best for complex reasoning, multi-step problems, and detailed answers.',
         'reasoning': True,
         'vision': False,
     },
     'quick': {
-        'id': 'nvidia/nemotron-3-nano-30b-a3b',
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Vidhyora Quick',
         'description': 'Fast and lightweight — best for everyday questions and general help.',
         'reasoning': True,
         'vision': False,
     },
     'light': {
-        'id': 'nvidia/nemotron-3-nano-30b-a3b',
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Vidhyora Light',
         'description': "Fastest — answers from Vidhyora's saved knowledge first, and searches the web if it isn't there.",
         'reasoning': True,
         'vision': False,
     },
     'code': {
-        # Matches NVIDIA's own model-recommendation guidance for coding —
-        # the same nano model as Quick/Light, not a separate "coder"
-        # checkpoint (none were accessible for this account; see the note
-        # above MODELS). Previously meta/llama-3.1-70b-instruct, which
-        # worked fine but wasn't what NVIDIA itself points to for this.
-        'id': 'nvidia/nemotron-3-nano-30b-a3b',
+        # Code behaviour is supplied by the late system instruction. Keeping
+        # it on the verified endpoint avoids the retired code workers.
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Vidhyora Code',
         'description': 'Tuned for coding, debugging, and technical questions.',
         'reasoning': True,
         'vision': False,
     },
     'reasoning': {
-        # nvidia/nemotron-3-super-120b-a12b — NVIDIA's own recommended model
-        # for complex reasoning/agents. Needs 'reasoning': True same as
-        # Ultra/Quick/Light/Code — without it, it dumps a hidden "Let me
-        # think..." trace straight into the reply.
-        'id': 'nvidia/nemotron-3-super-120b-a12b',
+        # The verified endpoint supports the no-thinking template parameters
+        # used below, preventing hidden reasoning from leaking into replies.
+        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
         'label': 'Nemotron Super',
         'description': 'Excellent at complex, multi-step reasoning and planning — faster than Ultra, still very capable.',
         'reasoning': True,
         'vision': False,
     },
     'vision': {
-        # nemotron-3-nano-omni is NVIDIA's recommended model for general
-        # image+text understanding (photos, product shots, etc) — swapped
-        # in after nemotron-nano-12b-v2-vl (meant for document/OCR Q&A, not
-        # general photos) was measured denying it had been given an image
-        # on ~30-50% of identical real requests. Omni measured 0/10 denials
-        # on the same test. See VISION_CHECK_BUFFER_CHARS retry below for
-        # the safety net that remains regardless of which model is used.
-        'id': 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+        # Verified against this account after the previous vision worker
+        # became unavailable. VISION_CHECK_BUFFER_CHARS remains a safety net.
+        'id': 'meta/llama-3.2-11b-vision-instruct',
         'label': 'Vidhyora Vision',
         'description': 'Understands images — used automatically when you attach a photo.',
         'reasoning': False,

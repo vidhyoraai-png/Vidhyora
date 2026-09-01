@@ -377,6 +377,10 @@ class NVIDIAImageGenerationTests(TestCase):
 
 
 class AIResponseReliabilityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
     def test_request_routing_does_not_need_a_runtime_ml_model(self):
         self.assertEqual(request_router.classify('Debug this Python traceback'), 'code')
         self.assertEqual(request_router.classify('Research the latest facts and sources'), 'research')
@@ -565,6 +569,35 @@ class AIResponseReliabilityTests(TestCase):
         assistant = AIMessage.objects.get(role=AIMessage.ROLE_ASSISTANT)
         self.assertEqual(assistant.content, body)
         self.assertEqual(assistant.model_key, ai_chat.CHATGPT_56_MODEL_KEY)
+
+    def test_chatgpt_reports_disconnected_text_access_without_worker_names(self):
+        class RemovedWorkerError(Exception):
+            status_code = 404
+
+        user = User.objects.create_user(
+            username='chatgpt-disconnected@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        upstream = RemovedWorkerError(
+            "NVIDIA Function FLUX/Nemotron worker not found for account",
+        )
+        with patch('myapp.views.ai_chat.stream_chat', side_effect=upstream):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': 'hi', 'model': ai_chat.CHATGPT_56_MODEL_KEY}),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            body,
+            'ChatGPT 5.6 text access is currently disconnected. '
+            'Update the configured text-model API key, then restart the application.',
+        )
+        for hidden_name in ('NVIDIA', 'FLUX', 'Nemotron'):
+            self.assertNotIn(hidden_name.lower(), body.lower())
+        self.assertFalse(AIMessage.objects.filter(role=AIMessage.ROLE_ASSISTANT).exists())
 
     def test_explicit_file_request_is_routed_and_downloadable_from_every_model(self):
         cache.clear()

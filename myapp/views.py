@@ -2320,6 +2320,31 @@ def _ai_public_routed_model_key(response_model_key, routed_model_key):
     return routed_model_key
 
 
+def _ai_chat_failure_reply(error, response_model_key, is_staff=False):
+    """Turn upstream failures into safe, accurate, public-facing guidance."""
+    label = ai_chat.MODELS.get(response_model_key, {}).get('label', 'The selected AI model')
+    status_code = getattr(error, 'status_code', None)
+    if ai_chat._is_model_unavailable_error(error):
+        suffix = (
+            ' Update the configured text-model API key, then restart the application.'
+            if is_staff else
+            ' Please try again after the administrator reconnects it.'
+        )
+        return f'{label} text access is currently disconnected.{suffix}'
+    if status_code in (401, 403):
+        suffix = (
+            ' Update the configured API key, then restart the application.'
+            if is_staff else
+            ' Please try again after the administrator reconnects it.'
+        )
+        return f'{label} authentication is currently unavailable.{suffix}'
+    if status_code == 429:
+        return f'{label} is currently at its request limit. Please wait a moment and try again.'
+    if ai_chat._is_transient_error(error):
+        return f'{label} is temporarily unavailable. Please wait a moment and try again.'
+    return f'{label} did not respond. Please try again.'
+
+
 def _ai_flux_response(conversation, prompt, source_image, response_model_key=None):
     """Run a FLUX generation/editing turn and persist the real image URL."""
     display_model_key = response_model_key or ai_chat.FLUX_KLEIN_4B_MODEL_KEY
@@ -2937,7 +2962,10 @@ def ai_chat_send(request):
                     "a new chat, or ask about a shorter excerpt."
                 )
             else:
-                yield "The AI service did not respond. Please try again."
+                yield _ai_chat_failure_reply(
+                    e, response_model_key,
+                    is_staff=bool(request.user.is_authenticated and request.user.is_staff),
+                )
         finally:
             # The conversation can have been deleted (by this same user, in
             # another tab, or via the sidebar delete button) while this reply

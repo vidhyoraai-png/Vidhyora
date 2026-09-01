@@ -166,7 +166,7 @@ TWO_FACTOR_API_KEY = '12feb4c9-9636-11f1-9cb1-0200cd936042'
 # the credentials above, which means it's visible in this repo's git
 # history to anyone with access. Rotate it in the NVIDIA console if it ever
 # needs to change.
-NVIDIA_API_KEY = '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'
+NVIDIA_API_KEY = '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'
 # Intentionally hardcoded at the project owner's request.
 NVIDIA_FLUX_API_KEY = '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'
 NVIDIA_FLUX_EDIT_API_KEY = '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'
