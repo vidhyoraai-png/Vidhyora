@@ -12,6 +12,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import OperationalError
 from django.http import HttpResponse
+from django.contrib.sessions.models import Session
 from django.test import RequestFactory
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -19,7 +20,7 @@ from PIL import Image
 
 from . import ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup, image_generation, privacy, request_router
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_generated_file_spec, _extract_ai_generated_file_content,
@@ -106,6 +107,80 @@ class AIConversationPersistenceTests(TestCase):
         self.assertEqual(response.context['ai_resume_conversation_id'], conversation.id)
         response = self.client.get(f'/AI/api/conversations/{conversation.id}/')
         self.assertEqual(response.json()['messages'][0]['content'], 'Before login')
+
+
+class SingleDeviceLoginTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='one-device@example.com', email='one-device@example.com',
+            password='test-password-123',
+        )
+        StoreProfile.objects.create(user=self.user, phone='9777777777')
+
+    def _login(self, client):
+        return client.post(
+            '/AI/api/login/',
+            data=json.dumps({
+                'identifier': self.user.email,
+                'password': 'test-password-123',
+            }),
+            content_type='application/json',
+        )
+
+    def test_new_login_immediately_invalidates_the_previous_device(self):
+        first_device = self.client_class()
+        second_device = self.client_class()
+
+        self.assertEqual(self._login(first_device).status_code, 200)
+        first_key = first_device.session.session_key
+        self.assertEqual(
+            ActiveUserSession.objects.get(user=self.user).session_key,
+            first_key,
+        )
+
+        self.assertEqual(self._login(second_device).status_code, 200)
+        second_key = second_device.session.session_key
+
+        self.assertNotEqual(first_key, second_key)
+        self.assertFalse(Session.objects.filter(session_key=first_key).exists())
+        self.assertEqual(
+            ActiveUserSession.objects.get(user=self.user).session_key,
+            second_key,
+        )
+        self.assertEqual(first_device.get('/AI/api/account/').status_code, 401)
+        self.assertEqual(second_device.get('/AI/api/account/').status_code, 200)
+
+    def test_logging_out_releases_the_device_slot(self):
+        self.assertEqual(self._login(self.client).status_code, 200)
+        self.assertTrue(ActiveUserSession.objects.filter(user=self.user).exists())
+
+        response = self.client.post('/AI/api/logout/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(ActiveUserSession.objects.filter(user=self.user).exists())
+
+    def test_django_admin_login_uses_the_same_single_device_slot(self):
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save(update_fields=['is_staff', 'is_superuser'])
+        ai_device = self.client_class()
+        admin_device = self.client_class()
+        self.assertEqual(self._login(ai_device).status_code, 200)
+        old_key = ai_device.session.session_key
+
+        response = admin_device.post('/admin/login/?next=/admin/', {
+            'username': self.user.username,
+            'password': 'test-password-123',
+            'next': '/admin/',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Session.objects.filter(session_key=old_key).exists())
+        self.assertEqual(
+            ActiveUserSession.objects.get(user=self.user).session_key,
+            admin_device.session.session_key,
+        )
+        self.assertEqual(ai_device.get('/AI/api/account/').status_code, 401)
 
 
 class NVIDIAImageGenerationTests(TestCase):

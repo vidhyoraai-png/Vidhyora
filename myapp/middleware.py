@@ -1,5 +1,12 @@
 from django.http import HttpResponsePermanentRedirect
 
+from django.contrib.auth import logout
+from django.contrib.sessions.models import Session
+from django.utils import timezone
+
+from .models import ActiveUserSession
+from .single_device import register_active_session
+
 
 class CanonicalHostMiddleware:
     """Consolidate the bare domain onto the canonical www hostname."""
@@ -30,6 +37,43 @@ class HideAdminFromNonStaffMiddleware:
         if request.path.startswith('/admin/') and request.user.is_authenticated and not (request.user.is_staff or request.user.is_superuser):
             from myapp.views import custom_404
             return custom_404(request)
+        return self.get_response(request)
+
+
+class SingleDeviceSessionMiddleware:
+    """Log out a browser when a newer login has claimed the same account."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.user.is_authenticated:
+            current_key = request.session.session_key
+            active = ActiveUserSession.objects.filter(user=request.user).first()
+
+            if not current_key:
+                request.session.save()
+                register_active_session(request.user, request.session.session_key)
+            elif active is None:
+                # Covers accounts that were already logged in when this
+                # feature was deployed: their current browser gets the slot.
+                register_active_session(request.user, current_key)
+            elif active.session_key != current_key:
+                active_session_still_valid = Session.objects.filter(
+                    session_key=active.session_key,
+                    expire_date__gt=timezone.now(),
+                ).exists()
+                if active_session_still_valid:
+                    # The active key belongs to the newer device. Django's
+                    # logout also clears this browser's stale auth cookie.
+                    logout(request)
+                else:
+                    # A normal session-key rotation (for example after a
+                    # password change) or an expired record may leave the
+                    # database pointer stale; safely let the only live
+                    # authenticated session reclaim it.
+                    register_active_session(request.user, current_key)
+
         return self.get_response(request)
 
 

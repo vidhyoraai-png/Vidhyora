@@ -59,6 +59,7 @@ from myapp import youtube_download
 from myapp.emailing import send_store_email, get_notify_email
 from myapp.sms import send_phone_otp, verify_phone_otp
 from myapp.seed_data import seed_demo_reviews
+from myapp.single_device import register_active_session
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +468,7 @@ def ai_password_change(request):
     request.user.set_password(form.cleaned_data['new_password'])
     request.user.save(update_fields=['password'])
     update_session_auth_hash(request, request.user)  # keep the session logged in
+    register_active_session(request.user, request.session.session_key)
     return JsonResponse({'status': 'ok'})
 
 

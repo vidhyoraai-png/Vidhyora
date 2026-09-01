@@ -99,6 +99,23 @@ class StoreProfile(models.Model):
         return bool(self.ai_subscription_until and self.ai_subscription_until > timezone.now())
 
 
+class ActiveUserSession(models.Model):
+    """The one browser session currently allowed to use a user account."""
+
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='active_login_session',
+    )
+    session_key = models.CharField(max_length=40, unique=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Active User Session'
+        verbose_name_plural = 'Active User Sessions'
+
+    def __str__(self):
+        return f'{self.user.username} — {self.session_key}'
+
+
 class Category(models.Model):
     """A storefront category shown on the homepage's 'Shop by Category' rail
     and used as a filter tab on the shop grid. Replaces the old hardcoded
