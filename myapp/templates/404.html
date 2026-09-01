@@ -13,6 +13,11 @@
   try {
     var saved = localStorage.getItem('ai_theme');
     if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+    var colorDefaultVersion = 'emerald-v1';
+    if (localStorage.getItem('ai_color_default_version') !== colorDefaultVersion) {
+      localStorage.setItem('ai_color_theme', 'emerald');
+      localStorage.setItem('ai_color_default_version', colorDefaultVersion);
+    }
     var accent = localStorage.getItem('ai_color_theme');
     if (['orange','blue','violet','emerald','crimson'].indexOf(accent) !== -1) {
       document.documentElement.setAttribute('data-accent', accent);
@@ -28,7 +33,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700;800&family=Poppins:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Sora:wght@400;500;600;700;800;900&family=Urbanist:wght@400;500;600;700;800;900&family=Lexend:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Nunito:wght@400;500;600;700;800;900&family=Work+Sans:wght@400;500;600;700;800&family=Figtree:wght@400;500;600;700;800;900&family=Libre+Franklin:wght@400;500;600;700;800;900&family=Epilogue:wght@400;500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
-:root{color-scheme:light;--red:#ff7a00;--red-dark:#d95f00;--accent-rgb:255,122,0;--dark:#101114;--text:#555f6d;--head:#111418;--line:#e7eaf0;--bg-alt:#f8f9fc;--bg:#fff;--surface:#fff;--tint:rgba(var(--accent-rgb),.09);--font-head:'Outfit',sans-serif;--font-body:'Inter',sans-serif}
+:root{color-scheme:light;--red:#059669;--red-dark:#047857;--accent-rgb:5,150,105;--dark:#071713;--text:#555f6d;--head:#111418;--line:#e7eaf0;--bg-alt:#f8f9fc;--bg:#fff;--surface:#fff;--tint:rgba(var(--accent-rgb),.09);--font-head:'Outfit',sans-serif;--font-body:'Inter',sans-serif}
+:root[data-accent="orange"]{--red:#ff7a00;--red-dark:#d95f00;--accent-rgb:255,122,0;--dark:#101114}
 :root[data-accent="blue"]{--red:#2563eb;--red-dark:#1747b8;--accent-rgb:37,99,235;--dark:#101827}
 :root[data-accent="violet"]{--red:#7c3aed;--red-dark:#5b21b6;--accent-rgb:124,58,237;--dark:#17131f}
 :root[data-accent="emerald"]{--red:#059669;--red-dark:#047857;--accent-rgb:5,150,105;--dark:#071713}

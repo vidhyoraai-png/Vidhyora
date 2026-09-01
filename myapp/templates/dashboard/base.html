@@ -9,9 +9,14 @@
 <script>
 // Mirrors the accent color chosen on /AI/ (account menu → Customize) onto
 // the dashboard, read before first paint so the sidebar/logo don't flash
-// the default red then jump to the saved accent.
+// the default emerald then jump to the saved accent.
 (function(){
   try {
+    var colorDefaultVersion = 'emerald-v1';
+    if (localStorage.getItem('ai_color_default_version') !== colorDefaultVersion) {
+      localStorage.setItem('ai_color_theme', 'emerald');
+      localStorage.setItem('ai_color_default_version', colorDefaultVersion);
+    }
     var accent = localStorage.getItem('ai_color_theme');
     if (['orange','blue','violet','emerald','crimson'].indexOf(accent) !== -1) {
       document.documentElement.setAttribute('data-accent', accent);
@@ -24,8 +29,8 @@
 {% if SITE_FAVICON_URL %}<link rel="icon" href="{{ SITE_FAVICON_URL }}">{% else %}<link rel="icon" href="{% static 'favicon.ico' %}" type="image/x-icon">{% endif %}
 <style>
 :root{
-  --red:#e8001e; --red-dark:#c0001a; --accent-rgb:232,0,30; --red-soft:rgba(var(--accent-rgb),.1);
-  --dark:#1c2333; --dark-2:#0f1623;
+  --red:#059669; --red-dark:#047857; --accent-rgb:5,150,105; --red-soft:rgba(var(--accent-rgb),.1);
+  --dark:#071713; --dark-2:#04100d;
   --text:#555f6d; --head:#111418; --line:#e7eaf0;
   --bg:#ffffff; --bg-alt:#f8f9fc;
   --radius:16px; --shadow-sm:0 4px 24px rgba(0,0,0,.07); --shadow-md:0 12px 40px rgba(0,0,0,.14);

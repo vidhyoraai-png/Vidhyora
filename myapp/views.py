@@ -1680,7 +1680,7 @@ def ai_manifest(request):
         'scope': '/AI/',
         'display': 'standalone',
         'background_color': '#ffffff',
-        'theme_color': '#ff7a00',
+        'theme_color': '#059669',
         'icons': [
             {'src': icon_192, 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any'},
             {'src': icon_512, 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any'},

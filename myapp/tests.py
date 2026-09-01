@@ -1344,7 +1344,20 @@ class RemovedPublicSurfaceTests(TestCase):
         self.assertContains(response, "localStorage.getItem('ai_theme')", status_code=404)
         self.assertContains(response, "localStorage.getItem('ai_color_theme')", status_code=404)
         self.assertContains(response, 'data-accent="blue"', status_code=404)
-        self.assertContains(response, '--red:#ff7a00', status_code=404)
+        self.assertContains(response, '--red:#059669', status_code=404)
+
+    def test_emerald_default_is_migrated_for_every_existing_device(self):
+        for path in ('/AI/', '/missing-page/'):
+            response = self.client.get(path)
+            self.assertContains(response, "var colorDefaultVersion = 'emerald-v1'", status_code=response.status_code)
+            self.assertContains(response, "localStorage.setItem('ai_color_theme', 'emerald')", status_code=response.status_code)
+
+        staff = User.objects.create_user('emerald-admin', password='password', is_staff=True)
+        StoreProfile.objects.create(user=staff)
+        self.client.force_login(staff)
+        response = self.client.get('/store/dashboard/')
+        self.assertContains(response, "var colorDefaultVersion = 'emerald-v1'")
+        self.assertContains(response, "localStorage.setItem('ai_color_theme', 'emerald')")
 
     def test_ai_and_dashboard_routes_remain(self):
         self.assertEqual(self.client.get('/').status_code, 200)
