@@ -1,0 +1,289 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Overview{% endblock %} | Vidhyora Dashboard</title>
+<meta name="robots" content="noindex, nofollow">
+<script>
+// Mirrors the accent color chosen on /AI/ (account menu → Customize) onto
+// the dashboard, read before first paint so the sidebar/logo don't flash
+// the default red then jump to the saved accent.
+(function(){
+  try {
+    var accent = localStorage.getItem('ai_color_theme');
+    if (['orange','blue','violet','emerald','crimson'].indexOf(accent) !== -1) {
+      document.documentElement.setAttribute('data-accent', accent);
+    }
+  } catch (e) {}
+})();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+{% if SITE_FAVICON_URL %}<link rel="icon" href="{{ SITE_FAVICON_URL }}">{% else %}<link rel="icon" href="{% static 'favicon.ico' %}" type="image/x-icon">{% endif %}
+<style>
+:root{
+  --red:#e8001e; --red-dark:#c0001a; --accent-rgb:232,0,30; --red-soft:rgba(var(--accent-rgb),.1);
+  --dark:#1c2333; --dark-2:#0f1623;
+  --text:#555f6d; --head:#111418; --line:#e7eaf0;
+  --bg:#ffffff; --bg-alt:#f8f9fc;
+  --radius:16px; --shadow-sm:0 4px 24px rgba(0,0,0,.07); --shadow-md:0 12px 40px rgba(0,0,0,.14);
+}
+/* accent picked on /AI/'s Customize panel (same "ai_color_theme" storage
+   key/values as ai.html's :root[data-accent] — see setupColorCombinations
+   there) — carried over here so the dashboard's logo/buttons/badges match. */
+:root[data-accent="orange"]{--red:#ff7a00;--red-dark:#d95f00;--accent-rgb:255,122,0}
+:root[data-accent="blue"]{--red:#2563eb;--red-dark:#1747b8;--accent-rgb:37,99,235}
+:root[data-accent="violet"]{--red:#7c3aed;--red-dark:#5b21b6;--accent-rgb:124,58,237}
+:root[data-accent="emerald"]{--red:#059669;--red-dark:#047857;--accent-rgb:5,150,105}
+:root[data-accent="crimson"]{--red:#e11d48;--red-dark:#be123c;--accent-rgb:225,29,72}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',system-ui,sans-serif;color:var(--text);background:var(--bg-alt)}
+h1,h2,h3,.dash-logo{font-family:'Sora',system-ui,sans-serif;color:var(--head)}
+a{color:inherit;text-decoration:none}
+
+.dash{display:flex;min-height:100vh}
+.dash-sidebar{width:250px;flex:none;background:var(--dark);color:rgba(255,255,255,.75);display:flex;flex-direction:column;padding:1.6rem 1.1rem;position:sticky;top:0;height:100vh;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+.dash-sidebar::-webkit-scrollbar{width:6px}
+.dash-sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:10px}
+.dash-logo{font-size:1.3rem;font-weight:900;color:#fff;letter-spacing:-.02em}
+.dash-logo span{color:var(--red)}
+.dash-logo-sub{font-size:.66rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:rgba(255,255,255,.4);margin-top:.15rem}
+.dash-nav{margin-top:2.2rem;display:flex;flex-direction:column;gap:.3rem;flex:1}
+.dash-nav a{display:flex;align-items:center;gap:.7rem;padding:.75rem .9rem;border-radius:12px;font-size:.87rem;font-weight:600;color:rgba(255,255,255,.7);transition:all .2s}
+.dash-nav a i{width:18px;text-align:center}
+.dash-nav a:hover{background:rgba(255,255,255,.06);color:#fff}
+.dash-nav a.active{background:var(--red);color:#fff;box-shadow:0 8px 22px rgba(232,0,30,.35)}
+.dash-sidebar-foot{display:flex;flex-direction:column;gap:.3rem;border-top:1px solid rgba(255,255,255,.1);padding-top:1rem}
+.dash-sidebar-foot a{display:flex;align-items:center;gap:.7rem;padding:.7rem .9rem;border-radius:12px;font-size:.85rem;font-weight:600;color:rgba(255,255,255,.65);transition:background .2s}
+.dash-sidebar-foot a:hover{background:rgba(255,255,255,.06);color:#fff}
+.dash-sidebar-foot a.danger{color:#ff8a99}
+
+.dash-main{flex:1;min-width:0}
+.dash-topbar{background:#fff;border-bottom:1px solid var(--line);padding:1.1rem 2rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;position:sticky;top:0;z-index:20}
+.dash-title{font-size:1.25rem;font-weight:800;color:var(--head);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash-topbar-left{display:flex;align-items:center;gap:.8rem;min-width:0;flex:1}
+.dash-menu-btn{display:none;width:40px;height:40px;flex:none;border-radius:10px;border:1.5px solid var(--line);background:#fff;align-items:center;justify-content:center;color:var(--head);cursor:pointer;font-size:1rem}
+.dash-admin{display:flex;align-items:center;gap:.65rem;font-size:.85rem;font-weight:600;color:var(--head);flex:none}
+.dash-admin .dav{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;overflow:hidden;flex-shrink:0}
+.dash-admin .dav img{width:100%;height:100%;object-fit:cover}
+.dash-scrim{display:none;position:fixed;inset:0;background:rgba(10,14,22,.5);z-index:99}
+.dash-scrim.on{display:block}
+
+.dash-body{padding:2rem}
+
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1.2rem;margin-bottom:2rem}
+.stat-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:1.4rem 1.5rem;display:flex;align-items:center;gap:1rem;box-shadow:var(--shadow-sm)}
+.stat-ico{width:48px;height:48px;border-radius:14px;background:var(--red-soft);color:var(--red);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
+.stat-num{font-family:'Sora',sans-serif;font-size:1.6rem;font-weight:800;color:var(--head);line-height:1}
+.stat-lbl{font-size:.8rem;color:var(--text);margin-top:.2rem}
+
+.panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden;margin-bottom:1.6rem}
+.panel-head{padding:1.1rem 1.4rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.panel-head h3{font-size:1rem;font-weight:800;color:var(--head)}
+.panel-link{font-size:.82rem;font-weight:700;color:var(--red)}
+.panel-search{position:relative}
+.panel-search input{height:38px;border:1.5px solid var(--line);border-radius:50px;padding:0 1rem 0 2.4rem;font-family:inherit;font-size:.85rem;background:var(--bg-alt);width:220px}
+.panel-search input:focus{outline:none;border-color:var(--red)}
+.panel-search i{position:absolute;left:.9rem;top:50%;transform:translateY(-50%);color:#9aa3b0;font-size:.85rem}
+.add-user-panel>summary{padding:1.1rem 1.4rem;cursor:pointer;list-style:none;font-weight:800;font-size:1rem;color:var(--head);display:flex;align-items:center;gap:.6rem}
+.add-user-panel>summary::-webkit-details-marker{display:none}
+.add-user-panel>summary .chevron{margin-left:auto;color:#9aa3b0;font-size:.8rem;transition:transform .2s}
+.add-user-panel[open]>summary .chevron{transform:rotate(180deg)}
+.add-user-panel>form{padding:0 1.4rem 1.4rem}
+
+.table-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:.72rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--text);padding:.85rem 1.4rem;background:var(--bg-alt);border-bottom:1px solid var(--line);white-space:nowrap}
+tbody td{padding:.95rem 1.4rem;font-size:.86rem;color:var(--head);border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg-alt)}
+.badge{display:inline-flex;align-items:center;gap:.3rem;font-size:.7rem;font-weight:700;padding:.22rem .6rem;border-radius:50px;white-space:nowrap}
+.badge.staff{background:var(--red-soft);color:var(--red)}
+.badge.user{background:#eef2ff;color:#3b5bdb}
+.badge.st-placed{background:#eef2ff;color:#3b5bdb}
+.badge.st-processing{background:#fff7e6;color:#b45309}
+.badge.st-shipped{background:#e6f4ff;color:#0369a1}
+.badge.st-delivered{background:#e8fbf0;color:#1da851}
+.badge.st-cancelled{background:var(--red-soft);color:var(--red)}
+.badge.pay-pending{background:#fff7e6;color:#b45309}
+.badge.pay-paid{background:#e8fbf0;color:#1da851}
+.badge.pay-failed{background:var(--red-soft);color:var(--red)}
+.badge.pay-refunded{background:#eef2ff;color:#3b5bdb}
+.badge.pay-cod_pending{background:#e6f4ff;color:#0369a1}
+.status-form{display:flex;align-items:center;gap:.5rem}
+.status-form select{border:1.5px solid var(--line);border-radius:8px;padding:.4rem .6rem;font-family:inherit;font-size:.8rem;background:var(--bg-alt);color:var(--head)}
+.status-form select:focus{outline:none;border-color:var(--red)}
+.status-form button{border:none;background:var(--red-soft);color:var(--red);border-radius:8px;padding:.4rem .65rem;font-size:.78rem;font-weight:700;cursor:pointer}
+.status-form button:hover{background:var(--red);color:#fff}
+.wallet-tag{font-size:.7rem;font-weight:700;color:#1da851}
+.filter-tabs{display:flex;gap:.4rem;flex-wrap:wrap}
+.filter-tabs a{padding:.4rem 1rem;border-radius:50px;font-size:.78rem;font-weight:700;color:var(--text);border:1.5px solid var(--line)}
+.filter-tabs a.on{background:var(--red);color:#fff;border-color:var(--red)}
+.msg-cell{max-width:320px;white-space:normal;line-height:1.5}
+.sub-line{color:var(--text);display:block;font-size:.8rem}
+.empty-row{text-align:center;padding:3rem 1rem;color:#9aa3b0}
+.del-btn{border:none;background:none;color:#b6bcc6;cursor:pointer;font-size:.85rem;transition:color .2s}
+.del-btn:hover{color:var(--red)}
+.edit-btn{color:#9aa3b0;transition:color .2s}
+.edit-btn:hover{color:var(--red)}
+.row-actions{display:flex;align-items:center;gap:.9rem}
+
+.thumb{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--bg-alt);border:1px solid var(--line)}
+.thumb-empty{width:44px;height:44px;border-radius:10px;background:var(--red-soft);color:var(--red);display:grid;place-items:center;font-size:1rem}
+
+.btn{display:inline-flex;align-items:center;gap:.5rem;border:none;border-radius:50px;padding:.7rem 1.4rem;font-family:'DM Sans',sans-serif;font-size:.85rem;font-weight:700;cursor:pointer;text-decoration:none}
+.btn-primary{background:var(--red);color:#fff}
+.btn-primary:hover{background:var(--red-dark)}
+.btn-ghost{background:#fff;border:1.5px solid var(--line);color:var(--head)}
+.btn-ghost:hover{border-color:var(--red);color:var(--red)}
+
+.form-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:1.6rem;max-width:560px}
+.form-group{margin-bottom:1.2rem}
+.form-group label{display:block;font-size:.8rem;font-weight:700;color:var(--head);margin-bottom:.4rem}
+.form-group input[type=text],.form-group input[type=number],.form-group input[type=email],.form-group input[type=url],.form-group input[type=password],.form-group textarea,.form-group select{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:.65rem .9rem;font-family:inherit;font-size:.88rem;background:var(--bg-alt)}
+.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--red)}
+.form-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media (max-width:620px){.form-grid-2{grid-template-columns:1fr}}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 0;border-bottom:1px solid var(--line)}
+.toggle-row:last-child{border-bottom:none}
+.toggle-row b{display:block;font-size:.88rem;color:var(--head)}
+.toggle-row span{font-size:.78rem;color:var(--text)}
+.save-msg{background:#e8f8ee;color:#177245;border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem}
+.form-group .help{font-size:.74rem;color:#9aa3b0;margin-top:.3rem}
+.form-group .errorlist{list-style:none;color:var(--red);font-size:.78rem;margin-top:.35rem;padding:0}
+.form-check{display:flex;align-items:center;gap:.55rem}
+.form-check label{margin:0}
+.form-actions{display:flex;gap:.8rem;margin-top:1.6rem}
+.current-thumb{display:flex;align-items:center;gap:.8rem;margin-bottom:.8rem}
+.current-thumb img{width:64px;height:64px;border-radius:12px;object-fit:cover;border:1px solid var(--line)}
+
+.gallery-rows{display:flex;flex-direction:column;gap:.6rem;margin-top:.4rem}
+.gallery-row{display:flex;align-items:center;gap:.7rem;background:var(--bg-alt);border:1px solid var(--line);border-radius:12px;padding:.6rem .8rem;flex-wrap:wrap}
+.gallery-row-fields{flex:1;min-width:180px;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.gallery-row-fields input[type=file]{flex:1;min-width:150px;font-size:.8rem}
+.gallery-row-fields input[type=text],.gallery-row-fields input[type=number]{width:140px;padding:.5rem .7rem;border:1.5px solid var(--line);border-radius:8px;background:#fff;font-family:inherit;font-size:.85rem}
+.gallery-row-order{width:60px;flex:none}
+.gallery-row-order input{width:100%;padding:.5rem .5rem;border:1.5px solid var(--line);border-radius:8px;background:#fff;font-family:inherit;font-size:.85rem}
+.gallery-row-del{display:flex;align-items:center;gap:.35rem;font-size:.78rem;color:var(--red);white-space:nowrap;flex:none}
+.current-thumb-sm{width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--line);flex:none}
+.color-row input[type=color]{width:44px;height:38px;padding:.2rem;border:1.5px solid var(--line);border-radius:8px;background:var(--bg-alt)}
+
+.spec-table{width:100%;border-collapse:collapse;margin-top:.5rem}
+.spec-table th{text-align:left;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:#9aa3b0;padding:0 .5rem .4rem}
+.spec-table td{padding:.3rem .5rem .3rem 0;vertical-align:middle}
+.spec-table td:first-child{width:42%}
+.spec-table input[type=text]{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:.55rem .7rem;font-family:inherit;font-size:.85rem;background:#fff}
+.spec-table input[type=text]:focus{outline:none;border-color:var(--red)}
+.spec-row-del{width:34px;height:34px;flex:none;border:1.5px solid var(--line);border-radius:8px;background:#fff;color:var(--red);cursor:pointer}
+.spec-row-del:hover{background:var(--red-soft)}
+.spec-add-row{margin-top:.6rem}
+
+.pw-toggle-wrap{position:relative}
+.pw-toggle-wrap input{width:100%;padding-right:2.6rem}
+.pw-toggle-btn{position:absolute;top:50%;right:.7rem;transform:translateY(-50%);border:none;background:none;color:#9aa3b0;cursor:pointer;font-size:.9rem;padding:.25rem;display:flex;align-items:center;transition:color .2s}
+.pw-toggle-btn:hover{color:var(--head)}
+
+@media (max-width:900px){
+  .dash-sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%);transition:.3s;z-index:100}
+  .dash-sidebar.open{transform:translateX(0)}
+  .dash-menu-btn{display:flex}
+  .dash-body{padding:1.2rem}
+  .dash-topbar{padding:.85rem 1rem;gap:.6rem}
+  .dash-title{font-size:1.05rem}
+  .dash-admin span{display:none}
+  .panel-search input{width:150px}
+}
+@media (max-width:420px){
+  .dash-topbar{padding:.75rem .85rem}
+  .dash-admin .dav{width:32px;height:32px}
+}
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<div class="dash">
+  <div class="dash-scrim" id="dashScrim"></div>
+  <aside class="dash-sidebar" id="dashSidebar">
+    <div>
+      <a href="{% url 'home' %}" class="dash-logo" style="display:inline-block" aria-label="Go to homepage">Vidhyora <span>AI</span></a>
+      <div class="dash-logo-sub">A Fun, Powerful AI</div>
+    </div>
+    <nav class="dash-nav">
+      <a href="{% url 'dashboard_home' %}" class="{% if active == 'home' %}active{% endif %}"><i class="fas fa-gauge"></i> Overview</a>
+      <a href="{% url 'dashboard_signups' %}" class="{% if active == 'signups' %}active{% endif %}"><i class="fas fa-users"></i> Signups</a>
+      <a href="{% url 'dashboard_ai_management' %}" class="{% if active == 'ai_management' %}active{% endif %}"><i class="fas fa-robot"></i> AI Management</a>
+      <a href="{% url 'dashboard_ai_activity' %}" class="{% if active == 'ai_activity' %}active{% endif %}"><i class="fas fa-shield-halved"></i> AI Activity</a>
+      <a href="{% url 'dashboard_ai_reports' %}" class="{% if active == 'ai_reports' %}active{% endif %}"><i class="fas fa-flag"></i> AI Reports</a>
+      <a href="{% url 'dashboard_pwa_settings' %}" class="{% if active == 'pwa_settings' %}active{% endif %}"><i class="fas fa-mobile-screen-button"></i> PWA / Install App</a>
+      <a href="{% url 'dashboard_customize' %}" class="{% if active == 'customize' %}active{% endif %}"><i class="fas fa-palette"></i> Customize</a>
+      <a href="{% url 'dashboard_backup' %}" class="{% if active == 'backup' %}active{% endif %}"><i class="fas fa-database"></i> Backup &amp; Restore</a>
+    </nav>
+    <div class="dash-sidebar-foot">
+      <a href="{% url 'dashboard_logout' %}" class="danger"><i class="fas fa-right-from-bracket"></i> Logout</a>
+    </div>
+  </aside>
+
+  <div class="dash-main">
+    <div class="dash-topbar">
+      <div class="dash-topbar-left">
+        <button type="button" class="dash-menu-btn" id="dashMenuBtn" aria-label="Toggle menu"><i class="fas fa-bars"></i></button>
+        <div class="dash-title">{% block page_title %}Overview{% endblock %}</div>
+      </div>
+      <div class="dash-admin">
+        <div class="dav">
+          {% if request.user.store_profile.avatar %}<img src="{{ request.user.store_profile.avatar.url }}" alt="">
+          {% else %}{{ request.user.first_name|default:request.user.username|first|upper }}{% endif %}
+        </div>
+        <span>{{ request.user.first_name|default:request.user.username }}</span>
+      </div>
+    </div>
+    <div class="dash-body">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var btn = document.getElementById('dashMenuBtn');
+  var sidebar = document.getElementById('dashSidebar');
+  var scrim = document.getElementById('dashScrim');
+  function toggle(open){
+    sidebar.classList.toggle('open', open);
+    scrim.classList.toggle('on', open);
+  }
+  if (btn) btn.addEventListener('click', function(){ toggle(!sidebar.classList.contains('open')); });
+  if (scrim) scrim.addEventListener('click', function(){ toggle(false); });
+  sidebar.querySelectorAll('a').forEach(function(a){ a.addEventListener('click', function(){ toggle(false); }); });
+})();
+
+/* Adds a show/hide eye button to every password field on any dashboard
+   page (SMTP password, Razorpay secret, Dropbox tokens, etc.) without
+   needing to touch each form individually. */
+(function(){
+  document.querySelectorAll('input[type="password"]').forEach(function(input){
+    var wrap = document.createElement('div');
+    wrap.className = 'pw-toggle-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pw-toggle-btn';
+    btn.setAttribute('aria-label', 'Show password');
+    btn.innerHTML = '<i class="fas fa-eye"></i>';
+    btn.addEventListener('click', function(){
+      var showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.innerHTML = showing ? '<i class="fas fa-eye"></i>' : '<i class="fas fa-eye-slash"></i>';
+      btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+    });
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+</body>
+</html>

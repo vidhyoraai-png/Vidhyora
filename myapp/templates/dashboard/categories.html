@@ -1,0 +1,51 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Categories{% endblock %}
+{% block page_title %}Categories{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ categories|length }} categor{{ categories|length|pluralize:"y,ies" }}</h3>
+    <div class="row-actions">
+      <form class="panel-search" method="get">
+        <i class="fas fa-magnifying-glass"></i>
+        <input type="search" name="q" value="{{ q }}" placeholder="Search name or slug…">
+      </form>
+      <a href="{% url 'dashboard_category_add' %}" class="btn btn-primary"><i class="fas fa-plus"></i> Add category</a>
+    </div>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Image</th><th>Name</th><th>Slug</th><th>Description</th><th>Order</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for cat in categories %}
+      <tr>
+        <td>
+          {% if cat.image %}<img class="thumb" src="{{ cat.image.url }}" alt="{{ cat.name }}">
+          {% else %}<div class="thumb-empty"><i class="fas fa-image"></i></div>{% endif %}
+        </td>
+        <td>{{ cat.name }}</td>
+        <td><span class="sub-line">{{ cat.slug }}</span></td>
+        <td>{{ cat.description|default:"—" }}</td>
+        <td>{{ cat.order }}</td>
+        <td>
+          {% if cat.is_active %}<span class="badge staff">Active</span>{% else %}<span class="badge user">Hidden</span>{% endif %}
+        </td>
+        <td>
+          <div class="row-actions">
+            <a class="edit-btn" href="{% url 'dashboard_category_edit' cat.pk %}" title="Edit"><i class="fas fa-pen"></i></a>
+            <form method="post" action="{% url 'dashboard_category_delete' cat.pk %}" onsubmit="return confirm('Delete this category?')">
+              {% csrf_token %}
+              <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="empty-row">No categories match your search</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

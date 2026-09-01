@@ -1,0 +1,27 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Edit {{ policy.title }}{% endblock %}
+{% block page_title %}Edit {{ policy.title }}{% endblock %}
+
+{% block content %}
+<form class="form-card" style="max-width:760px" method="post">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.title.id_for_label }}">Page title</label>
+    {{ form.title }}
+    {{ form.title.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.content.id_for_label }}">Content</label>
+    {{ form.content }}
+    <div class="help">Plain text — leave a blank line between paragraphs.</div>
+    {{ form.content.errors }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save changes</button>
+    <a href="{% url 'dashboard_policies' %}" class="btn btn-ghost">Cancel</a>
+  </div>
+</form>
+{% endblock %}

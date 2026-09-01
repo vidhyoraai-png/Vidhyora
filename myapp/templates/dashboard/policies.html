@@ -1,0 +1,31 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Policies{% endblock %}
+{% block page_title %}Policies{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>Legal &amp; policy pages</h3>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Page</th><th>Last updated</th><th></th></tr></thead>
+    <tbody>
+      {% for policy in policies %}
+      <tr>
+        <td>{{ policy.title }}</td>
+        <td>{{ policy.updated_at|date:"d M Y, h:i A" }}</td>
+        <td>
+          <div class="row-actions">
+            <a class="edit-btn" href="{% url 'dashboard_policy_edit' policy.pk %}" title="Edit"><i class="fas fa-pen"></i> Edit</a>
+          </div>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="3" class="empty-row">No policy pages yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

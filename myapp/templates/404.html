@@ -1,0 +1,64 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Page Not Found — Vidhyora AI</title>
+<meta name="robots" content="noindex, follow">
+{% if SITE_FAVICON_URL %}<link rel="icon" href="{{ SITE_FAVICON_URL }}">{% else %}<link rel="icon" href="{% static 'favicon.ico' %}" type="image/x-icon">{% endif %}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+:root{--red:#e8001e;--red-dark:#c0001a;--dark:#1c2333;--text:#555f6d;--head:#111418;--line:#e7eaf0;--bg-alt:#f8f9fc}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:var(--bg-alt);line-height:1.75;min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--red);text-decoration:none}
+a:hover{text-decoration:underline}
+header{background:#fff;border-bottom:1px solid var(--line);padding:1.1rem 1.25rem}
+.hd-wrap{max-width:760px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.logo-txt{font-family:'Outfit',sans-serif;font-size:1.15rem;font-weight:900;letter-spacing:-.03em;color:var(--head)}
+.logo-txt span{color:var(--red)}
+main{flex:1;max-width:760px;margin:0 auto;padding:4rem 1.25rem;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.code{font-family:'Outfit',sans-serif;font-size:clamp(4rem,12vw,7rem);font-weight:900;color:var(--red);letter-spacing:-.03em;line-height:1}
+h1{font-family:'Outfit',sans-serif;font-size:clamp(1.3rem,3.5vw,1.7rem);font-weight:800;color:var(--head);letter-spacing:-.02em;margin:.5rem 0 .75rem}
+p{font-size:.96rem;color:var(--text);max-width:32rem;margin-bottom:2rem}
+.btn-row{display:flex;gap:.9rem;flex-wrap:wrap;justify-content:center}
+.btn-home{display:inline-flex;align-items:center;gap:.5rem;background:var(--red);color:#fff;font-weight:700;font-size:.9rem;padding:.75rem 1.5rem;border-radius:.5rem;transition:background .15s}
+.btn-home:hover{background:var(--red-dark);text-decoration:none}
+.btn-ghost{display:inline-flex;align-items:center;gap:.5rem;background:#fff;color:var(--head);font-weight:700;font-size:.9rem;padding:.75rem 1.5rem;border-radius:.5rem;border:1.5px solid var(--line);transition:border-color .15s,color .15s}
+.btn-ghost:hover{border-color:var(--red);color:var(--red);text-decoration:none}
+footer{text-align:center;padding:2rem 1.25rem;font-size:.8rem;color:#9aa3b0}
+</style>
+</head>
+<body>
+<header>
+  <div class="hd-wrap">
+    <a href="/" class="logo-txt">Vidhyora <span>AI</span></a>
+  </div>
+</header>
+<main>
+  <div class="code">404</div>
+  <h1>Page Not Found</h1>
+  <p>The page you're looking for doesn't exist or may have been moved. Let's get you back on track.</p>
+  <div class="btn-row">
+    <a href="/" class="btn-home"><i class="fas fa-robot"></i>Vidhyora AI</a>
+  </div>
+</main>
+<footer>&copy; 2026 Vidhyora AI. All rights reserved.</footer>
+<script>
+// Casual deterrent only, not real protection — anyone determined can still
+// reach DevTools (browser menu, other shortcuts, an extension), so nothing
+// sensitive should ever depend on this. Right-click and the common
+// inspect/view-source shortcuts are blocked to raise the bar for casual
+// copying; F12/Ctrl+Shift+I/J/C/Ctrl+U are the ones actually worth catching.
+document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+document.addEventListener('keydown', function(e){
+  var k = e.key;
+  if (k === 'F12') { e.preventDefault(); return; }
+  if (e.ctrlKey && e.shiftKey && (k === 'I' || k === 'i' || k === 'J' || k === 'j' || k === 'C' || k === 'c')) { e.preventDefault(); return; }
+  if (e.ctrlKey && (k === 'U' || k === 'u')) { e.preventDefault(); }
+});
+</script>
+</body>
+</html>

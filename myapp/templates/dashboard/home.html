@@ -1,0 +1,204 @@
+{% extends "dashboard/base.html" %}
+{% block title %}AI Overview{% endblock %}
+{% block page_title %}AI Overview{% endblock %}
+
+{% block extra_head %}
+<style>
+.badge.ai-guest{background:#eef2ff;color:#3b5bdb}
+.badge.report-open{background:#fff7e6;color:#b45309}
+.badge.report-resolved{background:#e8fbf0;color:#177245}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem}
+.chart-grid{display:grid;grid-template-columns:2fr 1fr;gap:1.2rem;margin-bottom:1.6rem}
+.chart-panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden}
+.chart-panel.wide{grid-row:span 2}
+.chart-head{padding:1rem 1.2rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:.8rem}
+.chart-head h3{font-size:.92rem;font-weight:800;color:var(--head)}
+.chart-legend{display:flex;gap:.8rem;flex-wrap:wrap;font-size:.68rem;color:var(--text)}
+.chart-legend span{display:flex;align-items:center;gap:.3rem}
+.chart-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.chart-dot.red{background:var(--red)}
+.chart-dot.blue{background:#3b5bdb}
+.activity-chart{height:255px;padding:1rem 1.1rem .8rem;display:flex;align-items:flex-end;gap:.7rem}
+.activity-day{flex:1;height:100%;min-width:42px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:.4rem}
+.activity-values{font-size:.63rem;color:var(--text);white-space:nowrap;min-height:.9rem}
+.activity-bars{height:180px;width:100%;display:flex;align-items:flex-end;justify-content:center;gap:5px;border-bottom:1px solid var(--line);background:repeating-linear-gradient(to top,transparent 0,transparent 44px,var(--line) 45px)}
+.activity-bar{width:min(20px,35%);border-radius:6px 6px 1px 1px;min-height:0}
+.activity-bar.conversations{background:linear-gradient(180deg,#ff4b61,var(--red))}
+.activity-bar.messages{background:linear-gradient(180deg,#6f86e8,#3b5bdb)}
+.activity-label{font-size:.66rem;color:var(--text);white-space:nowrap}
+.mini-chart-body{padding:1.2rem}
+.audience-total{font-family:'Sora',sans-serif;font-size:1.45rem;font-weight:800;color:var(--head)}
+.audience-caption{font-size:.72rem;color:var(--text);margin-top:.1rem}
+.audience-bar{height:16px;display:flex;border-radius:50px;overflow:hidden;background:var(--bg-alt);margin:1rem 0}
+.audience-registered{background:var(--red)}
+.audience-guest{background:#3b5bdb}
+.audience-rows{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.audience-item{padding:.65rem;background:var(--bg-alt);border-radius:10px}
+.audience-item span{display:block;font-size:.67rem;color:var(--text)}
+.audience-item strong{font-size:.9rem;color:var(--head)}
+.secondary-chart-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1.2rem;margin-bottom:1.6rem}
+.report-chart-body{padding:1.1rem;display:flex;align-items:center;justify-content:center;gap:1.3rem;min-height:190px}
+.report-donut{width:130px;height:130px;border-radius:50%;display:grid;place-items:center;position:relative;flex:none}
+.report-donut:after{content:"";position:absolute;width:82px;height:82px;border-radius:50%;background:#fff}
+.report-donut-value{position:relative;z-index:1;text-align:center;color:var(--head);font-family:'Sora',sans-serif;font-size:1.2rem;font-weight:800}
+.report-donut-value small{display:block;font-family:'DM Sans',sans-serif;font-size:.6rem;color:var(--text);font-weight:600}
+.report-breakdown{display:flex;flex-direction:column;gap:.65rem;min-width:110px}
+.report-breakdown-row{font-size:.72rem;color:var(--text)}
+.report-breakdown-row strong{display:block;font-size:1rem;color:var(--head)}
+.model-chart-body{padding:1rem 1.2rem;display:flex;flex-direction:column;gap:.8rem;min-height:190px}
+.model-row-head{display:flex;justify-content:space-between;gap:.7rem;font-size:.72rem;color:var(--head);margin-bottom:.28rem}
+.model-track{height:9px;background:var(--bg-alt);border-radius:50px;overflow:hidden}
+.model-fill{height:100%;background:linear-gradient(90deg,var(--red),#ff5b70);border-radius:50px}
+.chart-empty{text-align:center;color:var(--text);font-size:.78rem;padding:2.5rem 1rem}
+@media(max-width:1100px){.secondary-chart-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.chart-grid{grid-template-columns:1fr}.chart-panel.wide{grid-row:auto}.secondary-chart-grid{grid-template-columns:1fr}}
+@media(max-width:560px){.activity-chart{gap:.25rem;padding-left:.45rem;padding-right:.45rem}.activity-day{min-width:0}.activity-values{font-size:.56rem}.activity-label{font-size:.57rem;transform:rotate(-35deg);margin-top:.2rem}.report-chart-body{gap:.8rem}.report-donut{width:112px;height:112px}.report-donut:after{width:70px;height:70px}}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-comments"></i></div><div><div class="stat-num">{{ total_conversations }}</div><div class="stat-lbl">AI Conversations</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-message"></i></div><div><div class="stat-num">{{ total_messages }}</div><div class="stat-lbl">AI Messages</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ registered_ai_users }}</div><div class="stat-lbl">Registered AI Users</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-user-secret"></i></div><div><div class="stat-num">{{ guest_conversations }}</div><div class="stat-lbl">Guest Conversations</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-crown"></i></div><div><div class="stat-num">{{ active_subscribers }}</div><div class="stat-lbl">Active Subscribers</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-flag"></i></div><div><div class="stat-num">{{ open_reports }}</div><div class="stat-lbl">Open Reports</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-circle-check"></i></div><div><div class="stat-num">{{ resolved_reports }}</div><div class="stat-lbl">Resolved Reports</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-ban"></i></div><div><div class="stat-num">{{ active_blocks }}</div><div class="stat-lbl">Active Blocks</div></div></div>
+</div>
+
+<div class="chart-grid">
+  <section class="chart-panel wide">
+    <div class="chart-head">
+      <h3>AI activity — last 7 days</h3>
+      <div class="chart-legend"><span><i class="chart-dot red"></i> Conversations</span><span><i class="chart-dot blue"></i> Messages</span></div>
+    </div>
+    <div class="activity-chart" role="img" aria-label="Daily AI conversations and messages for the last seven days">
+      {% for point in daily_activity %}
+      <div class="activity-day" title="{{ point.label }}: {{ point.conversations }} conversations, {{ point.messages }} messages">
+        <span class="activity-values">{{ point.conversations }} / {{ point.messages }}</span>
+        <div class="activity-bars">
+          <div class="activity-bar conversations" style="height:{{ point.conversation_height }}%"></div>
+          <div class="activity-bar messages" style="height:{{ point.message_height }}%"></div>
+        </div>
+        <span class="activity-label">{{ point.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="chart-panel">
+    <div class="chart-head"><h3>Conversation audience</h3></div>
+    <div class="mini-chart-body">
+      <div class="audience-total">{{ total_conversations }}</div>
+      <div class="audience-caption">total conversations</div>
+      <div class="audience-bar" aria-label="{{ registered_pct }} percent registered and {{ guest_pct }} percent guest">
+        <div class="audience-registered" style="width:{{ registered_pct }}%"></div>
+        <div class="audience-guest" style="width:{{ guest_pct }}%"></div>
+      </div>
+      <div class="audience-rows">
+        <div class="audience-item"><span>Registered</span><strong>{{ registered_conversations }} · {{ registered_pct }}%</strong></div>
+        <div class="audience-item"><span>Guest</span><strong>{{ guest_conversations }} · {{ guest_pct }}%</strong></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="chart-panel">
+    <div class="chart-head"><h3>Subscribers &amp; safety</h3></div>
+    <div class="mini-chart-body">
+      <div class="audience-rows">
+        <div class="audience-item"><span>Active subscribers</span><strong>{{ active_subscribers }}</strong></div>
+        <div class="audience-item"><span>Active blocks</span><strong>{{ active_blocks }}</strong></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="secondary-chart-grid">
+  <section class="chart-panel">
+    <div class="chart-head"><h3>Report status</h3></div>
+    <div class="report-chart-body">
+      <div class="report-donut" style="background:{% if report_total %}conic-gradient(#f59f00 0 {{ report_open_pct }}%,#1da851 {{ report_open_pct }}% 100%){% else %}#e7eaf0{% endif %}">
+        <div class="report-donut-value">{{ report_total }}<small>total reports</small></div>
+      </div>
+      <div class="report-breakdown">
+        <div class="report-breakdown-row"><span><i class="chart-dot" style="background:#f59f00"></i> Open</span><strong>{{ open_reports }}</strong></div>
+        <div class="report-breakdown-row"><span><i class="chart-dot" style="background:#1da851"></i> Resolved</span><strong>{{ resolved_reports }}</strong></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="chart-panel">
+    <div class="chart-head"><h3>AI model usage</h3></div>
+    {% if model_usage %}
+    <div class="model-chart-body">
+      {% for model in model_usage %}
+      <div class="model-row">
+        <div class="model-row-head"><span>{{ model.label }}</span><strong>{{ model.total }}</strong></div>
+        <div class="model-track"><div class="model-fill" style="width:{{ model.width }}%"></div></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<div class="chart-empty">Model usage will appear after AI replies are saved.</div>{% endif %}
+  </section>
+
+  <section class="chart-panel">
+    <div class="chart-head"><h3>Location permission</h3></div>
+    <div class="report-chart-body">
+      <div class="report-donut" style="background:{% if location_accounts %}conic-gradient(#1da851 0 {{ location_enabled_pct }}%,#f59f00 {{ location_enabled_pct }}% {{ location_declined_end_pct }}%,#e2e6ed {{ location_declined_end_pct }}% 100%){% else %}#e7eaf0{% endif %}">
+        <div class="report-donut-value">{{ location_enabled }}<small>enabled</small></div>
+      </div>
+      <div class="report-breakdown">
+        <div class="report-breakdown-row"><span><i class="chart-dot" style="background:#1da851"></i> Enabled</span><strong>{{ location_enabled }}</strong></div>
+        <div class="report-breakdown-row"><span><i class="chart-dot" style="background:#f59f00"></i> Declined</span><strong>{{ location_declined }}</strong></div>
+        <div class="report-breakdown-row"><span><i class="chart-dot" style="background:#d7dce5"></i> Not asked</span><strong>{{ location_not_asked }}</strong></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>Recent AI conversations</h3><a href="{% url 'dashboard_ai_activity' %}" class="panel-link">View all &rarr;</a></div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>User</th><th>Conversation</th><th>Messages</th><th>Last active</th><th></th></tr></thead>
+    <tbody>
+      {% for conversation in recent_conversations %}
+      <tr>
+        <td>{% if conversation.user %}{{ conversation.user.get_full_name|default:conversation.user.username }}<span class="sub-line mono">{{ conversation.user.email }}</span>{% else %}<span class="badge ai-guest">Guest</span><span class="sub-line mono">{{ conversation.ip_address|default:"—" }}</span>{% endif %}</td>
+        <td>{{ conversation.title|default:"Untitled conversation" }}</td>
+        <td>{{ conversation.message_count }}</td>
+        <td>{{ conversation.updated_at|date:"d M Y, h:i A" }}</td>
+        <td><a class="edit-btn" href="{% url 'dashboard_ai_activity_detail' conversation.pk %}" title="View conversation"><i class="fas fa-eye"></i></a></td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="empty-row">No AI conversations yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>Recent AI reports</h3><a href="{% url 'dashboard_ai_reports' %}" class="panel-link">View all &rarr;</a></div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Reported by</th><th>Explanation</th><th>Status</th><th>Received</th><th></th></tr></thead>
+    <tbody>
+      {% for report in recent_reports %}
+      <tr>
+        <td>{% if report.user %}{{ report.user.get_full_name|default:report.user.username }}<span class="sub-line mono">{{ report.user.email }}</span>{% else %}<span class="badge ai-guest">Guest</span>{% endif %}</td>
+        <td class="msg-cell">{{ report.explanation|default:"—"|truncatechars:140 }}</td>
+        <td><span class="badge {% if report.status == 'resolved' %}report-resolved{% else %}report-open{% endif %}">{{ report.get_status_display }}</span></td>
+        <td>{{ report.created_at|date:"d M Y, h:i A" }}</td>
+        <td>{% if report.conversation_id %}<a class="edit-btn" href="{% url 'dashboard_ai_activity_detail' report.conversation_id %}" title="View conversation"><i class="fas fa-eye"></i></a>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="empty-row">No AI reports yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

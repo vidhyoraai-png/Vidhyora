@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Temporary AI-generated social-media downloads
+media/ai_youtube/
+media/ai_generated/

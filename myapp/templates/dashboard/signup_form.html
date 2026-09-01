@@ -1,0 +1,55 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Edit Customer{% endblock %}
+{% block page_title %}Edit Customer{% endblock %}
+
+{% block content %}
+<form class="form-card" style="max-width:560px" method="post">
+  {% csrf_token %}
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.first_name.id_for_label }}">First name</label>
+      {{ form.first_name }}
+      {{ form.first_name.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.last_name.id_for_label }}">Last name</label>
+      {{ form.last_name }}
+      {{ form.last_name.errors }}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.email.id_for_label }}">Email</label>
+    {{ form.email }}
+    <div class="help">Also used to log in — changing it changes their login email too.</div>
+    {{ form.email.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.phone.id_for_label }}">Phone</label>
+    {{ form.phone }}
+    {{ form.phone.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.wallet_balance.id_for_label }}">Wallet balance (₹)</label>
+    {{ form.wallet_balance }}
+    {{ form.wallet_balance.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.amount_paid.id_for_label }}">Manually recorded amount paid (₹)</label>
+    {{ form.amount_paid }}
+    <div class="help">Used in the Signups total. This does not alter order payment records.</div>
+    {{ form.amount_paid.errors }}
+  </div>
+
+  {% if form.non_field_errors %}<div class="form-group">{{ form.non_field_errors }}</div>{% endif %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save changes</button>
+    <a href="{% url 'dashboard_signups' %}" class="btn btn-ghost">Cancel</a>
+  </div>
+</form>
+{% endblock %}

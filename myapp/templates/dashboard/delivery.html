@@ -1,0 +1,139 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Delivery{% endblock %}
+{% block page_title %}Delivery{% endblock %}
+
+{% block extra_head %}
+<style>
+.deliv-toolbar{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;background:var(--bg-alt);border:1px solid var(--line);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:1.2rem}
+.deliv-status{font-size:.82rem;color:var(--text);flex:1;min-width:200px}
+.deliv-map-link{display:inline-flex;align-items:center;gap:.4rem;color:var(--red);font-weight:700;text-decoration:none;font-size:.82rem}
+.deliv-map-link:hover{text-decoration:underline}
+.deliv-distance{font-weight:700;color:var(--head);white-space:nowrap}
+.deliv-distance.pending{color:#9aa3b0;font-weight:500}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="deliv-toolbar">
+  <button type="button" class="btn btn-primary" id="useLocationBtn"><i class="fas fa-location-crosshairs"></i> Use my location</button>
+  <span class="deliv-status" id="locationStatus">Grant location to get directions and approximate distance to each address.</span>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ orders|length }} deliver{{ orders|length|pluralize:"y,ies" }}</h3>
+    <div class="row-actions">
+      <div class="filter-tabs">
+        <a href="?q={{ q }}" class="{% if not status %}on{% endif %}">All</a>
+        {% for value, label in status_choices %}
+        <a href="?q={{ q }}&status={{ value }}" class="{% if status == value %}on{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <form class="panel-search" method="get">
+        {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+        <i class="fas fa-magnifying-glass"></i>
+        <input type="search" name="q" value="{{ q }}" placeholder="Search name, phone, city, PIN…">
+      </form>
+    </div>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Order</th><th>Recipient</th><th>Address</th><th>Payment</th><th>Status</th><th>Distance</th><th>Placed</th></tr></thead>
+    <tbody>
+      {% for order in orders %}
+      <tr class="deliv-row" data-address="{{ order.full_address }}">
+        <td>#{{ order.id }}</td>
+        <td>{{ order.recipient_name }}<span class="sub-line">{{ order.recipient_phone }}</span></td>
+        <td class="msg-cell">
+          {{ order.full_address }}<br>
+          <a class="deliv-map-link" href="https://www.google.com/maps/search/?api=1&query={{ order.full_address|urlencode }}" target="_blank" rel="noopener"><i class="fas fa-map-location-dot"></i> Open in Maps</a>
+        </td>
+        <td>
+          {% with pay=order.latest_payment %}
+          {% if pay %}<span class="badge pay-{{ pay.status }}">{{ order.payment_label }}</span>{% else %}—{% endif %}
+          {% endwith %}
+        </td>
+        <td><span class="badge st-{{ order.status }}">{{ order.get_status_display }}</span></td>
+        <td class="deliv-distance pending">—</td>
+        <td>{{ order.created_at|date:"d M Y, h:i A" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="empty-row">No orders with a delivery address yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+(function(){
+  var STAFF_LOC = null;
+  var btn = document.getElementById('useLocationBtn');
+  var statusEl = document.getElementById('locationStatus');
+
+  function haversineKm(lat1, lon1, lat2, lon2){
+    var R = 6371;
+    var dLat = (lat2 - lat1) * Math.PI / 180;
+    var dLon = (lon2 - lon1) * Math.PI / 180;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  function updateMapLinks(){
+    document.querySelectorAll('.deliv-map-link').forEach(function(a){
+      var row = a.closest('.deliv-row');
+      var addr = row ? row.dataset.address : '';
+      if (!addr) return;
+      a.href = STAFF_LOC
+        ? 'https://www.google.com/maps/dir/?api=1&origin=' + STAFF_LOC.lat + ',' + STAFF_LOC.lng + '&destination=' + encodeURIComponent(addr)
+        : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
+    });
+  }
+
+  // Sequential, rate-limited (~1 req/sec) against OpenStreetMap's free public
+  // Nominatim geocoder — there's no Google Maps API key involved anywhere in
+  // this feature, so distances here are a straight-line estimate, not a
+  // driving distance. "Open in Maps" always gives the real route.
+  function geocodeRow(rows, i){
+    if (i >= rows.length) { statusEl.textContent = 'Location found — tap an address to open Directions.'; return; }
+    var row = rows[i];
+    var distEl = row.querySelector('.deliv-distance');
+    var addr = row.dataset.address;
+    if (!addr){ setTimeout(function(){ geocodeRow(rows, i + 1); }, 0); return; }
+
+    fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(addr))
+      .then(function(r){ return r.json(); })
+      .then(function(results){
+        if (results && results.length){
+          var km = haversineKm(STAFF_LOC.lat, STAFF_LOC.lng, parseFloat(results[0].lat), parseFloat(results[0].lon));
+          distEl.textContent = '~' + km.toFixed(1) + ' km';
+          distEl.title = 'Straight-line distance — open in Maps for the actual route';
+          distEl.classList.remove('pending');
+        } else {
+          distEl.textContent = '—';
+        }
+      })
+      .catch(function(){ distEl.textContent = '—'; })
+      .finally(function(){ setTimeout(function(){ geocodeRow(rows, i + 1); }, 1100); });
+  }
+
+  btn.addEventListener('click', function(){
+    if (!('geolocation' in navigator)){ statusEl.textContent = 'Location is not supported by this browser.'; return; }
+    statusEl.textContent = 'Locating…';
+    navigator.geolocation.getCurrentPosition(function(pos){
+      STAFF_LOC = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      updateMapLinks();
+      var rows = Array.prototype.slice.call(document.querySelectorAll('.deliv-row'));
+      rows.forEach(function(row){ row.querySelector('.deliv-distance').textContent = '…'; });
+      statusEl.textContent = 'Location found — calculating distances…';
+      geocodeRow(rows, 0);
+    }, function(err){
+      statusEl.textContent = 'Could not get your location (' + err.message + ').';
+    }, { enableHighAccuracy: true, timeout: 10000 });
+  });
+
+  updateMapLinks();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "dashboard/base.html" %}
+{% block title %}PWA / Install App{% endblock %}
+{% block page_title %}PWA / Install App{% endblock %}
+
+{% block content %}
+<p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.4rem">
+  Lets shoppers install the store as an app on their phone or desktop, straight from the browser.
+  Upload a square logo and turn it on — an "Install App" button then appears on the storefront automatically.
+</p>
+
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
+
+<form class="form-card" style="max-width:640px" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="toggle-row">
+    <div><b>Show "Install App" on the storefront</b><span>Needs a logo uploaded below to actually take effect.</span></div>
+    {{ form.is_enabled }}
+  </div>
+
+  <div class="form-group" style="margin-top:1.2rem">
+    <label for="{{ form.icon.id_for_label }}">App icon</label>
+    {% if settings_obj and settings_obj.icon %}
+      <div class="current-thumb">
+        <img src="{{ settings_obj.icon.url }}" alt="App icon">
+        <span class="help">Current icon — upload a new one to replace it.</span>
+      </div>
+    {% endif %}
+    {{ form.icon }}
+    <div class="help">Square, ideally 512×512px or larger — required for the install option to show.</div>
+    {{ form.icon.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.app_name.id_for_label }}">App name</label>
+    {{ form.app_name }}
+    <div class="help">Full name shown during install and on the splash screen.</div>
+    {{ form.app_name.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.short_name.id_for_label }}">Short name</label>
+    {{ form.short_name }}
+    <div class="help">Shown under the icon once installed — keep it short.</div>
+    {{ form.short_name.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.description.id_for_label }}">Description</label>
+    {{ form.description }}
+    {{ form.description.errors }}
+  </div>
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.theme_color.id_for_label }}">Theme color</label>
+      {{ form.theme_color }}
+      <div class="help">Toolbar color.</div>
+      {{ form.theme_color.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.background_color.id_for_label }}">Background color</label>
+      {{ form.background_color }}
+      <div class="help">Splash screen background.</div>
+      {{ form.background_color.errors }}
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save settings</button>
+  </div>
+</form>
+{% endblock %}

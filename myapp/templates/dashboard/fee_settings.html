@@ -1,0 +1,40 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Delivery & Handling Fees{% endblock %}
+{% block page_title %}Delivery & Handling Fees{% endblock %}
+
+{% block content %}
+<p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.4rem">
+  Controls what's charged at checkout on top of the product total. Leave any field at 0 (or blank) to not charge it.
+</p>
+
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
+
+<form class="form-card" style="max-width:560px" method="post">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.delivery_fee.id_for_label }}">Delivery fee (₹)</label>
+    {{ form.delivery_fee }}
+    <div class="help">Flat fee added per order. Leave blank or 0 for free delivery.</div>
+    {{ form.delivery_fee.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.free_delivery_over.id_for_label }}">Free delivery over (₹)</label>
+    {{ form.free_delivery_over }}
+    <div class="help">Orders at or above this subtotal skip the delivery fee above. Leave blank or 0 to always charge it.</div>
+    {{ form.free_delivery_over.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.handling_fee.id_for_label }}">Handling fee (₹)</label>
+    {{ form.handling_fee }}
+    <div class="help">Flat fee added per order, separate from delivery. Leave blank or 0 for none.</div>
+    {{ form.handling_fee.errors }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save settings</button>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+{% block title %}Customize{% endblock %}
+{% block page_title %}Customize{% endblock %}
+
+{% block content %}
+<p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.4rem">
+  Site-wide branding controls. Upload a favicon and it replaces the browser-tab icon everywhere — the AI chat, the store, policy pages, even the dashboard itself.
+</p>
+
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
+
+<form class="form-card" style="max-width:640px" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.favicon.id_for_label }}">Favicon</label>
+    <div class="current-thumb">
+      <img src="{% if settings_obj and settings_obj.favicon %}{{ settings_obj.favicon.url }}{% else %}{% static 'favicon.ico' %}{% endif %}" alt="Current favicon" style="width:40px;height:40px;object-fit:contain;background:var(--bg-alt)">
+      <span class="help">{% if settings_obj and settings_obj.favicon %}Current favicon — upload a new one to replace it.{% else %}Using the default EduTrellis favicon — upload one below to replace it.{% endif %}</span>
+    </div>
+    {{ form.favicon }}
+    <div class="help">Square, ideally 512×512px or smaller (PNG or ICO).</div>
+    {{ form.favicon.errors }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save settings</button>
+  </div>
+</form>
+{% endblock %}

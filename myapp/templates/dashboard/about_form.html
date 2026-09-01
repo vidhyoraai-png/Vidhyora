@@ -1,0 +1,117 @@
+{% extends "dashboard/base.html" %}
+{% block title %}About Us{% endblock %}
+{% block page_title %}About Us{% endblock %}
+
+{% block content %}
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved — changes are live on the storefront.</div>{% endif %}
+
+<form class="form-card" style="max-width:720px" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.photo.id_for_label }}">About photo</label>
+    {% if about.photo %}
+      <div class="current-thumb"><img src="{{ about.photo.url }}" alt=""><span class="help">Current photo — upload a new one to replace it.</span></div>
+    {% endif %}
+    {{ form.photo }}
+    {{ form.photo.errors }}
+  </div>
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.badge_title.id_for_label }}">Photo badge title</label>
+      {{ form.badge_title }}
+      {{ form.badge_title.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.badge_subtitle.id_for_label }}">Photo badge subtitle</label>
+      {{ form.badge_subtitle }}
+      {{ form.badge_subtitle.errors }}
+    </div>
+  </div>
+
+  <h3 style="font-size:1rem;margin:1.4rem 0 .8rem">Founder</h3>
+  <div class="form-group">
+    <label for="{{ form.founder_photo.id_for_label }}">Founder photo</label>
+    {% if about.founder_photo %}
+      <div class="current-thumb"><img src="{{ about.founder_photo.url }}" alt=""><span class="help">Current photo — upload a new one to replace it.</span></div>
+    {% endif %}
+    {{ form.founder_photo }}
+    <div class="help">Optional — falls back to initials when left blank.</div>
+    {{ form.founder_photo.errors }}
+  </div>
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.founder_name.id_for_label }}">Name</label>
+      {{ form.founder_name }}
+      {{ form.founder_name.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.founder_title.id_for_label }}">Title</label>
+      {{ form.founder_title }}
+      {{ form.founder_title.errors }}
+    </div>
+  </div>
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.founder_email.id_for_label }}">Email</label>
+      {{ form.founder_email }}
+      {{ form.founder_email.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.founder_linkedin.id_for_label }}">LinkedIn URL</label>
+      {{ form.founder_linkedin }}
+      {{ form.founder_linkedin.errors }}
+    </div>
+  </div>
+
+  <h3 style="font-size:1rem;margin:1.4rem 0 .8rem">Stats row</h3>
+  <div class="form-grid-2">
+    <div class="form-group"><label for="{{ form.stat1_value.id_for_label }}">Stat 1 value</label>{{ form.stat1_value }}</div>
+    <div class="form-group"><label for="{{ form.stat1_label.id_for_label }}">Stat 1 label</label>{{ form.stat1_label }}</div>
+  </div>
+  <div class="form-grid-2">
+    <div class="form-group"><label for="{{ form.stat2_value.id_for_label }}">Stat 2 value</label>{{ form.stat2_value }}</div>
+    <div class="form-group"><label for="{{ form.stat2_label.id_for_label }}">Stat 2 label</label>{{ form.stat2_label }}</div>
+  </div>
+  <div class="form-grid-2">
+    <div class="form-group"><label for="{{ form.stat3_value.id_for_label }}">Stat 3 value</label>{{ form.stat3_value }}</div>
+    <div class="form-group"><label for="{{ form.stat3_label.id_for_label }}">Stat 3 label</label>{{ form.stat3_label }}</div>
+  </div>
+  <div class="form-grid-2">
+    <div class="form-group"><label for="{{ form.stat4_value.id_for_label }}">Stat 4 value</label>{{ form.stat4_value }}</div>
+    <div class="form-group"><label for="{{ form.stat4_label.id_for_label }}">Stat 4 label</label>{{ form.stat4_label }}</div>
+  </div>
+
+  <h3 style="font-size:1rem;margin:1.4rem 0 .8rem">Story</h3>
+  <div class="form-group">
+    <label for="{{ form.heading.id_for_label }}">Heading</label>
+    {{ form.heading }}
+    {{ form.heading.errors }}
+  </div>
+  <div class="form-group">
+    <label for="{{ form.paragraph1.id_for_label }}">Paragraph 1</label>
+    {{ form.paragraph1 }}
+    {{ form.paragraph1.errors }}
+  </div>
+  <div class="form-group">
+    <label for="{{ form.paragraph2.id_for_label }}">Paragraph 2</label>
+    {{ form.paragraph2 }}
+    {{ form.paragraph2.errors }}
+  </div>
+  <div class="form-group">
+    <label for="{{ form.list_heading.id_for_label }}">Bullet list heading</label>
+    {{ form.list_heading }}
+    {{ form.list_heading.errors }}
+  </div>
+  <div class="form-group">
+    <label for="{{ form.bullet_points.id_for_label }}">Bullet points</label>
+    {{ form.bullet_points }}
+    {{ form.bullet_points.errors }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save changes</button>
+  </div>
+</form>
+{% endblock %}

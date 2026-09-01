@@ -1,0 +1,37 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Email Settings{% endblock %}
+{% block page_title %}Email Settings{% endblock %}
+
+{% block extra_head %}
+<style>
+.flash{border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem;display:flex;gap:.5rem;align-items:center}
+.flash.success{background:#e8f8ee;color:#177245}
+.flash.error{background:#fdeaea;color:var(--red)}
+.email-fixed-row{display:flex;justify-content:space-between;gap:1rem;padding:.7rem 0;border-bottom:1px solid var(--line);font-size:.88rem}
+.email-fixed-row:last-child{border-bottom:none}
+.email-fixed-row span:first-child{color:var(--text)}
+.email-fixed-row b{color:var(--head)}
+</style>
+{% endblock %}
+
+{% block content %}
+{% for message in messages %}
+  <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
+{% endfor %}
+
+<div class="form-card" style="max-width:560px">
+  <p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.2rem">
+    <i class="fas fa-lock"></i> This page is deactivated — the SMTP account used to send order confirmations,
+    contact-lead notifications and verification codes is now fixed in the app's code, not editable here.
+  </p>
+
+  <div class="email-fixed-row"><span>SMTP host</span><b>{{ smtp_host }}</b></div>
+  <div class="email-fixed-row"><span>Sending account</span><b>{{ smtp_user }}</b></div>
+  <div class="email-fixed-row"><span>Notifications go to</span><b>{{ notify_email }}</b></div>
+</div>
+
+<form method="post" action="{% url 'dashboard_email_settings_test' %}" style="margin-top:1rem;max-width:560px">
+  {% csrf_token %}
+  <button type="submit" class="btn btn-ghost"><i class="fas fa-paper-plane"></i> Send test email</button>
+</form>
+{% endblock %}

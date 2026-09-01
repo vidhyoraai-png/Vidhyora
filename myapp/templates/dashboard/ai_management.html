@@ -1,0 +1,165 @@
+{% extends "dashboard/base.html" %}
+{% block title %}AI Management{% endblock %}
+{% block page_title %}AI Management{% endblock %}
+
+{% block extra_head %}
+<style>
+.flash{border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem;display:flex;gap:.5rem;align-items:center}
+.flash.success{background:#e8f8ee;color:#177245}
+.flash.error{background:#fdeaea;color:var(--red)}
+.badge.ai-active{background:#e8fbf0;color:#1da851}
+.badge.ai-expired{background:var(--red-soft);color:var(--red)}
+.grant-form{display:flex;align-items:flex-end;gap:.9rem;flex-wrap:wrap;padding:1.2rem 1.4rem}
+.grant-form .form-group{margin-bottom:0;min-width:220px;flex:1}
+.grant-form .form-group.days{min-width:140px;flex:none}
+.grant-form .form-actions{margin-top:0}
+.panel-note{padding:0 1.4rem 1.1rem;font-size:.8rem;color:var(--text)}
+</style>
+{% endblock %}
+
+{% block content %}
+{% for message in messages %}
+  <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
+{% endfor %}
+
+<details class="panel add-user-panel">
+  <summary><i class="fas fa-user-plus"></i> Add user manually <i class="fas fa-chevron-down chevron"></i></summary>
+  <form method="post" action="{% url 'dashboard_user_add' %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="dashboard_ai_management">
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label for="{{ add_user_form.name.id_for_label }}">Full name</label>
+        {{ add_user_form.name }}
+        {{ add_user_form.name.errors }}
+      </div>
+      <div class="form-group">
+        <label for="{{ add_user_form.email.id_for_label }}">Email</label>
+        {{ add_user_form.email }}
+        {{ add_user_form.email.errors }}
+      </div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label for="{{ add_user_form.phone.id_for_label }}">Phone</label>
+        {{ add_user_form.phone }}
+        {{ add_user_form.phone.errors }}
+      </div>
+      <div class="form-group">
+        <label for="{{ add_user_form.password.id_for_label }}">Password</label>
+        {{ add_user_form.password }}
+        <div class="help">{{ add_user_form.password.help_text }}</div>
+        {{ add_user_form.password.errors }}
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{ add_user_form.amount_paid.id_for_label }}">Amount paid (₹) <span class="help">— optional</span></label>
+      {{ add_user_form.amount_paid }}
+      <div class="help">{{ add_user_form.amount_paid.help_text }}</div>
+      {{ add_user_form.amount_paid.errors }}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Create account</button>
+    </div>
+  </form>
+  <p class="panel-note">New accounts land here with no AI premium yet — use the grant form below to give them access right after creating them.</p>
+</details>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-crown"></i></div>
+    <div><div class="stat-num">{{ active_subscriber_count }}</div><div class="stat-lbl">Active AI premium accounts</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-clock-rotate-left"></i></div>
+    <div><div class="stat-num">{{ subscribers|length }}</div><div class="stat-lbl">Ever granted (incl. expired)</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-user-shield"></i></div>
+    <div><div class="stat-num">{{ admins|length }}</div><div class="stat-lbl">Full admin / dashboard accounts</div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>Grant AI premium access</h3>
+  </div>
+  <form class="grant-form" method="post" action="{% url 'dashboard_ai_grant' %}">
+    {% csrf_token %}
+    <div class="form-group">
+      <label for="{{ grant_form.identifier.id_for_label }}">{{ grant_form.identifier.label }}</label>
+      {{ grant_form.identifier }}
+    </div>
+    <div class="form-group days">
+      <label for="{{ grant_form.days.id_for_label }}">{{ grant_form.days.label }}</label>
+      {{ grant_form.days }}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Grant access</button>
+    </div>
+  </form>
+  <p class="panel-note">Sets Vidhyora AI premium access to run for this many days from today — unlimited messages, every model, no free-tier cap. This is separate from Signups' Staff/Superuser role, which grants full dashboard and Django-admin access instead (see the table below).</p>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>AI premium accounts</h3>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Expires</th><th>Time left</th><th></th></tr></thead>
+    <tbody>
+      {% for profile in subscribers %}
+      <tr>
+        <td>{{ profile.user.first_name|default:profile.user.username }} {{ profile.user.last_name }}</td>
+        <td>{{ profile.user.email }}</td>
+        <td>
+          {% if profile.is_ai_subscribed %}<span class="badge ai-active">Active</span>
+          {% else %}<span class="badge ai-expired">Expired</span>{% endif %}
+        </td>
+        <td>{{ profile.ai_subscription_until|date:"d M Y, h:i A" }}</td>
+        <td>{% if profile.is_ai_subscribed %}{{ profile.ai_subscription_until|timeuntil:now }}{% else %}—{% endif %}</td>
+        <td>
+          <div class="row-actions">
+            <a class="edit-btn" href="{% url 'dashboard_ai_activity' %}?q={{ profile.user.email|urlencode }}" title="See all their chats"><i class="fas fa-eye"></i></a>
+            <form method="post" action="{% url 'dashboard_ai_revoke' profile.pk %}" onsubmit="return confirm('Revoke Vidhyora AI premium access for {{ profile.user.email|default:profile.user.username|escapejs }}?')">
+              {% csrf_token %}
+              <button type="submit" class="del-btn" title="Revoke access"><i class="fas fa-ban"></i></button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="empty-row">No accounts have been granted AI premium access yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>Full admin accounts</h3>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th></tr></thead>
+    <tbody>
+      {% for u in admins %}
+      <tr>
+        <td>{{ u.first_name|default:u.username }} {{ u.last_name }}</td>
+        <td>{{ u.email }}</td>
+        <td>
+          {% if u.is_superuser %}<span class="badge staff">Superuser</span>
+          {% else %}<span class="badge staff">Staff</span>{% endif %}
+        </td>
+        <td>{{ u.date_joined|date:"d M Y, h:i A" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="4" class="empty-row">No staff/admin accounts</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

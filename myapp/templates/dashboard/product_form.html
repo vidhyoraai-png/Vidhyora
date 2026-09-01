@@ -1,0 +1,278 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{% if product %}Edit Product{% else %}Add Product{% endif %}{% endblock %}
+{% block page_title %}{% if product %}Edit Product{% else %}Add Product{% endif %}{% endblock %}
+
+{% block content %}
+<form class="form-card" style="max-width:720px" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.category.id_for_label }}">Category</label>
+      {{ form.category }}
+      {{ form.category.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.brand.id_for_label }}">Brand</label>
+      {{ form.brand }}
+      {{ form.brand.errors }}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.name.id_for_label }}">Product name</label>
+    {{ form.name }}
+    {{ form.name.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.slug.id_for_label }}">Slug (product ID)</label>
+    {{ form.slug }}
+    <div class="help">Used as the cart/order product ID — leave blank to auto-generate. Avoid changing it once orders exist.</div>
+    {{ form.slug.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.short_description.id_for_label }}">Short description</label>
+    {{ form.short_description }}
+    <div class="help">Shown on the product card in the shop grid.</div>
+    {{ form.short_description.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.description.id_for_label }}">Full description</label>
+    {{ form.description }}
+    <div class="help">Shown when a shopper opens the product detail view.</div>
+    {{ form.description.errors }}
+  </div>
+
+  <div class="form-group">
+    <label>Specifications</label>
+    <div class="help" style="margin:0 0 .3rem">Add each spec as a label/value pair — shown as a table on the product detail view.</div>
+    <table class="spec-table" id="specTable">
+      <thead><tr><th>Label</th><th>Value</th><th></th></tr></thead>
+      <tbody id="specTableBody"></tbody>
+    </table>
+    <button type="button" class="btn btn-ghost spec-add-row" id="specAddRow"><i class="fas fa-plus"></i> Add row</button>
+    <div style="display:none">{{ form.specs }}</div>
+    {{ form.specs.errors }}
+  </div>
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.price.id_for_label }}">Price (₹)</label>
+      {{ form.price }}
+      {{ form.price.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.mrp.id_for_label }}">MRP (₹)</label>
+      {{ form.mrp }}
+      {{ form.mrp.errors }}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.image.id_for_label }}">Cover image</label>
+    {% if product and product.image %}
+      <div class="current-thumb">
+        <img src="{{ product.image.url }}" alt="{{ product.name }}">
+        <span class="help">Current image — upload a new one to replace it.</span>
+      </div>
+    {% endif %}
+    {{ form.image }}
+    <div class="help">Optional. Leave blank to use the icon + gradient tile below instead. Add more angles under "Product images" below (up to 11 total, including this cover).</div>
+    {{ form.image.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.video.id_for_label }}">Product video (optional)</label>
+    {% if product and product.video %}
+      <div class="help" style="margin-bottom:.5rem"><i class="fas fa-circle-play"></i> Current video: <a href="{{ product.video.url }}" target="_blank">{{ product.video.name }}</a> — upload a new file to replace it.</div>
+    {% endif %}
+    {{ form.video }}
+    <div class="help">MP4 recommended. Shown as a slide in the detail page gallery.</div>
+    {{ form.video.errors }}
+  </div>
+
+  {% if product %}
+  <div class="form-group">
+    <label>Product images <span class="help" style="display:inline">(up to 10, in addition to the cover image above)</span></label>
+    {{ image_formset.management_form }}
+    {% if image_formset.non_form_errors %}<div class="help" style="color:var(--red)">{{ image_formset.non_form_errors }}</div>{% endif %}
+    <div class="gallery-rows">
+      {% for f in image_formset.forms %}
+      <div class="gallery-row">
+        {% if f.instance.pk and f.instance.image %}<img class="current-thumb-sm" src="{{ f.instance.image.url }}" alt="">{% endif %}
+        {{ f.id }}
+        <div class="gallery-row-fields">
+          {{ f.image }}
+          {{ f.image.errors }}
+        </div>
+        <div class="gallery-row-order">{{ f.order }}</div>
+        {% if f.instance.pk %}
+        <label class="gallery-row-del">{{ f.DELETE }} Remove</label>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Colour options <span class="help" style="display:inline">(optional — shown as swatches on the detail page)</span></label>
+    {{ color_formset.management_form }}
+    {% if color_formset.non_form_errors %}<div class="help" style="color:var(--red)">{{ color_formset.non_form_errors }}</div>{% endif %}
+    <div class="gallery-rows">
+      {% for f in color_formset.forms %}
+      <div class="gallery-row color-row">
+        {{ f.id }}
+        {{ f.order.as_hidden }}
+        <div class="gallery-row-fields">
+          {{ f.name }}
+          {{ f.hex_code }}
+          {{ f.image }}
+        </div>
+        {% if f.instance.pk %}
+        <label class="gallery-row-del">{{ f.DELETE }} Remove</label>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="form-group">
+    <div class="help"><i class="fas fa-circle-info"></i> Save the product first — you'll be able to add up to 10 extra images and colour options on the next screen.</div>
+  </div>
+  {% endif %}
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.icon.id_for_label }}">Icon (Font Awesome class)</label>
+      {{ form.icon }}
+      <div class="help">e.g. "fa-headphones-simple" — used when no image is set.</div>
+      {{ form.icon.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.gradient.id_for_label }}">Tile gradient (CSS)</label>
+      {{ form.gradient }}
+      {{ form.gradient.errors }}
+    </div>
+  </div>
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.flag.id_for_label }}">Badge (optional)</label>
+      {{ form.flag }}
+      <div class="help">e.g. "Bestseller", "New".</div>
+      {{ form.flag.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.stock_status.id_for_label }}">Stock status</label>
+      {{ form.stock_status }}
+      <div class="help">e.g. "In stock", "Only 4 left".</div>
+      {{ form.stock_status.errors }}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.tags.id_for_label }}">Tags</label>
+    {{ form.tags }}
+    <div class="help">Comma-separated, e.g. "ANC, 40h battery, IPX5".</div>
+    {{ form.tags.errors }}
+  </div>
+
+  <div class="form-grid-2">
+    <div class="form-group">
+      <label for="{{ form.rating.id_for_label }}">Rating (0–5)</label>
+      {{ form.rating }}
+      {{ form.rating.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ form.reviews_count.id_for_label }}">Reviews count</label>
+      {{ form.reviews_count }}
+      {{ form.reviews_count.errors }}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.order.id_for_label }}">Display order</label>
+    {{ form.order }}
+    <div class="help">Lower numbers appear first.</div>
+    {{ form.order.errors }}
+  </div>
+
+  <div class="form-group form-check">
+    {{ form.is_active }}
+    <label for="{{ form.is_active.id_for_label }}">Visible on the storefront</label>
+  </div>
+
+  {% if form.non_field_errors %}<div class="form-group">{{ form.non_field_errors }}</div>{% endif %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> {% if product %}Save changes{% else %}Create product{% endif %}</button>
+    <a href="{% url 'dashboard_products' %}" class="btn btn-ghost">Cancel</a>
+  </div>
+</form>
+
+<script>
+(function(){
+  var ta = document.getElementById('{{ form.specs.id_for_label }}');
+  var tbody = document.getElementById('specTableBody');
+
+  function addRow(label, value){
+    var tr = document.createElement('tr');
+    var tdLabel = document.createElement('td');
+    var inLabel = document.createElement('input');
+    inLabel.type = 'text'; inLabel.className = 'spec-label'; inLabel.placeholder = 'e.g. Battery'; inLabel.value = label || '';
+    tdLabel.appendChild(inLabel);
+
+    var tdValue = document.createElement('td');
+    var inValue = document.createElement('input');
+    inValue.type = 'text'; inValue.className = 'spec-value'; inValue.placeholder = 'e.g. 40 hours'; inValue.value = value || '';
+    tdValue.appendChild(inValue);
+
+    var tdDel = document.createElement('td');
+    var btnDel = document.createElement('button');
+    btnDel.type = 'button'; btnDel.className = 'spec-row-del'; btnDel.setAttribute('aria-label', 'Remove row');
+    btnDel.innerHTML = '<i class="fas fa-xmark"></i>';
+    tdDel.appendChild(btnDel);
+
+    tr.appendChild(tdLabel); tr.appendChild(tdValue); tr.appendChild(tdDel);
+    tbody.appendChild(tr);
+  }
+
+  var any = false;
+  ta.value.split('\n').forEach(function(line){
+    var idx = line.indexOf(':');
+    if (idx === -1) return;
+    var label = line.slice(0, idx).trim();
+    if (!label) return;
+    addRow(label, line.slice(idx + 1).trim());
+    any = true;
+  });
+  if (!any) addRow('', '');
+
+  document.getElementById('specAddRow').addEventListener('click', function(){ addRow('', ''); });
+
+  tbody.addEventListener('click', function(e){
+    var btn = e.target.closest('.spec-row-del');
+    if (!btn) return;
+    var rows = tbody.querySelectorAll('tr');
+    if (rows.length <= 1){
+      tbody.querySelectorAll('input').forEach(function(i){ i.value = ''; });
+      return;
+    }
+    btn.closest('tr').remove();
+  });
+
+  ta.closest('form').addEventListener('submit', function(){
+    var lines = [];
+    tbody.querySelectorAll('tr').forEach(function(tr){
+      var label = tr.querySelector('.spec-label').value.trim();
+      var value = tr.querySelector('.spec-value').value.trim();
+      if (label) lines.push(label + ': ' + value);
+    });
+    ta.value = lines.join('\n');
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,202 @@
+<style>
+.profile-wizard-backdrop{position:fixed;inset:0;background:rgba(10,14,22,.55);z-index:13000}
+.profile-wizard-backdrop[hidden]{display:none!important}
+.profile-wizard{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:13001;width:min(420px,calc(100vw - 32px));background:#fff;color:#172033;border-radius:20px;box-shadow:0 24px 70px rgba(20,28,45,.32);padding:26px 24px 24px;font-family:var(--font-body,'DM Sans',Arial,sans-serif)}
+.profile-wizard[hidden]{display:none!important}
+.pw-close{position:absolute;top:14px;right:14px;border:0;background:none;color:#9aa3b0;font-size:15px;cursor:pointer;padding:8px;line-height:1;border-radius:8px}
+.pw-close:hover{background:#f0f2f6;color:#3d4657}
+.pw-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:14px;background:rgba(var(--accent-rgb,232,0,30),.1);color:var(--red,#e8001e);font-size:19px;margin-bottom:14px}
+.pw-step h2{margin:0 0 6px;font:800 17px/1.3 var(--font-head,'Sora','DM Sans',Arial,sans-serif);color:#111827}
+.pw-step p{margin:0 0 16px;color:#5d6678;font-size:13.5px;line-height:1.5}
+.pw-field{margin-bottom:6px}
+.pw-field label{display:block;font-size:12.5px;font-weight:700;color:#374050;margin-bottom:6px}
+.pw-field input{width:100%;border:1.5px solid #e4e7ed;border-radius:10px;padding:.68rem .85rem;font:inherit;font-size:14px;color:#172033}
+.pw-field input:focus{outline:none;border-color:var(--red,#e8001e)}
+.pw-error{color:#b42318;font-size:12px;margin:8px 0 0;min-height:14px}
+.pw-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
+.pw-btn{border:0;border-radius:10px;padding:11px 16px;font:700 12.5px/1 var(--font-body,'DM Sans',Arial,sans-serif);cursor:pointer}
+.pw-btn:disabled{opacity:.58;cursor:wait}
+.pw-btn-ghost{background:#f0f2f6;color:#3d4657}
+.pw-btn-primary{background:var(--red,#e8001e);color:#fff}
+.pw-btn-primary:hover{background:var(--red-dark,#c0001a)}
+@media(max-width:480px){.profile-wizard{padding:22px 18px 18px}.pw-actions{flex-direction:column-reverse}.pw-btn{width:100%;padding:12px}}
+</style>
+
+<div class="profile-wizard-backdrop" id="profileWizardBackdrop" hidden></div>
+<section
+  class="profile-wizard"
+  id="profileWizard"
+  data-auto-open="{% if show_profile_wizard %}1{% else %}0{% endif %}"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="pwTitle"
+  hidden
+>
+  <button type="button" class="pw-close" id="pwCloseBtn" aria-label="Close"><i class="fas fa-xmark"></i></button>
+
+  <div class="pw-step" data-pw-step="intro">
+    <div class="pw-icon"><i class="fas fa-hand-sparkles"></i></div>
+    <h2 id="pwTitle">Hello{% if request.user.is_authenticated %} {{ request.user.first_name|default:request.user.username }}{% endif %}, we need some info updated</h2>
+    <p>Just two quick things and you're all set — takes under a minute.</p>
+    <div class="pw-actions">
+      <button type="button" class="pw-btn pw-btn-ghost" data-pw-cancel>Not now</button>
+      <button type="button" class="pw-btn pw-btn-primary" data-pw-next="amount">Next</button>
+    </div>
+  </div>
+
+  <div class="pw-step" data-pw-step="amount" hidden>
+    <div class="pw-icon"><i class="fas fa-indian-rupee-sign"></i></div>
+    <h2>How much have you paid for your subscription?</h2>
+    <p>This helps us match your subscription payment against our records. Enter 0 if you haven't paid anything yet.</p>
+    <div class="pw-field">
+      <label for="pwAmountInput">Amount paid for subscription (₹)</label>
+      <input type="number" id="pwAmountInput" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+    </div>
+    <p class="pw-error" id="pwAmountError" role="status" aria-live="polite"></p>
+    <div class="pw-actions">
+      <button type="button" class="pw-btn pw-btn-ghost" data-pw-back="intro">Back</button>
+      <button type="button" class="pw-btn pw-btn-primary" id="pwAmountNext">Next</button>
+    </div>
+  </div>
+
+  <div class="pw-step" data-pw-step="location" hidden>
+    <div class="pw-icon"><i class="fas fa-location-dot"></i></div>
+    <h2>One last thing — your location</h2>
+    <p>This helps us show accurate local results. We'll ask your browser for a one-time reading next.</p>
+    <div class="pw-actions">
+      <button type="button" class="pw-btn pw-btn-primary" id="pwLocationContinue">Continue</button>
+    </div>
+  </div>
+
+  <div class="pw-step" data-pw-step="finish" hidden>
+    <div class="pw-icon"><i class="fas fa-circle-check"></i></div>
+    <h2>All set — thank you!</h2>
+    <p>Your details are updated.</p>
+    <div class="pw-actions">
+      <button type="button" class="pw-btn pw-btn-primary" id="pwFinishBtn">Finish</button>
+    </div>
+  </div>
+</section>
+
+<script>
+(function(){
+  var backdrop = document.getElementById('profileWizardBackdrop');
+  var card = document.getElementById('profileWizard');
+  if (!backdrop || !card) return;
+  var closeBtn = document.getElementById('pwCloseBtn');
+  var steps = {};
+  card.querySelectorAll('[data-pw-step]').forEach(function(el){ steps[el.getAttribute('data-pw-step')] = el; });
+
+  function csrfToken(){
+    var match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  // Cancelling (X, backdrop, "Not now") re-snoozes for 24h — checked both
+  // here on page load and by the post-login trigger in ai.html, so a
+  // dismissal actually sticks for a day instead of reappearing on the very
+  // next page view.
+  var SNOOZE_KEY = 'profile_wizard_snooze_until';
+  window.isProfileWizardSnoozed = function(){
+    try {
+      var until = parseInt(localStorage.getItem(SNOOZE_KEY) || '0', 10);
+      return !!(until && Date.now() < until);
+    } catch (e) { return false; }
+  };
+  function snooze(){
+    try { localStorage.setItem(SNOOZE_KEY, String(Date.now() + 24 * 60 * 60 * 1000)); } catch (e) {}
+  }
+  function clearSnooze(){
+    try { localStorage.removeItem(SNOOZE_KEY); } catch (e) {}
+  }
+
+  function showStep(name){
+    Object.keys(steps).forEach(function(key){ steps[key].hidden = key !== name; });
+  }
+  function open(){
+    showStep('intro');
+    backdrop.hidden = false;
+    card.hidden = false;
+  }
+  function close(){
+    backdrop.hidden = true;
+    card.hidden = true;
+  }
+  window.showProfileWizard = open;
+
+  if (closeBtn) closeBtn.addEventListener('click', function(){ snooze(); close(); });
+  backdrop.addEventListener('click', function(){ snooze(); close(); });
+  card.querySelectorAll('[data-pw-cancel]').forEach(function(btn){
+    btn.addEventListener('click', function(){ snooze(); close(); });
+  });
+  card.querySelectorAll('[data-pw-next]').forEach(function(btn){
+    btn.addEventListener('click', function(){ showStep(btn.getAttribute('data-pw-next')); });
+  });
+  card.querySelectorAll('[data-pw-back]').forEach(function(btn){
+    btn.addEventListener('click', function(){ showStep(btn.getAttribute('data-pw-back')); });
+  });
+
+  var amountInput = document.getElementById('pwAmountInput');
+  var amountError = document.getElementById('pwAmountError');
+  var amountNext = document.getElementById('pwAmountNext');
+  if (amountNext) {
+    amountNext.addEventListener('click', function(){
+      var raw = amountInput.value.trim();
+      var value = parseFloat(raw);
+      if (raw === '' || isNaN(value) || value < 0) {
+        amountError.textContent = 'Enter a valid amount (0 or more).';
+        return;
+      }
+      amountError.textContent = '';
+      amountNext.disabled = true;
+      fetch('{% url "ai_amount_paid_update" %}', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken()},
+        body: JSON.stringify({amount: value})
+      }).then(function(r){ return r.json().then(function(body){ return {ok: r.ok, body: body}; }); })
+        .then(function(result){
+          amountNext.disabled = false;
+          if (!result.ok) { amountError.textContent = result.body.detail || 'Could not save that — please try again.'; return; }
+          showStep('location');
+        })
+        .catch(function(){ amountNext.disabled = false; amountError.textContent = 'Something went wrong — please try again.'; });
+    });
+  }
+
+  var locationContinue = document.getElementById('pwLocationContinue');
+  if (locationContinue) {
+    locationContinue.addEventListener('click', function(){
+      // Hand off to the same one-time location card the rest of the site
+      // uses (includes/location_prompt.html) instead of re-implementing
+      // geolocation capture here — its onDone callback fires whichever way
+      // the user resolves it (allow, decline, or an error), and we just
+      // move on to Finish either way.
+      window.__skipAutoLocationPrompt = true;
+      backdrop.hidden = true;
+      card.hidden = true;
+      if (window.showOneTimeLocationPrompt) {
+        window.showOneTimeLocationPrompt(function(){
+          backdrop.hidden = false;
+          card.hidden = false;
+          showStep('finish');
+        });
+      } else {
+        backdrop.hidden = false;
+        card.hidden = false;
+        showStep('finish');
+      }
+    });
+  }
+
+  var finishBtn = document.getElementById('pwFinishBtn');
+  if (finishBtn) finishBtn.addEventListener('click', function(){ clearSnooze(); close(); });
+
+  // Claims this page load's location auto-open away from the plain card
+  // whenever the wizard applies (whether or not it actually opens right
+  // now) so the two never both pop up.
+  if (card.getAttribute('data-auto-open') === '1') {
+    window.__skipAutoLocationPrompt = true;
+    if (!window.isProfileWizardSnoozed()) window.setTimeout(open, 700);
+  }
+})();
+</script>

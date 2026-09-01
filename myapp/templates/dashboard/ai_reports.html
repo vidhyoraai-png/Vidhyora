@@ -1,0 +1,78 @@
+{% extends "dashboard/base.html" %}
+{% block title %}AI Reports{% endblock %}
+{% block page_title %}AI Reports{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ reports|length }} report{{ reports|length|pluralize }}</h3>
+    <form class="panel-search" method="get">
+      <i class="fas fa-magnifying-glass"></i>
+      <input type="search" name="q" value="{{ q }}" placeholder="Search email, explanation, reply…">
+    </form>
+  </div>
+  <p class="panel-note">Every "Report it" submission from the AI chat — who flagged it, which reply, and why. Mark a report resolved once it's fixed.</p>
+
+  {% for group in groups %}
+  <div class="status-group">
+    <div class="status-group-head">
+      <i class="fas {% if group.status == 'open' %}fa-flag{% else %}fa-circle-check{% endif %}"></i> {{ group.label }}
+      <span class="status-count status-count-{{ group.status }}">{{ group.reports|length }}</span>
+    </div>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>Reported by</th><th>Reply</th><th>Explanation</th><th>Model</th><th>Received</th><th></th></tr></thead>
+      <tbody>
+        {% for r in group.reports %}
+        <tr>
+          <td>
+            {% if r.user %}{{ r.user.get_full_name|default:r.user.username }}<span class="sub-line mono">{{ r.user.email }}</span>
+            {% else %}<span class="badge ai-guest">Guest</span>{% if r.session_key %}<span class="sub-line mono">{{ r.session_key|slice:":10" }}…</span>{% endif %}{% endif %}
+            {% if r.ip_address %}<span class="sub-line mono">{{ r.ip_address }}</span>{% endif %}
+          </td>
+          <td class="msg-cell">{{ r.reported_reply|default:"—" }}</td>
+          <td class="msg-cell">{{ r.explanation|default:"—" }}</td>
+          <td>{{ r.model_key|default:"—" }}</td>
+          <td>{{ r.created_at|date:"d M Y, h:i A" }}</td>
+          <td>
+            <div class="row-actions">
+              {% if r.conversation_id %}
+              <a class="edit-btn" href="{% url 'dashboard_ai_activity_detail' r.conversation_id %}" title="View conversation"><i class="fas fa-eye"></i></a>
+              {% endif %}
+              <form method="post" action="{% url 'dashboard_ai_report_status_update' r.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="block-btn" title="{% if r.status == 'open' %}Mark resolved{% else %}Reopen{% endif %}">{% if r.status == 'open' %}Resolve{% else %}Reopen{% endif %}</button>
+              </form>
+              <form method="post" action="{% url 'dashboard_ai_report_delete' r.pk %}" onsubmit="return confirm('Delete this report?')">
+                {% csrf_token %}
+                <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="empty-row">No {{ group.label|lower }} reports{% if q %} matching your search{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<style>
+  .status-group{margin-top:1.6rem;border-top:3px solid var(--red,#e8001e);padding-top:.1rem}
+  .status-group:first-of-type{margin-top:.5rem}
+  .status-group-head{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem;font-weight:700;font-size:.92rem;color:var(--dark,#1c2333);background:var(--bg2,#f7f8fc)}
+  .status-group-head i{color:var(--red,#e8001e)}
+  .status-count{margin-left:auto;background:var(--red,#e8001e);color:#fff;border-radius:50px;padding:.1rem .65rem;font-size:.78rem;font-weight:700}
+  .status-count-resolved{background:#1da851}
+  .badge.ai-guest{background:#eef2ff;color:#3b5bdb}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.8rem}
+  .row-actions{display:flex;align-items:center;gap:.6rem}
+  .row-actions form{display:inline}
+  .block-btn{border:none;background:none;color:#9aa3b0;cursor:pointer;font-size:.78rem;font-weight:700;transition:color .2s;white-space:nowrap}
+  .block-btn:hover{color:var(--red)}
+  .panel-note{padding:0 1.4rem 1.1rem;font-size:.8rem;color:var(--text)}
+</style>
+{% endblock %}

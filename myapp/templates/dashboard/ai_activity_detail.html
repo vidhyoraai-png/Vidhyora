@@ -1,0 +1,73 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Conversation #{{ conversation.pk }}{% endblock %}
+{% block page_title %}Conversation #{{ conversation.pk }}{% endblock %}
+
+{% block extra_head %}
+<style>
+.flash{border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem;display:flex;gap:.5rem;align-items:center}
+.flash.success{background:#e8f8ee;color:#177245}
+.flash.error{background:#fdeaea;color:var(--red)}
+.badge.ai-blocked{background:var(--red-soft);color:var(--red)}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.8rem}
+.conv-meta{display:flex;flex-wrap:wrap;gap:1.6rem;padding:1.2rem 1.4rem;font-size:.85rem}
+.conv-meta b{display:block;color:var(--head);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.2rem}
+.conv-actions{display:flex;gap:.7rem;padding:0 1.4rem 1.2rem;flex-wrap:wrap}
+.transcript{padding:0 1.4rem 1.4rem}
+.msg-row{padding:.9rem 0;border-bottom:1px solid var(--line)}
+.msg-row:last-child{border-bottom:none}
+.msg-role{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--red);margin-bottom:.3rem}
+.msg-row.assistant .msg-role{color:#3b5bdb}
+.msg-content{font-size:.88rem;color:var(--head);white-space:pre-wrap;word-break:break-word}
+.msg-time{font-size:.72rem;color:#9aa3b0;margin-top:.3rem}
+</style>
+{% endblock %}
+
+{% block content %}
+{% for message in messages %}
+  <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
+{% endfor %}
+
+<a href="{% url 'dashboard_ai_activity' %}" class="panel-link"><i class="fas fa-arrow-left"></i> Back to AI Activity</a>
+
+<div class="panel" style="margin-top:1rem">
+  <div class="panel-head"><h3>{{ conversation.title|default:"(untitled conversation)" }}</h3></div>
+  <div class="conv-meta">
+    <div><b>From</b>{% if conversation.user %}{{ conversation.user.email|default:conversation.user.username }}{% if is_user_blocked %} <span class="badge ai-blocked">Blocked</span>{% endif %}{% else %}Guest{% endif %}</div>
+    <div><b>IP address</b><span class="mono">{{ conversation.ip_address|default:"—" }}</span>{% if is_ip_blocked %} <span class="badge ai-blocked">Blocked</span>{% endif %}</div>
+    <div><b>Started</b>{{ conversation.created_at|date:"d M Y, h:i A" }}</div>
+    <div><b>Last active</b>{{ conversation.updated_at|date:"d M Y, h:i A" }}</div>
+    <div><b>Messages</b>{{ ai_messages|length }}</div>
+  </div>
+  <div class="conv-actions">
+    {% if conversation.ip_address and not is_ip_blocked %}
+    <form method="post" action="{% url 'dashboard_ai_block' %}" onsubmit="return confirm('Block IP {{ conversation.ip_address|escapejs }}? This blocks EVERYONE on that IP, including any other guest sharing it.')">
+      {% csrf_token %}
+      <input type="hidden" name="ip_address" value="{{ conversation.ip_address }}">
+      <input type="hidden" name="conversation_id" value="{{ conversation.pk }}">
+      <button type="submit" class="btn btn-ghost"><i class="fas fa-ban"></i> Block IP</button>
+    </form>
+    {% endif %}
+    {% if conversation.user_id and not is_user_blocked %}
+    <form method="post" action="{% url 'dashboard_ai_block' %}" onsubmit="return confirm('Block the account {{ conversation.user.email|default:conversation.user.username|escapejs }} from Vidhyora AI?')">
+      {% csrf_token %}
+      <input type="hidden" name="user_id" value="{{ conversation.user_id }}">
+      <input type="hidden" name="conversation_id" value="{{ conversation.pk }}">
+      <button type="submit" class="btn btn-ghost"><i class="fas fa-ban"></i> Block account</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="transcript">
+    {% for m in ai_messages %}
+    <div class="msg-row {{ m.role }}">
+      <div class="msg-role">{{ m.role }}{% if m.role == 'assistant' and m.model_key %} · {{ m.model_key }}{% endif %}</div>
+      <div class="msg-content">{{ m.content|default:"(no text)" }}{% if m.document_name %}
+📎 {{ m.document_name }}{% endif %}{% if m.image_data %}
+🖼 (image attached){% endif %}</div>
+      <div class="msg-time">{{ m.created_at|date:"d M Y, h:i:s A" }}</div>
+    </div>
+    {% empty %}
+    <p class="empty-row">No messages in this conversation</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

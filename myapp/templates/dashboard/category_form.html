@@ -1,0 +1,59 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{% if category %}Edit Category{% else %}Add Category{% endif %}{% endblock %}
+{% block page_title %}{% if category %}Edit Category{% else %}Add Category{% endif %}{% endblock %}
+
+{% block content %}
+<form class="form-card" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.name.id_for_label }}">Name</label>
+    {{ form.name }}
+    {{ form.name.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.slug.id_for_label }}">Slug</label>
+    {{ form.slug }}
+    <div class="help">Must match the product filter tag used in the storefront (e.g. "audio"). Leave blank to auto-generate from the name.</div>
+    {{ form.slug.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.description.id_for_label }}">Short description</label>
+    {{ form.description }}
+    <div class="help">Shown under the category name on the homepage, e.g. "Earbuds, headphones, speakers".</div>
+    {{ form.description.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.image.id_for_label }}">Image</label>
+    {% if category and category.image %}
+      <div class="current-thumb">
+        <img src="{{ category.image.url }}" alt="{{ category.name }}">
+        <span class="help">Current image — upload a new one to replace it.</span>
+      </div>
+    {% endif %}
+    {{ form.image }}
+    <div class="help">Shown instead of an icon on the category card. Recommended: square image, at least 200×200px.</div>
+    {{ form.image.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.order.id_for_label }}">Display order</label>
+    {{ form.order }}
+    <div class="help">Lower numbers appear first.</div>
+    {{ form.order.errors }}
+  </div>
+
+  <div class="form-group form-check">
+    {{ form.is_active }}
+    <label for="{{ form.is_active.id_for_label }}">Visible on the storefront</label>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> {% if category %}Save changes{% else %}Create category{% endif %}</button>
+    <a href="{% url 'dashboard_categories' %}" class="btn btn-ghost">Cancel</a>
+  </div>
+</form>
+{% endblock %}

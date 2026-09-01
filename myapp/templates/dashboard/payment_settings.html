@@ -1,0 +1,49 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Payment Settings{% endblock %}
+{% block page_title %}Payment Settings{% endblock %}
+
+{% block content %}
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
+
+{% if not razorpay_installed %}
+<div class="panel" style="padding:1.1rem 1.4rem;background:#fff7e6;border-color:#f5c26b">
+  <b style="color:#b45309"><i class="fas fa-triangle-exclamation"></i> The <code>razorpay</code> Python package isn't installed on this server yet.</b>
+  <div class="help" style="margin-top:.4rem">Run <code>pip install razorpay</code> (it's already listed in requirements.txt) and restart the app before enabling Razorpay — until then, checkout will fall back to Cash on Delivery even if enabled below.</div>
+</div>
+{% endif %}
+
+<form class="form-card" style="max-width:640px" method="post">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.razorpay_key_id.id_for_label }}">Razorpay Key ID</label>
+    {{ form.razorpay_key_id }}
+    <div class="help">From Razorpay Dashboard → Settings → API Keys.</div>
+    {{ form.razorpay_key_id.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.razorpay_key_secret.id_for_label }}">Razorpay Key Secret</label>
+    {{ form.razorpay_key_secret }}
+    {{ form.razorpay_key_secret.errors }}
+  </div>
+
+  <div class="toggle-row">
+    <div><b>Enable Razorpay at checkout</b><span>Shoppers see "Pay online" as a checkout option once a valid key pair is saved.</span></div>
+    {{ form.is_razorpay_enabled }}
+  </div>
+  <div class="toggle-row">
+    <div><b>Test mode</b><span>Turn off once you switch to live Razorpay keys.</span></div>
+    {{ form.is_test_mode }}
+  </div>
+  <div class="toggle-row">
+    <div><b>Cash on Delivery</b><span>Keep this on as a fallback for shoppers without online payment.</span></div>
+    {{ form.cod_enabled }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save settings</button>
+    <a href="{% url 'dashboard_payments' %}" class="btn btn-ghost">View payments</a>
+  </div>
+</form>
+{% endblock %}

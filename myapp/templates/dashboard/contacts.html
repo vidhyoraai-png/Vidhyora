@@ -1,0 +1,56 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Contact Leads{% endblock %}
+{% block page_title %}Contact Leads{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ leads|length }} message{{ leads|length|pluralize }}</h3>
+    <form class="panel-search" method="get">
+      <i class="fas fa-magnifying-glass"></i>
+      <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, message…">
+    </form>
+  </div>
+
+  {% for group in groups %}
+  <div class="source-group">
+    <div class="source-group-head">
+      <i class="fas fa-globe"></i> {{ group.label }}
+      <span class="source-count">{{ group.leads|length }}</span>
+    </div>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>Name</th><th>Contact</th><th>Topic</th><th>Message</th><th>Received</th><th></th></tr></thead>
+      <tbody>
+        {% for lead in group.leads %}
+        <tr>
+          <td>{{ lead.name }}</td>
+          <td>{{ lead.phone }}<span class="sub-line">{{ lead.email }}</span></td>
+          <td>{{ lead.service|default:"—" }}</td>
+          <td class="msg-cell">{{ lead.message|default:"—" }}</td>
+          <td>{{ lead.created_at|date:"d M Y, h:i A" }}</td>
+          <td>
+            <form method="post" action="{% url 'dashboard_contact_delete' lead.pk %}" onsubmit="return confirm('Delete this message?')">
+              {% csrf_token %}
+              <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="empty-row">No messages from {{ group.label }}{% if q %} matching your search{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<style>
+  .source-group{margin-top:1.6rem;border-top:3px solid var(--red,#e8001e);padding-top:.1rem}
+  .source-group:first-of-type{margin-top:.5rem}
+  .source-group-head{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem;font-weight:700;font-size:.92rem;color:var(--dark,#1c2333);background:var(--bg2,#f7f8fc)}
+  .source-group-head i{color:var(--red,#e8001e)}
+  .source-count{margin-left:auto;background:var(--red,#e8001e);color:#fff;border-radius:50px;padding:.1rem .65rem;font-size:.78rem;font-weight:700}
+</style>
+{% endblock %}

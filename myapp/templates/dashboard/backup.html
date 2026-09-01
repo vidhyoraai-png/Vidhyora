@@ -1,0 +1,144 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Backup & Restore{% endblock %}
+{% block page_title %}Database Backup & Restore{% endblock %}
+
+{% block extra_head %}
+<style>
+.backup-sub{color:var(--text);font-size:.88rem;margin:-.8rem 0 1.4rem}
+.backup-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-bottom:1.6rem}
+@media (max-width:900px){.backup-grid{grid-template-columns:1fr}}
+.backup-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden}
+.backup-card-head{padding:1rem 1.4rem;color:#fff;font-weight:800;font-size:.95rem;display:flex;align-items:center;gap:.55rem}
+.backup-card-head.blue{background:linear-gradient(135deg,#3b5bdb,#2b3fa8)}
+.backup-card-head.red{background:linear-gradient(135deg,var(--red),var(--red-dark))}
+.backup-card-body{padding:1.3rem 1.4rem}
+.backup-facts{list-style:none;margin-bottom:1.1rem}
+.backup-facts li{display:flex;gap:.6rem;align-items:flex-start;padding:.55rem 0;border-bottom:1px solid var(--line);font-size:.83rem;color:var(--text)}
+.backup-facts li:last-child{border-bottom:none}
+.backup-facts li i{color:#3b5bdb;margin-top:.2rem;width:16px;text-align:center}
+.backup-warn{background:#fff7e6;border:1px solid #f5c26b;color:#8a5a00;border-radius:12px;padding:.85rem 1rem;font-size:.83rem;margin-bottom:1.1rem;display:flex;gap:.6rem;align-items:flex-start}
+.backup-warn i{margin-top:.15rem}
+.btn-block{width:100%;justify-content:center;padding:.9rem 1rem;font-size:.9rem}
+.btn-block:disabled{opacity:.5;cursor:not-allowed}
+.btn-blue{background:linear-gradient(135deg,#3b5bdb,#2b3fa8);color:#fff}
+.btn-blue:hover{opacity:.92}
+.flash{border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem;display:flex;gap:.5rem;align-items:center}
+.flash.success{background:#e8f8ee;color:#177245}
+.flash.error{background:#fdeaea;color:var(--red)}
+.not-configured{background:#fff7e6;border:1px solid #f5c26b;border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.4rem;color:#8a5a00}
+.not-configured a{color:var(--red);font-weight:700}
+.backup-danger{border-color:#f3b7bf}
+.backup-danger .panel-head{background:#fff5f6;color:var(--red)}
+.backup-danger-body{padding:1.3rem 1.4rem;display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:1rem;align-items:end}
+.backup-danger-copy{grid-column:1/-1;font-size:.82rem;color:var(--text);line-height:1.55}
+.backup-danger .form-group{margin:0}
+.btn-danger{background:var(--red);color:#fff;white-space:nowrap}
+.btn-danger:hover{background:var(--red-dark)}
+@media(max-width:620px){.backup-danger-body{grid-template-columns:1fr}.backup-danger-copy{grid-column:auto}.btn-danger{width:100%;justify-content:center}}
+</style>
+{% endblock %}
+
+{% block content %}
+<p class="backup-sub">Manually back up your SQLite database to Dropbox, or restore from a previous backup.</p>
+
+{% for message in messages %}
+  <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
+{% endfor %}
+
+{% if not dropbox_installed %}
+<div class="not-configured">
+  <b><i class="fas fa-triangle-exclamation"></i> The <code>dropbox</code> Python package isn't installed.</b>
+  <div style="margin-top:.3rem">Run <code>pip install dropbox</code> (already listed in requirements.txt) and restart the app.</div>
+</div>
+{% elif not settings_obj.is_configured %}
+<div class="not-configured">
+  <b><i class="fas fa-triangle-exclamation"></i> Dropbox isn't connected yet.</b>
+  <div style="margin-top:.3rem">Add your App Key, App Secret and Refresh Token in <a href="{% url 'dashboard_backup_settings' %}">Backup Settings</a> before you can back up or restore.</div>
+</div>
+{% endif %}
+
+<div class="backup-grid">
+  <div class="backup-card">
+    <div class="backup-card-head blue"><i class="fas fa-cloud-arrow-up"></i> Backup to Dropbox</div>
+    <div class="backup-card-body">
+      <ul class="backup-facts">
+        <li><i class="fas fa-folder"></i> Saves a timestamped copy to <code>{{ backup_folder }}/</code></li>
+        <li><i class="fas fa-file-circle-check"></i> Also refreshes <code>{{ backup_folder }}/db_latest.sqlite3</code></li>
+        <li><i class="fas fa-shield-halved"></i> Old backups are kept — nothing is deleted automatically</li>
+      </ul>
+      <form method="post" action="{% url 'dashboard_backup_run' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-blue btn-block" {% if not settings_obj.is_configured or not dropbox_installed %}disabled{% endif %}>
+          <i class="fas fa-cloud-arrow-up"></i> Backup Now
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="backup-card">
+    <div class="backup-card-head red"><i class="fas fa-cloud-arrow-down"></i> Restore from Dropbox</div>
+    <div class="backup-card-body">
+      <div class="backup-warn"><i class="fas fa-triangle-exclamation"></i> <span><b>Warning:</b> this will overwrite your current database. Take a fresh backup first!</span></div>
+      <form method="post" action="{% url 'dashboard_backup_restore' %}" onsubmit="return confirm('This will permanently overwrite the live database with the selected backup. This cannot be undone. Continue?');">
+        {% csrf_token %}
+        <div class="form-group">
+          <label for="restoreFile">Select backup file</label>
+          <select name="filename" id="restoreFile" {% if not backups %}disabled{% endif %}>
+            {% for f in backups %}<option value="{{ f.name }}">{{ f.name }}</option>{% empty %}<option>No backups found</option>{% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" {% if not backups %}disabled{% endif %}>
+          <i class="fas fa-cloud-arrow-down"></i> Restore Selected Backup
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3><i class="fas fa-clock-rotate-left"></i> Backup History ({{ backups|length }} backup{{ backups|length|pluralize }} on Dropbox)</h3>
+  </div>
+  {% if list_error %}
+    <div style="padding:1.4rem" class="help">{{ list_error }}</div>
+  {% else %}
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>#</th><th>Filename</th><th>Date</th><th>Time</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for f in backups %}
+        <tr>
+          <td>{{ forloop.counter }}</td>
+          <td>{{ f.name }}</td>
+          <td>{{ f.client_modified|date:"Y-m-d" }}</td>
+          <td>{{ f.client_modified|date:"h:i:s A" }}</td>
+          <td>
+            <form method="post" action="{% url 'dashboard_backup_restore' %}" onsubmit="return confirm('This will permanently overwrite the live database with {{ f.name }}. This cannot be undone. Continue?');" style="display:inline">
+              {% csrf_token %}
+              <input type="hidden" name="filename" value="{{ f.name }}">
+              <button type="submit" class="btn btn-ghost" style="padding:.4rem .9rem;font-size:.78rem"><i class="fas fa-rotate-left"></i> Restore</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="empty-row">No backups yet — click "Backup Now" to create the first one.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel backup-danger">
+  <div class="panel-head"><h3><i class="fas fa-triangle-exclamation"></i> Delete all backups</h3></div>
+  <form class="backup-danger-body" method="post" action="{% url 'dashboard_backup_delete_all' %}" onsubmit="return confirm('Delete EVERY backup inside {{ backup_folder|escapejs }} on Dropbox? This cannot be undone.');">
+    {% csrf_token %}
+    <p class="backup-danger-copy">This permanently deletes every timestamped backup and <code>db_latest.sqlite3</code> inside <code>{{ backup_folder }}/</code>. Your live database and other Dropbox folders are not affected.</p>
+    <div class="form-group">
+      <label for="deleteAllConfirmation">Type <b>DELETE ALL</b> to confirm</label>
+      <input id="deleteAllConfirmation" name="confirmation" type="text" required pattern="DELETE ALL" autocomplete="off" placeholder="DELETE ALL">
+    </div>
+    <button type="submit" class="btn btn-danger" {% if not settings_obj.is_configured or not dropbox_installed %}disabled{% endif %}><i class="fas fa-trash"></i> Delete All Backups</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Payments{% endblock %}
+{% block page_title %}Payments{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ payments|length }} payment{{ payments|length|pluralize }}</h3>
+    <div class="row-actions">
+      <div class="filter-tabs">
+        <a href="?q={{ q }}" class="{% if not status %}on{% endif %}">All</a>
+        {% for value, label in status_choices %}
+        <a href="?q={{ q }}&status={{ value }}" class="{% if status == value %}on{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <form class="panel-search" method="get">
+        {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+        <i class="fas fa-magnifying-glass"></i>
+        <input type="search" name="q" value="{{ q }}" placeholder="Search order #, customer, txn ID…">
+      </form>
+    </div>
+  </div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Order</th><th>Customer</th><th>Method</th><th>Amount</th><th>Razorpay ID</th><th>Status</th><th>Date</th></tr></thead>
+    <tbody>
+      {% for pay in payments %}
+      <tr>
+        <td>#{{ pay.order_id }}</td>
+        <td>{{ pay.order.user.first_name|default:pay.order.user.username }}<span class="sub-line">{{ pay.order.user.email }}</span></td>
+        <td>{{ pay.get_method_display }}</td>
+        <td>₹{{ pay.amount|floatformat:0 }}</td>
+        <td><span class="sub-line">{{ pay.razorpay_payment_id|default:pay.razorpay_order_id|default:"—" }}</span></td>
+        <td><span class="badge pay-{{ pay.status }}">{{ pay.get_status_display }}</span></td>
+        <td>{{ pay.created_at|date:"d M Y, h:i A" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="empty-row">No payments match your search</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}
