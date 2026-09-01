@@ -4,9 +4,11 @@ store owner's Dropbox App Key/Secret + a long-lived OAuth2 refresh token
 `dropbox` package isn't installed or credentials aren't set yet.
 """
 import datetime
+import logging
 from pathlib import Path
 
 from django.conf import settings as dj_settings
+from django.db import transaction
 
 try:
     import dropbox
@@ -16,6 +18,7 @@ except ImportError:  # pragma: no cover - optional dependency until configured
 BACKUP_ROOT = '/EduTrellis Store'
 BACKUP_FOLDER = f'{BACKUP_ROOT}/backups'
 LATEST_NAME = 'db_latest.sqlite3'
+logger = logging.getLogger(__name__)
 
 
 class BackupError(Exception):
@@ -59,7 +62,9 @@ def create_backup(settings_obj):
             raise BackupError('Local database file was not found.')
         data = path.read_bytes()
 
-        stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Microseconds prevent two account additions in the same second from
+        # colliding when Dropbox WriteMode.add is used.
+        stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         filename = f'db_{stamp}.sqlite3'
         dbx.files_upload(data, f'{BACKUP_FOLDER}/{filename}', mode=dropbox.files.WriteMode.add)
         dbx.files_upload(data, f'{BACKUP_FOLDER}/{LATEST_NAME}', mode=dropbox.files.WriteMode.overwrite)
@@ -68,6 +73,33 @@ def create_backup(settings_obj):
         raise
     except Exception as exc:
         raise BackupError(f'Backup to Dropbox failed: {exc}')
+
+
+def create_automatic_backup_if_configured(reason='database change'):
+    """Best-effort backup used by automatic triggers such as account creation.
+
+    Missing credentials/package and Dropbox failures never roll back the
+    database change that requested the backup. Manual Backup Now continues to
+    show errors directly to an administrator.
+    """
+    from .models import DropboxSettings
+
+    try:
+        settings_obj = DropboxSettings.objects.filter(pk=1).first()
+        if dropbox is None or not settings_obj or not settings_obj.is_configured:
+            logger.info('Automatic backup skipped after %s: Dropbox is not configured.', reason)
+            return None
+        filename = create_backup(settings_obj)
+        logger.info('Automatic backup after %s saved as %s.', reason, filename)
+        return filename
+    except Exception:
+        logger.exception('Automatic backup failed after %s.', reason)
+        return None
+
+
+def schedule_automatic_backup(reason='database change'):
+    """Run an automatic backup only after the surrounding write commits."""
+    transaction.on_commit(lambda: create_automatic_backup_if_configured(reason))
 
 
 def list_backups(settings_obj):

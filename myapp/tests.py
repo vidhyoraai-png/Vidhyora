@@ -20,7 +20,7 @@ from PIL import Image
 
 from . import ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup, image_generation, privacy, request_router
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, DropboxSettings, GitHubConnection, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_generated_file_spec, _extract_ai_generated_file_content,
@@ -1517,6 +1517,74 @@ class DashboardBackupDeletionTests(TestCase):
         self.assertEqual(dbx.files_delete_v2.call_count, 2)
         dbx.files_delete_v2.assert_any_call('/edutrellis store/backups/db_20260831.sqlite3')
         dbx.files_delete_v2.assert_any_call('/edutrellis store/backups/db_latest.sqlite3')
+
+
+class AutomaticAccountBackupTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username='automatic-backup-admin@example.com',
+            email='automatic-backup-admin@example.com',
+            password='admin-password',
+        )
+        StoreProfile.objects.create(user=self.admin, phone='9222222222')
+        DropboxSettings.objects.create(
+            pk=1, app_key='app-key', app_secret='app-secret', refresh_token='refresh-token',
+        )
+        self.client.force_login(self.admin)
+
+    @patch('myapp.dropbox_backup.create_backup', return_value='db_automatic.sqlite3')
+    def test_dashboard_account_creation_runs_backup_after_commit(self, create_backup):
+        with patch.object(dropbox_backup, 'dropbox', SimpleNamespace()):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post('/store/dashboard/users/add/', {
+                    'next': 'dashboard_signups',
+                    'name': 'New Customer',
+                    'email': 'new-customer@example.com',
+                    'phone': '9333333333',
+                    'password': 'customer-password',
+                    'amount_paid': '',
+                })
+
+        self.assertRedirects(response, '/store/dashboard/signups/')
+        self.assertTrue(User.objects.filter(email='new-customer@example.com').exists())
+        create_backup.assert_called_once()
+        self.assertEqual(create_backup.call_args.args[0].pk, 1)
+
+    @patch(
+        'myapp.dropbox_backup.create_backup',
+        side_effect=dropbox_backup.BackupError('Dropbox temporarily unavailable'),
+    )
+    def test_backup_failure_does_not_cancel_new_account(self, create_backup):
+        with patch.object(dropbox_backup, 'dropbox', SimpleNamespace()):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post('/store/dashboard/users/add/', {
+                    'next': 'dashboard_signups',
+                    'name': 'Still Created',
+                    'email': 'still-created@example.com',
+                    'phone': '9444444445',
+                    'password': 'customer-password',
+                    'amount_paid': '',
+                })
+
+        self.assertRedirects(response, '/store/dashboard/signups/')
+        self.assertTrue(User.objects.filter(email='still-created@example.com').exists())
+        create_backup.assert_called_once()
+
+    def test_django_user_admin_schedules_only_for_new_accounts(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.contrib.auth.admin import UserAdmin
+        from myapp.admin import StoreUserAdmin
+
+        user_admin = StoreUserAdmin(User, AdminSite())
+        request = RequestFactory().post('/admin/auth/user/add/')
+        with patch.object(UserAdmin, 'save_related'):
+            with patch('myapp.admin.dropbox_backup.schedule_automatic_backup') as schedule:
+                user_admin.save_related(request, Mock(), [], change=False)
+                schedule.assert_called_once_with('new Django admin account')
+
+                schedule.reset_mock()
+                user_admin.save_related(request, Mock(), [], change=True)
+                schedule.assert_not_called()
 
 
 class RemovedPublicSurfaceTests(TestCase):

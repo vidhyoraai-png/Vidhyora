@@ -765,6 +765,7 @@ def dashboard_user_add(request):
                 first_name=first_name, last_name=last_name,
             )
             StoreProfile.objects.create(user=user, phone=phone, manual_amount_paid=amount_paid)
+            dropbox_backup.schedule_automatic_backup('new dashboard account')
             if form.cleaned_data['password']:
                 messages.success(request, f'Created account for {email}.')
             else:
