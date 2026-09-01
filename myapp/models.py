@@ -1002,16 +1002,25 @@ class AINote(models.Model):
 class AIReport(models.Model):
     """A user's 'this answer is wrong / abusive' report against one
     assistant reply, submitted from the Report button under every AI chat
-    message. Snapshots the reported reply's text and model at submit time
-    (not just a message FK) so staff can still see exactly what was flagged
-    even if the message, or the whole conversation, is later deleted."""
+    message. Snapshots the reported turn's text, visual/document evidence,
+    and model at submit time (not just a message FK) so staff can still see
+    what was flagged even if the message or conversation is later deleted."""
     STATUS_OPEN = 'open'
     STATUS_RESOLVED = 'resolved'
     STATUS_CHOICES = [(STATUS_OPEN, 'Open'), (STATUS_RESOLVED, 'Resolved')]
 
     conversation   = models.ForeignKey(AIConversation, on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
     message        = models.ForeignKey(AIMessage, on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
+    # Snapshot both sides of the reported turn, including visual inputs and
+    # outputs.  Reports must remain reviewable after a chat or its generated
+    # media is deleted, so the message foreign key is only a convenient link,
+    # never the sole copy of the evidence.
+    user_prompt    = models.TextField(blank=True)
+    user_image     = models.TextField(blank=True)
+    user_document_name = models.CharField(max_length=255, blank=True)
+    user_document_excerpt = models.TextField(blank=True)
     reported_reply = models.TextField(blank=True)
+    reported_image = models.TextField(blank=True)
     model_key      = models.CharField(max_length=20, blank=True)
     explanation    = models.TextField(blank=True)
     user           = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='ai_reports')

@@ -182,12 +182,14 @@ class AIReportAdmin(admin.ModelAdmin):
     list_editable = ('status',)
     list_filter = ('status', 'model_key', 'created_at')
     search_fields = (
-        'explanation', 'reported_reply', 'user__username', 'user__email',
-        'session_key', 'conversation__title',
+        'explanation', 'reported_reply', 'user_prompt', 'user_document_name', 'user__username',
+        'user__email', 'session_key', 'conversation__title',
     )
     list_select_related = ('user', 'conversation')
     readonly_fields = (
-        'conversation', 'message', 'reported_reply', 'model_key',
+        'conversation', 'message', 'user_prompt', 'user_image',
+        'user_document_name', 'user_document_excerpt',
+        'reported_reply', 'reported_image', 'model_key',
         'user', 'session_key', 'ip_address', 'created_at',
     )
 

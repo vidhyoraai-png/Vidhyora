@@ -1,4 +1,5 @@
 import base64
+import binascii
 import io
 import json
 import logging
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from functools import wraps
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 import requests
 from docx import Document as WordDocument
@@ -20,7 +21,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.db import OperationalError, ProgrammingError
-from django.db.models import Q, F, Count, Sum
+from django.db.models import Q, F, Count, Sum, Prefetch
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import resolve, Resolver404, reverse
 from django.templatetags.static import static as static_url
@@ -43,7 +44,7 @@ from myapp.models import (
     ContactLead, StoreProfile, Category, Order, OrderItem,
     Product, AboutUsContent, PolicyPage, PaymentSettings, Payment,
     DropboxSettings, PhoneVerification, PWASettings, FeeSettings, SiteCustomization,
-    AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile,
+    AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile, KnowledgeEntry,
     GitHubConnection, YouTubeDownloadJob,
 )
 from myapp import dropbox_backup
@@ -57,6 +58,7 @@ from myapp import privacy
 from myapp import request_router
 from myapp import audio_transcribe
 from myapp import youtube_download
+from myapp.ai_report_analysis import analyze_report, aggregate_report_issues
 from myapp.emailing import send_store_email, get_notify_email
 from myapp.sms import send_phone_otp, verify_phone_otp
 from myapp.seed_data import seed_demo_reviews
@@ -133,11 +135,16 @@ def _profile_wizard_needed(user):
 
 
 def _merge_session_ai_chats_into_user(user, session_key):
-    """Attach a guest's saved AI conversations and files after login."""
+    """Attach a guest's saved AI data to the account they just entered."""
     if not session_key:
         return
     AIConversation.objects.filter(session_key=session_key, user__isnull=True).update(user=user, session_key='')
     AIGeneratedFile.objects.filter(session_key=session_key, user__isnull=True).update(user=user, session_key='')
+    # A report submitted before login should not disappear from the account
+    # panel afterwards.  Keep its immutable evidence and status, but move its
+    # owner from the guest session to the authenticated account just like the
+    # conversation itself.
+    AIReport.objects.filter(session_key=session_key, user__isnull=True).update(user=user, session_key='')
 
 
 def _parse_json_body(request):
@@ -504,6 +511,7 @@ def ai_account_details(request):
             'status': report.status,
             'status_label': report.get_status_display(),
             'explanation': report.explanation,
+            'user_prompt': report.user_prompt,
             'reported_reply': report.reported_reply,
             'model': ai_chat.MODELS.get(report.model_key, {}).get('label', report.model_key or 'AI'),
             'conversation_title': report.conversation.title if report.conversation else 'Deleted conversation',
@@ -933,6 +941,85 @@ def dashboard_ai_activity_detail(request, pk):
     return render(request, 'dashboard/ai_activity_detail.html', context)
 
 
+def _ai_reporter_scope(report):
+    """Return the exact account/session identity represented by a report."""
+    conversation = report.conversation
+    user = report.user or (conversation.user if conversation and conversation.user_id else None)
+    session_key = report.session_key or (
+        conversation.session_key if conversation and not user else ''
+    )
+    return user, session_key
+
+
+def _ai_report_system_health():
+    """Scan objective storage/linkage gaps that report text alone cannot show."""
+    signals = []
+    generated_images = list(
+        AIMessage.objects.filter(role=AIMessage.ROLE_ASSISTANT)
+        .exclude(image_data='').values_list('image_data', flat=True)
+    )
+    missing_images = 0
+    for image_value in generated_images:
+        storage_name = _ai_storage_name_from_url(image_value)
+        if not storage_name:
+            continue
+        try:
+            if not default_storage.exists(storage_name):
+                missing_images += 1
+        except Exception:
+            # Storage availability is unknown, not proof that the image is
+            # missing. Do not turn a connectivity problem into a false alert.
+            pass
+    if missing_images:
+        signals.append({
+            'key': 'missing_generated_media',
+            'label': 'Generated image files are missing',
+            'severity': 'high',
+            'count': missing_images,
+            'evidence': (
+                f'{missing_images} of {len(generated_images)} stored generated-image '
+                'messages point to media files that are no longer available.'
+            ),
+            'fix': (
+                'Move generated media to durable storage and include media in backup/restore. '
+                'Keep the database snapshot added to new image reports as review evidence.'
+            ),
+        })
+
+    unlinked_reports = AIReport.objects.filter(message__isnull=True).count()
+    if unlinked_reports:
+        signals.append({
+            'key': 'unlinked_report_evidence',
+            'label': 'Reports are missing a stable response link',
+            'severity': 'medium',
+            'count': unlinked_reports,
+            'evidence': f'{unlinked_reports} reports are not linked to an assistant message.',
+            'fix': (
+                'Keep submitting the exact message id for saved replies and persist structured '
+                'rows for provider errors so every future report has an authoritative target.'
+            ),
+        })
+
+    learned_failures = KnowledgeEntry.objects.filter(
+        content__in=AIReport.objects.exclude(reported_reply='').values('reported_reply')
+    ).count()
+    if learned_failures:
+        signals.append({
+            'key': 'reported_answer_reuse',
+            'label': 'Reported answers remain in the learning store',
+            'severity': 'high',
+            'count': learned_failures,
+            'evidence': (
+                f'{learned_failures} learned entries exactly match an answer that a user reported.'
+            ),
+            'fix': (
+                'Link learned entries to their source message, quarantine them as soon as a report '
+                'opens, and restore only after a reviewer confirms the answer is safe to reuse.'
+            ),
+        })
+    return signals
+
+
 @dashboard_staff_required
 def dashboard_ai_reports(request):
     """Every 'report this reply' submission from the AI chat (see the
@@ -941,20 +1028,81 @@ def dashboard_ai_reports(request):
     session), what reply they flagged, and why — grouped by open/resolved
     so staff can see what still needs attention."""
     q = request.GET.get('q', '').strip()
-    reports = AIReport.objects.select_related('user', 'conversation').order_by('-created_at')
+    reports = AIReport.objects.select_related('user', 'conversation', 'message').order_by('-created_at')
     if q:
         reports = reports.filter(
             Q(user__email__icontains=q) | Q(user__username__icontains=q) |
             Q(session_key__icontains=q) | Q(explanation__icontains=q) |
-            Q(reported_reply__icontains=q)
+            Q(reported_reply__icontains=q) | Q(user_prompt__icontains=q) |
+            Q(user_document_name__icontains=q) | Q(model_key__icontains=q) |
+            Q(conversation__title__icontains=q)
         )
     all_reports = list(reports)
+    for report in all_reports:
+        report.detected_issues = analyze_report(report)
+        report.primary_issue = report.detected_issues[0] if report.detected_issues else None
     groups = [
         {'status': value, 'label': label, 'reports': [r for r in all_reports if r.status == value]}
         for value, label in AIReport.STATUS_CHOICES
     ]
     return render(request, 'dashboard/ai_reports.html', {
         'active': 'ai_reports', 'reports': all_reports, 'groups': groups, 'q': q,
+        'failure_insights': aggregate_report_issues(all_reports),
+        'system_health': _ai_report_system_health(),
+    })
+
+
+@dashboard_staff_required
+def dashboard_ai_report_detail(request, pk):
+    report = get_object_or_404(
+        AIReport.objects.select_related('user', 'conversation__user', 'message'), pk=pk,
+    )
+    owner_user, owner_session = _ai_reporter_scope(report)
+
+    if owner_user:
+        conversation_filter = Q(user=owner_user)
+        report_filter = Q(user=owner_user) | Q(user__isnull=True, conversation__user=owner_user)
+        reporter_label = owner_user.get_full_name() or owner_user.email or owner_user.username
+    elif owner_session:
+        conversation_filter = Q(user__isnull=True, session_key=owner_session)
+        report_filter = Q(user__isnull=True, session_key=owner_session)
+        reporter_label = f'Guest session {owner_session[:10]}…'
+    elif report.conversation_id:
+        conversation_filter = Q(pk=report.conversation_id)
+        report_filter = Q(pk=report.pk)
+        reporter_label = 'Guest (identity unavailable)'
+    else:
+        conversation_filter = Q(pk__in=[])
+        report_filter = Q(pk=report.pk)
+        reporter_label = 'Deleted/unknown reporter'
+
+    message_queryset = AIMessage.objects.only(
+        'id', 'conversation_id', 'role', 'content', 'image_data',
+        'document_name', 'document_text', 'model_key', 'created_at',
+    ).order_by('created_at', 'pk')
+    conversations = list(
+        AIConversation.objects.filter(conversation_filter)
+        .prefetch_related(Prefetch('messages', queryset=message_queryset, to_attr='report_messages'))
+        .order_by('-updated_at', '-pk')
+    )
+    reporter_reports = list(
+        AIReport.objects.filter(report_filter)
+        .select_related('conversation', 'message')
+        .order_by('-created_at', '-pk')
+    )
+    for reporter_report in reporter_reports:
+        reporter_report.detected_issues = analyze_report(reporter_report)
+
+    return render(request, 'dashboard/ai_report_detail.html', {
+        'active': 'ai_reports',
+        'report': report,
+        'reporter_label': reporter_label,
+        'current_issues': analyze_report(report),
+        'reporter_insights': aggregate_report_issues(reporter_reports),
+        'reporter_reports': reporter_reports,
+        'conversations': conversations,
+        'conversation_count': len(conversations),
+        'message_count': sum(len(conversation.report_messages) for conversation in conversations),
     })
 
 
@@ -972,6 +1120,62 @@ def dashboard_ai_report_delete(request, pk):
     if request.method == 'POST':
         get_object_or_404(AIReport, pk=pk).delete()
     return redirect('dashboard_ai_reports')
+
+
+def _dashboard_ai_image_response(image_value):
+    """Serve private chat/report images without embedding base64 in HTML."""
+    if not image_value:
+        return HttpResponse('Image not available.', status=404, content_type='text/plain')
+
+    if image_value.startswith('data:image/'):
+        match = re.match(r'^data:(image/(?:png|jpe?g|webp|gif));base64,(.+)$', image_value, re.I | re.S)
+        if not match:
+            return HttpResponse('Image not available.', status=404, content_type='text/plain')
+        try:
+            raw = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError, TypeError):
+            return HttpResponse('Image not available.', status=404, content_type='text/plain')
+        if len(raw) > AI_IMAGE_MAX_DATA_URI_CHARS:
+            return HttpResponse('Image is too large to preview.', status=413, content_type='text/plain')
+        response = HttpResponse(raw, content_type=match.group(1).lower())
+    else:
+        storage_name = _ai_storage_name_from_url(image_value)
+        if storage_name:
+            try:
+                image_file = default_storage.open(storage_name, 'rb')
+            except Exception:
+                return HttpResponse('Image file is unavailable.', status=404, content_type='text/plain')
+            response = FileResponse(
+                image_file,
+                content_type=mimetypes.guess_type(storage_name)[0] or 'application/octet-stream',
+            )
+        else:
+            parsed = urlsplit(image_value)
+            if parsed.scheme not in ('http', 'https'):
+                return HttpResponse('Image not available.', status=404, content_type='text/plain')
+            return redirect(image_value)
+
+    response['Cache-Control'] = 'private, no-store'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@dashboard_staff_required
+def dashboard_ai_message_image(request, pk):
+    message = get_object_or_404(AIMessage.objects.only('image_data'), pk=pk)
+    return _dashboard_ai_image_response(message.image_data)
+
+
+@dashboard_staff_required
+def dashboard_ai_report_image(request, pk, side):
+    report = get_object_or_404(AIReport.objects.only('user_image', 'reported_image'), pk=pk)
+    if side == 'user':
+        image_value = report.user_image
+    elif side == 'assistant':
+        image_value = report.reported_image
+    else:
+        return HttpResponse('Image not available.', status=404, content_type='text/plain')
+    return _dashboard_ai_image_response(image_value)
 
 
 @dashboard_staff_required
@@ -2342,7 +2546,11 @@ def _ai_chat_failure_reply(error, response_model_key, is_staff=False):
         return f'{label} is currently at its request limit. Please wait a moment and try again.'
     if ai_chat._is_transient_error(error):
         return f'{label} is temporarily unavailable. Please wait a moment and try again.'
-    return f'{label} did not respond. Please try again.'
+    return (
+        f'{label} is taking longer than expected to respond. Please try again in '
+        'a moment — if this keeps happening, switching to a different model from '
+        'the picker usually helps.'
+    )
 
 
 def _ai_flux_response(conversation, prompt, source_image, response_model_key=None):
@@ -2389,7 +2597,7 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     # back to its usual "No response" placeholder when generatedImageUrl
     # is set, so an empty reply here renders as just the image.
     reply = ''
-    AIMessage.objects.create(
+    assistant_message = AIMessage.objects.create(
         conversation=conversation,
         role=AIMessage.ROLE_ASSISTANT,
         content=reply,
@@ -2405,6 +2613,7 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     )
     response['X-Request-Category'] = 'image_edit' if source_image else 'image_generation'
     response['X-Generated-Image-Url'] = generated_url
+    response['X-Message-Id'] = str(assistant_message.pk)
     return response
 
 
@@ -2524,9 +2733,17 @@ def ai_chat_send(request):
     # same regex but isn't an actual subject to draw, so it's excluded here
     # and answered conversationally instead — otherwise FLUX would try to
     # render the question text itself as an image.
-    is_image_request = (
-        bool(message) and ai_chat.is_image_generation_request(message)
-        and not ai_chat.is_image_capability_question(message)
+    is_image_request = bool(message) and (
+        (
+            ai_chat.is_image_generation_request(message)
+            and not ai_chat.is_image_capability_question(message)
+        )
+        # A raw Midjourney/DALL-E-style scene description (no generate/create
+        # verb at all, e.g. "A realistic brown dog..., soft lighting, 4k.")
+        # never matches the verb+noun regex above — see AIReport #19. Two or
+        # more photography/art style cues and no question mark is a strong
+        # enough signal to route it the same way.
+        or (not image_data and ai_chat.is_probable_image_prompt(message))
     )
     generated_file_spec = (
         _ai_generated_file_spec(message)
@@ -2563,7 +2780,17 @@ def ai_chat_send(request):
         model_key = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
         request_category = 'image_edit' if image_data else 'image_generation'
     elif image_data:
-        model_key = 'vision'
+        if ai_chat.is_image_edit_instruction(message):
+            # An attached image already supplies the implicit subject, so an
+            # edit-shaped verb alone is enough — "REmove all Names" on an
+            # attached invitation (AIReport #11) has no image-shaped noun and
+            # never matched is_image_request above, but sending it to Vision
+            # (read-only) instead of FLUX (edit-capable) is exactly why it
+            # got an unrelated reply instead of an edit.
+            model_key = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+            request_category = 'image_edit'
+        else:
+            model_key = 'vision'
     elif document_mode == 'coding':
         # "Start coding" is an explicit mode choice, so use the code-tuned
         # route even if the general model picker was previously on Light/etc.
@@ -2903,7 +3130,11 @@ def ai_chat_send(request):
                 jagu=is_jagu, jagu_greet=is_jagu_greet,
                 persona_farewell=is_persona_farewell, language=language,
                 document_instruction=document_instruction,
-                max_tokens=(AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS if document_mode == 'coding' or generated_file_spec else None),
+                max_tokens=(
+                    AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS
+                    if document_mode == 'coding' or generated_file_spec or ai_chat.wants_long_form_output(message)
+                    else None
+                ),
                 onboarding_ask=onboarding_ask,
             ):
                 full_reply += chunk
@@ -3186,7 +3417,7 @@ def ai_conversation_messages(request, conversation_id):
     request.session[AI_CURRENT_CONVERSATION_SESSION_KEY] = conversation.id
     messages_qs = list(
         conversation.messages.order_by('created_at')
-        .values('role', 'content', 'image_data', 'document_name', 'model_key')
+        .values('id', 'role', 'content', 'image_data', 'document_name', 'model_key')
     )
     return JsonResponse({'status': 'ok', 'title': conversation.title, 'messages': messages_qs})
 
@@ -3284,6 +3515,62 @@ def ai_note_delete(request, note_id):
 AI_REPORT_MAX_EXPLANATION_CHARS = 2000
 
 
+def _is_reportable_unsaved_ai_failure(reply):
+    """Allow reports for streamed provider failures that are not AIMessage rows."""
+    lowered = (reply or '').casefold()
+    return any(marker in lowered for marker in (
+        'did not respond',
+        'taking longer than expected',
+        'temporarily unavailable',
+        'currently disconnected',
+        'authentication is currently unavailable',
+        'currently at its request limit',
+        '[response interrupted.',
+        'too long for the ai to process',
+    ))
+
+
+def _ai_storage_name_from_url(image_value):
+    """Return a safe storage-relative name for one of our media URLs."""
+    if not image_value or image_value.startswith('data:'):
+        return ''
+    image_path = unquote(urlsplit(image_value).path or '')
+    media_path = urlsplit(settings.MEDIA_URL or '/media/').path or '/media/'
+    if not media_path.endswith('/'):
+        media_path += '/'
+    if not image_path.startswith(media_path):
+        return ''
+    storage_name = image_path[len(media_path):].lstrip('/')
+    storage_path = Path(storage_name)
+    if not storage_name or '\\' in storage_name or storage_path.is_absolute() or '..' in storage_path.parts:
+        return ''
+    return storage_name
+
+
+def _snapshot_ai_report_image(image_value):
+    """Put visual report evidence in the DB when its media file is readable."""
+    if not image_value:
+        return ''
+    if image_value.startswith('data:image/'):
+        return image_value[:AI_IMAGE_MAX_DATA_URI_CHARS]
+    storage_name = _ai_storage_name_from_url(image_value)
+    if not storage_name:
+        return image_value
+    try:
+        with default_storage.open(storage_name, 'rb') as image_file:
+            raw = image_file.read(AI_IMAGE_MAX_DATA_URI_CHARS + 1)
+        if len(raw) > AI_IMAGE_MAX_DATA_URI_CHARS:
+            return image_value
+        content_type = mimetypes.guess_type(storage_name)[0] or 'image/png'
+        return f'data:{content_type};base64,{base64.b64encode(raw).decode("ascii")}'
+    except Exception:
+        # The report is still useful if an old deployment already lost the
+        # media file; retain its original URL and surface that health problem
+        # to staff on the reports dashboard.
+        logger.warning('Could not snapshot reported AI image %s', storage_name)
+        return image_value
+
+
 def ai_report_submit(request):
     if request.method != 'POST':
         return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
@@ -3301,9 +3588,13 @@ def ai_report_submit(request):
         return JsonResponse({'status': 'error', 'detail': 'Conversation not found.'}, status=404)
 
     reported_reply = str(payload.get('reply_text', ''))[:AI_CHAT_MAX_MESSAGE_CHARS].strip()
+    reported_image = payload.get('reply_image', '')
+    if not isinstance(reported_image, str):
+        reported_image = ''
+    reported_image = reported_image[:AI_IMAGE_MAX_DATA_URI_CHARS].strip()
     explanation = str(payload.get('explanation', ''))[:AI_REPORT_MAX_EXPLANATION_CHARS].strip()
     model_key = str(payload.get('model_key', ''))[:20]
-    if not reported_reply:
+    if not reported_reply and not reported_image:
         return JsonResponse({'status': 'error', 'detail': 'Nothing to report.'}, status=400)
     if not explanation:
         return JsonResponse({'status': 'error', 'detail': 'Please explain what went wrong before submitting.'}, status=400)
@@ -3312,13 +3603,64 @@ def ai_report_submit(request):
     # jump straight to it from admin — the report is still saved (with its
     # own snapshot of the text) even when this doesn't find one, e.g. the
     # message has since been edited or the conversation deleted.
-    message = conversation.messages.filter(
-        role=AIMessage.ROLE_ASSISTANT, content=reported_reply,
-    ).order_by('-created_at').first()
+    raw_message_id = payload.get('message_id')
+    message = None
+    if raw_message_id not in (None, ''):
+        try:
+            message_id = int(raw_message_id)
+        except (TypeError, ValueError):
+            return JsonResponse({'status': 'error', 'detail': 'Reported response not found.'}, status=400)
+        message = conversation.messages.filter(
+            pk=message_id, role=AIMessage.ROLE_ASSISTANT,
+        ).first()
+        if message is None:
+            return JsonResponse({'status': 'error', 'detail': 'Reported response not found.'}, status=404)
+    else:
+        candidates = conversation.messages.filter(role=AIMessage.ROLE_ASSISTANT)
+        if reported_reply:
+            candidates = candidates.filter(content=reported_reply)
+        if reported_image:
+            candidates = candidates.filter(image_data=reported_image)
+        message = candidates.order_by('-created_at', '-pk').first()
+
+    # Stored messages are authoritative: a browser cannot substitute a
+    # different reply, model, or image in the report payload.
+    if message is not None:
+        reported_reply = message.content[:AI_CHAT_MAX_MESSAGE_CHARS].strip()
+        reported_image = message.image_data
+        model_key = message.model_key[:20]
+    elif reported_image:
+        # Image responses are persisted before being returned. An unmatched
+        # URL/data URI therefore cannot be genuine evidence from this chat.
+        return JsonResponse({'status': 'error', 'detail': 'Reported image not found.'}, status=404)
+    elif not _is_reportable_unsaved_ai_failure(reported_reply):
+        return JsonResponse({'status': 'error', 'detail': 'Reported response not found.'}, status=404)
+
+    # Snapshot the user turn that prompted this reply, so staff reviewing
+    # the report don't have to go dig through the (possibly since-deleted)
+    # conversation to see what was actually asked. Anchored to the matched
+    # message's timestamp when we have one; otherwise best-effort fall back
+    # to the most recent user turn in the conversation.
+    preceding = conversation.messages.filter(role=AIMessage.ROLE_USER)
+    if message:
+        preceding = preceding.filter(
+            Q(created_at__lt=message.created_at) |
+            Q(created_at=message.created_at, pk__lt=message.pk)
+        )
+    user_message = preceding.order_by('-created_at', '-pk').first()
+    user_prompt = user_message.content[:AI_CHAT_MAX_MESSAGE_CHARS].strip() if user_message else ''
+    user_image = _snapshot_ai_report_image(user_message.image_data) if user_message else ''
+    user_document_name = user_message.document_name if user_message else ''
+    user_document_excerpt = user_message.document_text[:8000] if user_message else ''
+    reported_image = _snapshot_ai_report_image(reported_image)
 
     ip = _client_ip(request)
     AIReport.objects.create(
-        conversation=conversation, message=message, reported_reply=reported_reply,
+        conversation=conversation, message=message,
+        user_prompt=user_prompt, user_image=user_image,
+        user_document_name=user_document_name,
+        user_document_excerpt=user_document_excerpt,
+        reported_reply=reported_reply, reported_image=reported_image,
         model_key=model_key, explanation=explanation,
         user=request.user if request.user.is_authenticated else None,
         session_key='' if request.user.is_authenticated else (request.session.session_key or ''),

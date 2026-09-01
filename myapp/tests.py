@@ -427,6 +427,147 @@ class AIResponseReliabilityTests(TestCase):
         )
         self.assertIn('the only model name that may appear in your reply is ChatGPT 5.6', system_text)
 
+    def test_chatgpt_identity_leak_is_caught_and_forced_to_a_safe_answer(self):
+        """Live-observed: asked 'are you copy of gpt?' / 'who are you?', the
+        ChatGPT 5.6 persona sometimes answered 'developed by researchers
+        from NVIDIA' / 'trained by NVIDIA researchers' despite
+        CHATGPT_56_SYSTEM_SUFFIX explicitly forbidding it. Every retry still
+        leaking must end in the guaranteed-correct scripted answer, never
+        the leaked text."""
+        def make_stream(text):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])])
+
+        # A fresh iterator per call — Mock(return_value=an_iterator) would
+        # hand back the same already-exhausted iterator on every retry.
+        create = Mock(side_effect=lambda **kw: make_stream('I was trained by NVIDIA researchers.'))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client), patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'are you copy of chatgpt?'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, "I'm ChatGPT, developed by OpenAI.")
+        self.assertNotIn('nvidia', result.lower())
+        self.assertEqual(create.call_count, ai_chat.STREAM_RETRY_ATTEMPTS + 1)
+
+    def test_chatgpt_identity_self_heals_when_a_later_retry_is_clean(self):
+        def make_stream(text):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])])
+
+        create = Mock(side_effect=[
+            make_stream('Developed by researchers from NVIDIA.'),
+            make_stream("I'm ChatGPT, developed by OpenAI."),
+        ])
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client), patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'who are you?'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, "I'm ChatGPT, developed by OpenAI.")
+        self.assertEqual(create.call_count, 2)
+
+    def test_ordinary_chatgpt_reply_streams_unbuffered(self):
+        """The identity-leak guard must only engage for provenance
+        questions — an ordinary question should stream chunk by chunk with
+        no extra buffering or retry cost."""
+        chunks_in = ['Paris', ' is the capital.']
+        create = Mock(return_value=iter([
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
+            for c in chunks_in
+        ]))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client):
+            chunks_out = list(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'what is the capital of france'}],
+                model_key='quick', identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(chunks_out, chunks_in)
+        self.assertEqual(create.call_count, 1)
+
+    def test_transient_failure_on_non_default_model_falls_back_to_quick(self):
+        """A busy Vision/Ultra/Code worker should still get a real answer via
+        Quick instead of surfacing a hard failure — AIReport #10 and #30 both
+        showed a non-default model just failing outright with no fallback at
+        all, because the fallback used to be gated on model_key ==
+        DEFAULT_MODEL_KEY (which is 'chatgpt56', not the model actually used
+        here), making it dead for every other model."""
+        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='answer'))])
+        create = Mock(side_effect=[TimeoutError('request timed out'), iter([chunk])])
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client), \
+             patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'describe this image'}], model_key='vision',
+            ))
+
+        self.assertEqual(result, 'answer')
+        self.assertEqual(create.call_count, 2)
+        first_model = create.call_args_list[0].kwargs['model']
+        second_model = create.call_args_list[1].kwargs['model']
+        self.assertEqual(first_model, ai_chat.MODELS['vision']['id'])
+        self.assertEqual(second_model, ai_chat.MODELS['quick']['id'])
+
+    def test_long_form_request_gets_larger_token_budget_and_timeout(self):
+        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='answer'))])
+        create = Mock(return_value=iter([chunk]))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch('myapp.ai_chat._get_client', return_value=client):
+            ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'Complete reference on cholinergic drugs'}],
+                model_key='quick', max_tokens=6000,
+            ))
+
+        request = create.call_args.kwargs
+        self.assertEqual(request['max_tokens'], 6000)
+        self.assertEqual(request['timeout'], ai_chat.STREAM_TIMEOUT_LONG)
+
+    def test_image_request_detection_against_real_reported_failures(self):
+        """Locks in fixes for real AIReport prompts that used to be
+        misrouted — see the AI Reports dashboard analysis. Each of these
+        used to reach a text model instead of the image pipeline."""
+        # AIReport #7, #8, #9, #17 — verb+noun, including Hinglish word order.
+        for prompt in [
+            'Change image background to white background and its sise in 1000x1000px',
+            'Hey char GPT can use generate images',
+            'Cat ka image bna ke do',
+            'create design of Nashik360 logo',
+        ]:
+            self.assertTrue(ai_chat.is_image_generation_request(prompt), prompt)
+
+        # AIReport #31, #34 — informal noun/verb abbreviations.
+        self.assertTrue(ai_chat.is_image_generation_request('plz gen img'))
+        self.assertTrue(ai_chat.is_image_generation_request('make motor drawing'))
+
+        # AIReport #19 — bare descriptive prompt, no generate verb at all.
+        self.assertTrue(ai_chat.is_probable_image_prompt(
+            'A realistic brown dog sitting on a grassy field, shiny coat, '
+            'bright eyes, soft lighting, high detail, 4k.'
+        ))
+
+        # AIReport #11 — edit instruction on an attached image with no
+        # image-shaped noun ("Names" isn't one).
+        self.assertTrue(ai_chat.is_image_edit_instruction('REmove all Names'))
+
+        # AIReport #29 — explicit long-form ask that used to be cut off.
+        self.assertTrue(ai_chat.wants_long_form_output('Complete reference from Kdt'))
+
+        # Must not misfire on ordinary chat/analysis text.
+        for prompt in [
+            'what is in this image', 'describe this photo', 'is this a cat or a dog',
+            'write a short story about a dog in a field, it should be heartwarming',
+        ]:
+            self.assertFalse(ai_chat.is_image_edit_instruction(prompt), prompt)
+            self.assertFalse(ai_chat.is_probable_image_prompt(prompt), prompt)
+
     def test_chatgpt_is_the_fresh_default_on_every_page_load(self):
         staff = User.objects.create_user(
             username='default-model-staff@example.com', password='test-password-123', is_staff=True,
@@ -1036,6 +1177,29 @@ class AIAccountProfileTests(TestCase):
         self.assertEqual(body['reports'][0]['status_label'], 'Resolved')
         self.assertNotContains(response, 'Private other chat')
         self.assertEqual(response['Cache-Control'], 'private, no-store')
+
+    def test_report_submit_snapshots_the_preceding_user_question(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Chat')
+        AIMessage.objects.create(conversation=conversation, role=AIMessage.ROLE_USER, content='What is 2+2?')
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
+            content='It is 5.', model_key='quick',
+        )
+
+        response = self.client.post(
+            '/AI/api/report/', content_type='application/json',
+            data=json.dumps({
+                'conversation_id': conversation.id,
+                'reply_text': 'It is 5.',
+                'model_key': 'quick',
+                'explanation': 'Wrong answer.',
+            }),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        report = AIReport.objects.get(conversation=conversation)
+        self.assertEqual(report.user_prompt, 'What is 2+2?')
+        self.assertEqual(report.reported_reply, 'It is 5.')
 
     def test_profile_update_changes_login_email_name_phone_and_avatar(self):
         image_bytes = io.BytesIO()

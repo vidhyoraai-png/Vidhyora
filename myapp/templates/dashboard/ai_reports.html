@@ -5,14 +5,54 @@
 {% block content %}
 <div class="panel">
   <div class="panel-head">
-    <h3>{{ reports|length }} report{{ reports|length|pluralize }}</h3>
+    <h3>{{ reports|length }} report{{ reports|length|pluralize }}{% if q %} matching “{{ q }}”{% endif %}</h3>
     <form class="panel-search" method="get">
       <i class="fas fa-magnifying-glass"></i>
-      <input type="search" name="q" value="{{ q }}" placeholder="Search email, explanation, reply…">
+      <input type="search" name="q" value="{{ q }}" placeholder="Search user, prompt, reply, model…">
     </form>
   </div>
-  <p class="panel-note">Every "Report it" submission from the AI chat — who flagged it, which reply, and why. Mark a report resolved once it's fixed.</p>
+  <p class="panel-note">Each report preserves what the user asked, what the AI returned, any image or document evidence, and the user’s complaint. Open a full review to inspect every chat and report from that exact account or guest session.</p>
+</div>
 
+{% if failure_insights %}
+<section class="analysis-section" aria-labelledby="failure-heading">
+  <div class="section-heading">
+    <div><span class="eyebrow">Report analysis</span><h2 id="failure-heading">Where responses are failing</h2></div>
+    <p>Explainable signals from the reports currently shown. These are review aids, not automatic verdicts.</p>
+  </div>
+  <div class="insight-grid">
+    {% for issue in failure_insights %}
+    <article class="insight-card severity-{{ issue.severity }}">
+      <div class="insight-top"><span class="insight-count">{{ issue.count }}</span><span class="severity-pill">{{ issue.severity }}</span></div>
+      <h3>{{ issue.label }}</h3>
+      {% if issue.evidence %}<p class="evidence">{{ issue.evidence }}</p>{% endif %}
+      <div class="fix"><i class="fas fa-screwdriver-wrench"></i><div><b>Recommended fix</b><p>{{ issue.fix }}</p></div></div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if system_health %}
+<section class="analysis-section" aria-labelledby="health-heading">
+  <div class="section-heading">
+    <div><span class="eyebrow">Data scan</span><h2 id="health-heading">System-level evidence gaps</h2></div>
+    <p>Objective problems found by checking stored chats, media, report links, and learned answers.</p>
+  </div>
+  <div class="insight-grid">
+    {% for issue in system_health %}
+    <article class="insight-card severity-{{ issue.severity }}">
+      <div class="insight-top"><span class="insight-count">{{ issue.count }}</span><span class="severity-pill">{{ issue.severity }}</span></div>
+      <h3>{{ issue.label }}</h3>
+      <p class="evidence">{{ issue.evidence }}</p>
+      <div class="fix"><i class="fas fa-screwdriver-wrench"></i><div><b>Recommended fix</b><p>{{ issue.fix }}</p></div></div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<div class="panel report-panel">
   {% for group in groups %}
   <div class="status-group">
     <div class="status-group-head">
@@ -20,59 +60,62 @@
       <span class="status-count status-count-{{ group.status }}">{{ group.reports|length }}</span>
     </div>
     <div class="table-scroll">
-    <table>
-      <thead><tr><th>Reported by</th><th>Reply</th><th>Explanation</th><th>Model</th><th>Received</th><th></th></tr></thead>
-      <tbody>
-        {% for r in group.reports %}
-        <tr>
-          <td>
-            {% if r.user %}{{ r.user.get_full_name|default:r.user.username }}<span class="sub-line mono">{{ r.user.email }}</span>
-            {% else %}<span class="badge ai-guest">Guest</span>{% if r.session_key %}<span class="sub-line mono">{{ r.session_key|slice:":10" }}…</span>{% endif %}{% endif %}
-            {% if r.ip_address %}<span class="sub-line mono">{{ r.ip_address }}</span>{% endif %}
-          </td>
-          <td class="msg-cell">{{ r.reported_reply|default:"—" }}</td>
-          <td class="msg-cell">{{ r.explanation|default:"—" }}</td>
-          <td>{{ r.model_key|default:"—" }}</td>
-          <td>{{ r.created_at|date:"d M Y, h:i A" }}</td>
-          <td>
-            <div class="row-actions">
-              {% if r.conversation_id %}
-              <a class="edit-btn" href="{% url 'dashboard_ai_activity_detail' r.conversation_id %}" title="View conversation"><i class="fas fa-eye"></i></a>
-              {% endif %}
-              <form method="post" action="{% url 'dashboard_ai_report_status_update' r.pk %}">
-                {% csrf_token %}
-                <button type="submit" class="block-btn" title="{% if r.status == 'open' %}Mark resolved{% else %}Reopen{% endif %}">{% if r.status == 'open' %}Resolve{% else %}Reopen{% endif %}</button>
-              </form>
-              <form method="post" action="{% url 'dashboard_ai_report_delete' r.pk %}" onsubmit="return confirm('Delete this report?')">
-                {% csrf_token %}
-                <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
-              </form>
-            </div>
-          </td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="6" class="empty-row">No {{ group.label|lower }} reports{% if q %} matching your search{% endif %}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+      <table>
+        <thead><tr><th>Reported by</th><th>Reported turn</th><th>User report</th><th>Detected issue &amp; fix</th><th>Model / received</th><th></th></tr></thead>
+        <tbody>
+          {% for r in group.reports %}
+          <tr>
+            <td class="reporter-cell">
+              {% if r.user %}<b>{{ r.user.get_full_name|default:r.user.username }}</b><span class="sub-line">{{ r.user.email }}</span>
+              {% else %}<span class="badge ai-guest">Guest</span>{% if r.session_key %}<span class="sub-line mono">{{ r.session_key|slice:":10" }}…</span>{% endif %}{% endif %}
+              {% if r.ip_address %}<span class="sub-line mono">{{ r.ip_address }}</span>{% endif %}
+            </td>
+            <td class="turn-cell">
+              <span class="turn-label">User asked</span>
+              <p>{{ r.user_prompt|default:"Prompt unavailable"|truncatechars:220 }}</p>
+              {% if r.user_image %}<span class="evidence-chip"><i class="fas fa-image"></i> Input image preserved</span>{% endif %}
+              {% if r.user_document_name %}<span class="evidence-chip"><i class="fas fa-file-lines"></i> {{ r.user_document_name }}</span>{% endif %}
+              <span class="turn-label ai-label">AI replied</span>
+              <p>{{ r.reported_reply|default:"Image-only response"|truncatechars:220 }}</p>
+              {% if r.reported_image %}<img class="report-thumb" src="{% url 'dashboard_ai_report_image' r.pk 'assistant' %}" loading="lazy" alt="Reported AI image" onerror="this.hidden=true">{% endif %}
+            </td>
+            <td class="complaint-cell">{{ r.explanation|default:"No explanation" }}</td>
+            <td class="analysis-cell">
+              {% if r.primary_issue %}
+              <span class="issue-label">{{ r.primary_issue.label }}</span>
+              <p>{{ r.primary_issue.fix }}</p>
+              {% else %}<span class="muted">Manual review needed</span>{% endif %}
+            </td>
+            <td><b>{{ r.model_key|default:"AI" }}</b><span class="sub-line">{{ r.created_at|date:"d M Y, h:i A" }}</span></td>
+            <td>
+              <div class="row-actions">
+                <a class="review-btn" href="{% url 'dashboard_ai_report_detail' r.pk %}"><i class="fas fa-magnifying-glass"></i> Full review</a>
+                <form method="post" action="{% url 'dashboard_ai_report_status_update' r.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="block-btn">{% if r.status == 'open' %}Resolve{% else %}Reopen{% endif %}</button>
+                </form>
+                <form method="post" action="{% url 'dashboard_ai_report_delete' r.pk %}" onsubmit="return confirm('Delete this report?')">
+                  {% csrf_token %}<button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="empty-row">No {{ group.label|lower }} reports{% if q %} matching your search{% endif %}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
   </div>
-  {% endfor %}
+  {% empty %}<p class="empty-row">No reports yet.</p>{% endfor %}
 </div>
 
 <style>
-  .status-group{margin-top:1.6rem;border-top:3px solid var(--red,#e8001e);padding-top:.1rem}
-  .status-group:first-of-type{margin-top:.5rem}
-  .status-group-head{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem;font-weight:700;font-size:.92rem;color:var(--dark,#1c2333);background:var(--bg2,#f7f8fc)}
-  .status-group-head i{color:var(--red,#e8001e)}
-  .status-count{margin-left:auto;background:var(--red,#e8001e);color:#fff;border-radius:50px;padding:.1rem .65rem;font-size:.78rem;font-weight:700}
-  .status-count-resolved{background:#1da851}
-  .badge.ai-guest{background:#eef2ff;color:#3b5bdb}
-  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.8rem}
-  .row-actions{display:flex;align-items:center;gap:.6rem}
-  .row-actions form{display:inline}
-  .block-btn{border:none;background:none;color:#9aa3b0;cursor:pointer;font-size:.78rem;font-weight:700;transition:color .2s;white-space:nowrap}
-  .block-btn:hover{color:var(--red)}
-  .panel-note{padding:0 1.4rem 1.1rem;font-size:.8rem;color:var(--text)}
+.panel-note{padding:0 1.4rem 1.15rem;font-size:.82rem;color:var(--text);line-height:1.55}
+.analysis-section{margin-bottom:1.6rem}.section-heading{display:flex;align-items:end;justify-content:space-between;gap:1.5rem;margin-bottom:.9rem}.section-heading h2{font-size:1.15rem}.section-heading>p{font-size:.78rem;max-width:520px;text-align:right}.eyebrow{display:block;color:var(--red);font-size:.67rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800;margin-bottom:.2rem}
+.insight-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:.9rem}.insight-card{background:#fff;border:1px solid var(--line);border-top:3px solid #f59f00;border-radius:14px;padding:1.05rem;box-shadow:var(--shadow-sm)}.insight-card.severity-high{border-top-color:var(--red)}.insight-card.severity-low{border-top-color:#3b82f6}.insight-top{display:flex;align-items:center;justify-content:space-between}.insight-count{font-family:'Sora',sans-serif;font-size:1.55rem;font-weight:900;color:var(--head)}.severity-pill{text-transform:uppercase;font-size:.6rem;letter-spacing:.08em;font-weight:800;background:#fff4e5;color:#a15c00;border-radius:20px;padding:.18rem .5rem}.severity-high .severity-pill{background:var(--red-soft);color:var(--red)}.severity-low .severity-pill{background:#eaf2ff;color:#2563eb}.insight-card h3{font-size:.9rem;margin:.45rem 0}.evidence{font-size:.78rem;line-height:1.5}.fix{display:flex;gap:.55rem;background:var(--bg-alt);border-radius:10px;padding:.7rem;margin-top:.8rem;font-size:.75rem;line-height:1.45}.fix i{color:var(--red);margin-top:.12rem}.fix b{color:var(--head)}
+.report-panel{overflow:visible}.status-group+.status-group{border-top:3px solid var(--line)}.status-group-head{display:flex;align-items:center;gap:.5rem;padding:.8rem 1.2rem;font-weight:800;color:var(--head);background:var(--bg-alt)}.status-group-head i{color:var(--red)}.status-count{margin-left:auto;background:var(--red);color:#fff;border-radius:50px;padding:.1rem .65rem;font-size:.76rem}.status-count-resolved{background:#1da851}
+.reporter-cell b{display:block}.badge.ai-guest{background:#eef2ff;color:#3b5bdb}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.76rem}.turn-cell{min-width:270px;max-width:390px}.turn-cell p{white-space:pre-wrap;line-height:1.45;margin:.15rem 0 .45rem}.turn-label{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:.61rem;font-weight:900;color:var(--red)}.turn-label.ai-label{color:#3b5bdb;margin-top:.55rem}.evidence-chip{display:inline-flex;align-items:center;gap:.3rem;background:#eef2ff;color:#3b5bdb;border-radius:20px;padding:.18rem .5rem;font-size:.67rem;font-weight:700;margin:.15rem .15rem .25rem 0}.report-thumb{display:block;width:76px;height:76px;object-fit:cover;border-radius:10px;border:1px solid var(--line);margin-top:.35rem}.complaint-cell{min-width:190px;max-width:280px;white-space:pre-wrap;line-height:1.5}.analysis-cell{min-width:230px;max-width:320px}.issue-label{font-weight:800;color:var(--head);font-size:.8rem}.analysis-cell p{font-size:.75rem;line-height:1.45;margin-top:.3rem}.muted{color:#9aa3b0}.row-actions{display:flex;flex-direction:column;align-items:flex-start;gap:.45rem;min-width:100px}.row-actions form{display:inline}.review-btn{display:inline-flex;align-items:center;gap:.35rem;color:var(--red);font-size:.76rem;font-weight:800;white-space:nowrap}.block-btn{border:none;background:none;color:#697386;cursor:pointer;font-size:.76rem;font-weight:800}.block-btn:hover{color:var(--red)}
+@media(max-width:700px){.section-heading{display:block}.section-heading>p{text-align:left;margin-top:.4rem}.insight-grid{grid-template-columns:1fr}}
 </style>
 {% endblock %}

@@ -19,6 +19,9 @@
 .msg-row.assistant .msg-role{color:#3b5bdb}
 .msg-content{font-size:.88rem;color:var(--head);white-space:pre-wrap;word-break:break-word}
 .msg-time{font-size:.72rem;color:#9aa3b0;margin-top:.3rem}
+.msg-image{display:block;max-width:min(100%,480px);max-height:380px;object-fit:contain;background:#eef1f5;border:1px solid var(--line);border-radius:12px;margin-top:.65rem}
+.msg-image-note{font-size:.7rem;color:#9aa3b0;margin-top:.25rem}
+.msg-document{display:inline-flex;align-items:center;gap:.35rem;margin-top:.5rem;background:var(--bg-alt);border-radius:20px;padding:.25rem .6rem;font-size:.72rem;font-weight:700}
 </style>
 {% endblock %}
 
@@ -60,9 +63,9 @@
     {% for m in ai_messages %}
     <div class="msg-row {{ m.role }}">
       <div class="msg-role">{{ m.role }}{% if m.role == 'assistant' and m.model_key %} · {{ m.model_key }}{% endif %}</div>
-      <div class="msg-content">{{ m.content|default:"(no text)" }}{% if m.document_name %}
-📎 {{ m.document_name }}{% endif %}{% if m.image_data %}
-🖼 (image attached){% endif %}</div>
+      <div class="msg-content">{{ m.content|default:"(no text)" }}</div>
+      {% if m.document_name %}<div class="msg-document"><i class="fas fa-paperclip"></i> {{ m.document_name }}</div>{% endif %}
+      {% if m.image_data %}<img class="msg-image" src="{% url 'dashboard_ai_message_image' m.pk %}" loading="lazy" alt="{% if m.role == 'user' %}User-supplied image{% else %}AI-generated image{% endif %}" onerror="this.hidden=true;this.nextElementSibling.textContent='Stored image file unavailable';"><div class="msg-image-note">{% if m.role == 'user' %}User-supplied image{% else %}AI-generated or edited image{% endif %}</div>{% endif %}
       <div class="msg-time">{{ m.created_at|date:"d M Y, h:i:s A" }}</div>
     </div>
     {% empty %}

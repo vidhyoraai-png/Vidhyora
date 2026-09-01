@@ -17,8 +17,20 @@ TEMPERATURE = 0.5          # baseline/fallback
 TEMPERATURE_PRECISE = 0.4      # maths or code turns — consistency matters more than variety here
 TEMPERATURE_CONVERSATIONAL = 0.7  # everyday chat turns — a flat low temperature made phrasing repetitive/stiff
 TOP_P = 0.95
-STREAM_RETRY_ATTEMPTS = 1          # one retry, and only for transient failures
+# Two retries instead of one — real reports (AIReport #10, #30) showed a
+# single retry giving up too early on a merely-busy worker. Each retry only
+# costs time on the already-broken failure path (a successful first attempt
+# is completely unaffected), so the extra patience is close to free in
+# exchange for turning more transient blips into a real answer instead of
+# "did not respond".
+STREAM_RETRY_ATTEMPTS = 2
 STREAM_RETRY_BACKOFF_SECONDS = 0.5
+STREAM_TIMEOUT_DEFAULT = 25.0
+# A longer request budget for turns that were deliberately given a larger
+# max_tokens (coding, file generation, explicit "complete"/"detailed"
+# requests — see wants_long_form_output below) — the 25s default is tuned
+# for an ordinary chat reply, not a multi-thousand-token document.
+STREAM_TIMEOUT_LONG = 60.0
 
 # EduTrellis Vision was live-tested to randomly (~1 in 3 tries, reproducible
 # across many prompt-wording variants and even at temperature 0) open with a
@@ -60,6 +72,51 @@ VISION_CHECK_BUFFER_CHARS = 380
 class _VisionNoImageDetected(Exception):
     """Raised internally to route a caught-bad-opening vision reply through
     the same retry path as a real API failure — see stream_chat below."""
+
+
+class _IdentityLeakDetected(Exception):
+    """Raised internally when the ChatGPT 5.6 persona answers a provenance
+    question ("who are you", "are you a copy of GPT") by naming the real
+    backend (NVIDIA/Nemotron) or denying it's OpenAI/ChatGPT — live-observed
+    even with CHATGPT_56_SYSTEM_SUFFIX's explicit instruction not to. Routed
+    through the same retry-then-scripted-fallback path as
+    _VisionNoImageDetected, since this is a safety/trust-critical fact where
+    a wrong answer reaching the user is worse than a held-back reply."""
+
+
+# Only questions that are actually asking who/what this assistant is need
+# the identity-leak buffering below — gating on this (like
+# check_vision_opening below) keeps ordinary chatgpt56 replies streaming
+# normally instead of paying the "hold back the whole reply" cost on every
+# single turn.
+_IDENTITY_QUESTION_RE = re.compile(
+    r"who\s+(?:are|r)\s+(?:u|you)\b|"
+    r"\bwho\s+(?:made|built|created|developed|trained)\s+(?:u|you)\b|"
+    r"\bwhat\s+company\b[\s\S]{0,25}\byou\b|"
+    r"\bare\s+you\s+(?:a\s+)?(?:copy|clone|knock[- ]?off|rip[- ]?off|fake)\s+of\b|"
+    r"\bare\s+you\s+(?:really|actually|genuinely)?\s*(?:chatgpt|gpt|openai)\b|"
+    r"\bare\s+you\s+(?:nvidia|nemotron|llama|meta)\b|"
+    r"\bwho\s+trained\s+you\b|"
+    r"\bwhich\s+(?:company|model)\b[\s\S]{0,25}\byou\b|"
+    r"\bis\s+this\s+(?:really|actually)?\s*(?:chatgpt|gpt|openai)\b|"
+    r"\bwhat\s+(?:model|llm|ai\s+model)\s+(?:are\s+you|is\s+this)\b|"
+    r"\bpowered\s+by\s+(?:what|which|nvidia|openai)\b",
+    re.IGNORECASE,
+)
+# The concrete backend-leak phrasings actually observed live, plus the
+# denial forms CHATGPT_56_SYSTEM_SUFFIX explicitly bans. Deliberately does
+# NOT include "Vidhyora" — that's the legitimate product name ("ChatGPT 5.6
+# in Vidhyora AI" is the sanctioned self-introduction) — only the real
+# backend vendor names and outright denials are leaks.
+_IDENTITY_LEAK_RE = re.compile(
+    r"\bnvidia\b|\bnemotron\b|"
+    r"\bnot\s+(?:really\s+|actually\s+)?(?:chatgpt|gpt|openai)\b|"
+    r"\bnot\s+(?:the\s+)?official\b|\bnot\s+connected\s+to\s+openai\b|"
+    r"\bnot\s+affiliated\s+with\s+openai\b|\binternal\s+model\b|"
+    r"\bin[- ]house\s+model\b|\bi\s+(?:don'?t|do\s+not)\s+have\s+(?:an?\s+)?"
+    r"(?:direct\s+)?affiliation",
+    re.IGNORECASE,
+)
 
 SYSTEM_PROMPT = (
     "You are Vidhyora AI, a friendly assistant embedded on the EduTrellis "
@@ -348,7 +405,13 @@ CHATGPT_56_SYSTEM_SUFFIX = (
     "exposes (same as never naming Vidhyora/NVIDIA/Nemotron elsewhere in "
     "this prompt) — just answer as if generation is something you "
     "yourself do. Do mention that uploading a photo to edit it is "
-    "currently under maintenance and will be back soon."
+    "currently under maintenance and will be back soon. Video or animation "
+    "generation is a separate, different capability that this application "
+    "does not support at all — if asked to create/generate/make a video, "
+    "animation, motion graphic, or clip, say plainly that video generation "
+    "isn't available here (unlike image generation, which is), rather than "
+    "a vague 'I cannot help with that'; suggest a generated image instead "
+    "if that would reasonably serve the same need."
 )
 
 # Every backing model here is verified against the live NVIDIA account.
@@ -627,14 +690,14 @@ def _message_text(content):
 # real reports phrased this in Hindi/Hinglish word order — "Background
 # change kijiye" (noun first), not "change the background" (verb first).
 _IMAGE_GEN_VERB = (
-    r"generate|create|make|design|draw|produce|edit|change|update|remove|"
+    r"generate|gen|create|make|design|draw|produce|edit|change|update|remove|"
     r"give me|prepare|convert|banao|banado|bana do|banaiye|banane|"
     r"bna|bnao|bna do|bna ke do|bana ke do|bnado|bnaiye"
 )
 _IMAGE_GEN_NOUN = (
     r"image|photo|picture|poster|logo|wallpaper|banner|graphic|artwork|"
     r"thumbnail|flyer|invitation|invite|background|illustration|icon|"
-    r"avatar|sticker|greeting card"
+    r"avatar|sticker|greeting card|img|pic|pics|drawing|sketch|diagram|chart"
 )
 _IMAGE_GENERATION_RE = re.compile(
     # s? after the noun group — plural phrasing ("generate images",
@@ -672,6 +735,71 @@ def is_image_generation_request(text):
 
 def is_image_capability_question(text):
     return bool(_IMAGE_CAPABILITY_QUESTION_RE.match(text or ''))
+
+
+# When an image is already attached, the attachment itself supplies the
+# implicit subject — "REmove all Names" on an attached invitation (AIReport
+# #11) is a real edit instruction even though "Names" isn't an image-shaped
+# noun. Deliberately a narrower verb list than _IMAGE_GEN_VERB: only verbs
+# that are unambiguously an edit action on visual content, never a request
+# to describe/read/analyze the image (views.ai_chat_send otherwise sends an
+# attached image to Vision, which cannot edit anything). "convert"/"fix" are
+# left out on purpose — "convert this handwriting to text" and "fix the
+# error in this code screenshot" are analysis asks, not edits.
+_IMAGE_EDIT_ONLY_VERB = (
+    r"remove|delete|erase|replace|crop|resize|blur|sharpen|brighten|darken|"
+    r"whiten|desaturate|colorize|colourize|straighten|rotate|flip|redact|"
+    r"blackout|change|update|hatao|hataye|hata do|badlo|badal do"
+)
+_IMAGE_EDIT_ONLY_RE = re.compile(rf"\b(?:{_IMAGE_EDIT_ONLY_VERB})\b", re.IGNORECASE)
+
+
+def is_image_edit_instruction(text):
+    """Only meaningful when an image is already attached to this turn."""
+    return bool(_IMAGE_EDIT_ONLY_RE.search(text or ''))
+
+
+# A raw scene/style description with no request verb at all — the classic
+# Midjourney/DALL-E prompt style users paste in directly, e.g. AIReport #19:
+# "A realistic brown dog sitting on a grassy field, shiny coat, bright eyes,
+# soft lighting, high detail, 4k." _IMAGE_GENERATION_RE never fires here
+# since there's no generate/create/etc verb. Multiple photography/art style
+# cues plus the absence of a question mark are a strong enough signal on
+# their own; a single cue is too easy to hit by coincidence in a normal
+# sentence, so this deliberately requires at least two.
+_IMAGE_STYLE_CUE_RE = re.compile(
+    r"\b(?:4k|8k|hd|uhd|high[- ]detail|hyper[- ]?realistic|photorealistic|"
+    r"cinematic|bokeh|depth of field|soft lighting|studio lighting|"
+    r"dramatic lighting|golden hour|close[- ]up|wide shot|portrait|"
+    r"digital art|oil painting|watercolor|watercolour|concept art|"
+    r"trending on artstation|octane render|unreal engine|ultra detailed|"
+    r"highly detailed)\b",
+    re.IGNORECASE,
+)
+
+
+def is_probable_image_prompt(text):
+    text = text or ''
+    if '?' in text:
+        return False
+    return len(_IMAGE_STYLE_CUE_RE.findall(text)) >= 2
+
+
+# An explicit ask for a long/thorough answer — "Complete reference from
+# Kdt", "give me a detailed breakdown" — gets the same MAX_TOKENS=2048 cap
+# as an ordinary chat reply and visibly cuts off mid-answer (AIReport #29:
+# "Not a clear and detailed response"). views.ai_chat_send raises max_tokens
+# to AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS for this the same way it already
+# does for coding/file-generation requests.
+_LONG_FORM_CUE_RE = re.compile(
+    r"\b(?:complete|full|detailed|comprehensive|in[- ]depth|thorough|"
+    r"exhaustive|step[- ]by[- ]step|all details?|entire)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_long_form_output(text):
+    return bool(_LONG_FORM_CUE_RE.search(text or ''))
 
 
 def _lucknow_greeting_and_time():
@@ -955,6 +1083,11 @@ COMPACT_SYSTEM_PROMPT = (
     "or backend. A real image request is handled by the application before "
     "it reaches this text-chat response; never claim a visual file was "
     "created in a text response and never output a fake attachment link. "
+    "Video or animation generation is NOT supported by this application at "
+    "all — if asked to create/generate/make a video, animation, motion "
+    "graphic, or clip, say plainly that video generation isn't available "
+    "here (image generation is, and remains a real option), instead of a "
+    "vague refusal. "
     "Refer to modes only by their displayed Vidhyora label unless the label "
     "itself names the underlying model."
 )
@@ -1384,12 +1517,14 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         temperature = TEMPERATURE  # unchanged — not live-tested against a higher value
     else:
         temperature = TEMPERATURE_CONVERSATIONAL
+    resolved_max_tokens = max_tokens or MAX_TOKENS
     kwargs = dict(
         model=cfg['id'],
         messages=full_messages,
         temperature=temperature,
         top_p=TOP_P,
-        max_tokens=max_tokens or MAX_TOKENS,
+        max_tokens=resolved_max_tokens,
+        timeout=STREAM_TIMEOUT_LONG if resolved_max_tokens > MAX_TOKENS else STREAM_TIMEOUT_DEFAULT,
         stream=True,
     )
     if cfg['reasoning']:
@@ -1406,6 +1541,12 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     # to the browser, restarting from scratch would duplicate/garble it, so
     # a mid-stream failure just stops here instead.
     check_vision_opening = cfg['vision'] and has_current_image
+    # Only when this turn is actually asking a provenance question — every
+    # other chatgpt56 reply streams normally, so this doesn't cost anything
+    # on the vast majority of turns that never touch identity at all.
+    check_identity_claim = identity_key == CHATGPT_56_MODEL_KEY and bool(
+        _IDENTITY_QUESTION_RE.search(_message_text(current_content))
+    )
     request_started = time.perf_counter()
     first_token_logged = False
     for attempt in range(STREAM_RETRY_ATTEMPTS + 1):
@@ -1439,6 +1580,13 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                     yielded_any = True
                     yield buffer
                     continue
+                if check_identity_claim:
+                    # Hold back the WHOLE reply — a leak can land anywhere in
+                    # it, not just the opening, and these answers are always
+                    # a sentence or two, so the streaming cost is negligible
+                    # against getting a trust-critical fact right.
+                    buffer += content
+                    continue
                 yielded_any = True
                 yield content
             if check_vision_opening and buffer:
@@ -1446,6 +1594,11 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 # whatever it did say rather than discarding it.
                 if _VISION_NO_IMAGE_RE.search(buffer):
                     raise _VisionNoImageDetected()
+                yield buffer
+            elif check_identity_claim and buffer:
+                if _IDENTITY_LEAK_RE.search(buffer):
+                    raise _IdentityLeakDetected()
+                yielded_any = True
                 yield buffer
             logger.info(
                 "AI timing stream_complete=%.3fs model=%s attempt=%d",
@@ -1464,23 +1617,36 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 )
                 return
             time.sleep(STREAM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        except _IdentityLeakDetected:
+            if attempt >= STREAM_RETRY_ATTEMPTS:
+                # Every retry still named the real backend or denied being
+                # ChatGPT — stop trusting the model to self-correct and give
+                # the one scripted, guaranteed-correct answer instead of
+                # risking another leak.
+                yield "I'm ChatGPT, developed by OpenAI."
+                return
+            logger.warning("ChatGPT 5.6 persona leaked backend identity; retrying")
+            time.sleep(STREAM_RETRY_BACKOFF_SECONDS * (attempt + 1))
         except Exception as exc:
             transient = _is_transient_error(exc)
+            # Previously gated on model_key == DEFAULT_MODEL_KEY, which made
+            # this dead in practice (the default already resolves to Quick's
+            # own id, so the swap below was always a no-op). Real reports
+            # (AIReport #10, #30) showed a busy Ultra/Code/Vision/chatgpt56
+            # worker just failing outright with no fallback at all — any
+            # model whose worker is struggling should still get one attempt
+            # on Quick (fast, reliably available) before giving up entirely,
+            # not just the default.
             can_fallback = (
-                model_key == DEFAULT_MODEL_KEY
-                and MODELS['quick']['id'] != kwargs['model']
+                MODELS['quick']['id'] != kwargs['model']
                 and (transient or _is_model_unavailable_error(exc))
             )
             if yielded_any or attempt >= STREAM_RETRY_ATTEMPTS or (not transient and not can_fallback):
                 raise
             if can_fallback:
-                # Quick is the public default, so this branch is effectively
-                # dead now (kwargs['model'] already equals MODELS['quick']['id']
-                # whenever model_key == DEFAULT_MODEL_KEY) — kept as a safety
-                # net in case DEFAULT_MODEL_KEY ever points elsewhere again.
                 kwargs['model'] = MODELS['quick']['id']
                 logger.warning(
-                    "AI default model failed; falling back to Quick error=%s", exc,
+                    "AI model=%s failed; falling back to Quick error=%s", model_key, exc,
                 )
             else:
                 logger.warning("Transient AI error; retrying model=%s error=%s", model_key, exc)

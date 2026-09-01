@@ -1597,16 +1597,22 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   // button copies clean plain text/markdown, not whatever HTML formatMd()
   // rendered it into (product cards, model tag, etc).
   function addMsgCopyAction(bubble, rawText, opts){
-    if (!rawText || !rawText.trim()) return;
     opts = opts || {};
-    bubble.dataset.rawText = rawText;
+    var hasText = !!(rawText && rawText.trim());
+    var generatedImage = opts.generatedImage || '';
+    if (!hasText && !generatedImage) return;
+    if (hasText) bubble.dataset.rawText = rawText;
+    if (generatedImage) bubble.dataset.replyImage = generatedImage;
     if (opts.conversationId) bubble.dataset.conversationId = opts.conversationId;
+    if (opts.messageId) bubble.dataset.messageId = opts.messageId;
     if (opts.modelKey) bubble.dataset.modelKey = opts.modelKey;
-    var actions = document.createElement('div');
-    actions.className = 'msg-actions';
-    actions.innerHTML = '<button type="button" class="msg-copy-btn"><i class="fas fa-copy"></i> Copy</button>' +
-      (SPEECH_SYNTH_SUPPORTED ? '<button type="button" class="msg-speak-btn"><i class="fas fa-volume-high"></i> Listen</button>' : '');
-    bubble.appendChild(actions);
+    if (hasText) {
+      var actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      actions.innerHTML = '<button type="button" class="msg-copy-btn"><i class="fas fa-copy"></i> Copy</button>' +
+        (SPEECH_SYNTH_SUPPORTED ? '<button type="button" class="msg-speak-btn"><i class="fas fa-volume-high"></i> Listen</button>' : '');
+      bubble.appendChild(actions);
+    }
     // Skipped for the note-taking confirmation itself ("Saved to your
     // notes...") — there's nothing there a user would meaningfully report.
     if (opts.modelKey !== 'note') {
@@ -1666,7 +1672,9 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
       body: JSON.stringify({
         conversation_id: bubble.dataset.conversationId ? parseInt(bubble.dataset.conversationId, 10) : state.currentConversationId,
+        message_id: bubble.dataset.messageId ? parseInt(bubble.dataset.messageId, 10) : undefined,
         reply_text: bubble.dataset.rawText || '',
+        reply_image: bubble.dataset.replyImage || '',
         model_key: bubble.dataset.modelKey || '',
         explanation: explanation,
       }),
@@ -1739,7 +1747,12 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         docChip.appendChild(document.createTextNode(opts.documentName));
         bubble.insertBefore(docChip, bubble.firstChild);
       }
-      if (role === 'assistant' && !opts.error && !opts.streaming) addMsgCopyAction(bubble, text, { conversationId: opts.conversationId, modelKey: opts.modelKey });
+      if (role === 'assistant' && !opts.error && !opts.streaming) addMsgCopyAction(bubble, text, {
+        conversationId: opts.conversationId,
+        messageId: opts.messageId,
+        modelKey: opts.modelKey,
+        generatedImage: opts.generatedImage
+      });
     }
     row.appendChild(avatar);
     row.appendChild(bubble);
@@ -2999,7 +3012,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
             image: m.role === 'user' ? (m.image_data || null) : null,
             generatedImage: m.role === 'assistant' ? (m.image_data || null) : null,
             documentName: m.document_name || null, modelLabel: label,
-            conversationId: id, modelKey: m.model_key
+            conversationId: id, messageId: m.id, modelKey: m.model_key
           });
         });
         renderConvList();
@@ -3208,11 +3221,14 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       var created = report.created_at ? new Date(report.created_at).toLocaleString() : '';
       var reply = report.reported_reply || '';
       if (reply.length > 500) reply = reply.slice(0, 500) + '…';
+      var prompt = report.user_prompt || '';
+      if (prompt.length > 500) prompt = prompt.slice(0, 500) + '…';
       return '<article class="report-card">' +
         '<div class="report-card-head"><div><p class="report-card-title">' + escHtml(report.conversation_title || 'AI conversation') + '</p>' +
         '<p class="report-card-meta">' + escHtml(report.model || 'AI') + ' · ' + escHtml(created) + '</p></div>' +
         '<span class="report-status ' + (report.status === 'resolved' ? 'resolved' : '') + '">' + escHtml(report.status_label || report.status) + '</span></div>' +
         '<p class="report-label">Your report</p><p class="report-text">' + escHtml(report.explanation) + '</p>' +
+        (prompt ? '<p class="report-label">Your question</p><p class="report-text">' + escHtml(prompt) + '</p>' : '') +
         '<p class="report-label">Reported response</p><p class="report-text">' + escHtml(reply) + '</p>' +
       '</article>';
     }).join('') + '</div>';
@@ -3786,6 +3802,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var isPersonaEnd = false;
     var noteSaved = false;
     var generatedImageUrl = null;
+    var assistantMessageId = null;
     // FLUX uses an attachment for editing. Other selected models still
     // auto-route an attached image to Vision for image understanding.
     var statusKey = currentModel === 'flux-klein-4b'
@@ -3822,7 +3839,12 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         generatedLink.innerHTML = '<i class="fas fa-download"></i> Download';
         bubble.appendChild(generatedLink);
       }
-      addMsgCopyAction(bubble, assistantText, { conversationId: state.currentConversationId, modelKey: answeredModelKey });
+      addMsgCopyAction(bubble, assistantText, {
+        conversationId: state.currentConversationId,
+        messageId: assistantMessageId,
+        modelKey: answeredModelKey,
+        generatedImage: generatedImageUrl
+      });
       // Remembered on the bubble itself so a manual replay via Listen later
       // (not just the auto-play right after this reply) still picks the
       // Indian-female voice — see the .msg-speak-btn click handler above.
@@ -3853,6 +3875,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         ? 'chatgpt56'
         : resp.headers.get('X-Model-Key');
       generatedImageUrl = resp.headers.get('X-Generated-Image-Url');
+      assistantMessageId = resp.headers.get('X-Message-Id');
       if (resp.status === 403) {
         return resp.json().then(function(body){
           if (body.status === 'login_required') {

@@ -1,0 +1,162 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Report #{{ report.pk }}{% endblock %}
+{% block page_title %}Report #{{ report.pk }}{% endblock %}
+
+{% block content %}
+<a href="{% url 'dashboard_ai_reports' %}" class="panel-link"><i class="fas fa-arrow-left"></i> Back to AI Reports</a>
+
+<div class="panel" style="margin-top:1rem">
+  <div class="panel-head">
+    <h3>Reported by {{ reporter_label }}</h3>
+    <div class="row-actions">
+      <form method="post" action="{% url 'dashboard_ai_report_status_update' report.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-ghost">{% if report.status == 'open' %}<i class="fas fa-circle-check"></i> Mark resolved{% else %}<i class="fas fa-rotate-left"></i> Reopen{% endif %}</button>
+      </form>
+      <form method="post" action="{% url 'dashboard_ai_report_delete' report.pk %}" onsubmit="return confirm('Delete this report?')">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-ghost"><i class="fas fa-trash"></i> Delete</button>
+      </form>
+    </div>
+  </div>
+  <div class="conv-meta">
+    <div><b>Status</b><span class="badge {% if report.status == 'open' %}ai-guest{% else %}staff{% endif %}">{{ report.get_status_display }}</span></div>
+    <div><b>Model</b>{{ report.model_key|default:"—" }}</div>
+    <div><b>Received</b>{{ report.created_at|date:"d M Y, h:i A" }}</div>
+    {% if report.ip_address %}<div><b>IP address</b><span class="mono">{{ report.ip_address }}</span></div>{% endif %}
+    {% if report.conversation_id %}<div><b>Conversation</b><a class="panel-link" href="{% url 'dashboard_ai_activity_detail' report.conversation_id %}">Open thread <i class="fas fa-arrow-up-right-from-square"></i></a></div>{% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>The reported turn</h3></div>
+  <div class="turn-grid">
+    <div class="turn-block">
+      <span class="turn-label">User asked</span>
+      <p>{{ report.user_prompt|default:"Prompt unavailable" }}</p>
+      {% if report.user_image %}<img class="report-thumb-lg" src="{% url 'dashboard_ai_report_image' report.pk 'user' %}" loading="lazy" alt="User's attached image" onerror="this.hidden=true">{% endif %}
+      {% if report.user_document_name %}<span class="evidence-chip"><i class="fas fa-file-lines"></i> {{ report.user_document_name }}</span>
+      {% if report.user_document_excerpt %}<p class="doc-excerpt">{{ report.user_document_excerpt|truncatechars:600 }}</p>{% endif %}{% endif %}
+    </div>
+    <div class="turn-block">
+      <span class="turn-label ai-label">AI replied</span>
+      <p>{{ report.reported_reply|default:"Image-only response" }}</p>
+      {% if report.reported_image %}<img class="report-thumb-lg" src="{% url 'dashboard_ai_report_image' report.pk 'assistant' %}" loading="lazy" alt="Reported AI image" onerror="this.hidden=true">{% endif %}
+    </div>
+  </div>
+  <div class="complaint-block">
+    <span class="turn-label">User's explanation</span>
+    <p>{{ report.explanation|default:"No explanation given." }}</p>
+  </div>
+</div>
+
+{% if current_issues %}
+<div class="panel">
+  <div class="panel-head"><h3>Detected issues on this report</h3></div>
+  <div class="insight-grid" style="padding:0 1.4rem 1.4rem">
+    {% for issue in current_issues %}
+    <article class="insight-card severity-{{ issue.severity }}">
+      <div class="insight-top"><span class="severity-pill">{{ issue.severity }}</span></div>
+      <h3>{{ issue.label }}</h3>
+      {% if issue.evidence %}<p class="evidence">{{ issue.evidence }}</p>{% endif %}
+      <div class="fix"><i class="fas fa-screwdriver-wrench"></i><div><b>Recommended fix</b><p>{{ issue.fix }}</p></div></div>
+    </article>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if reporter_insights %}
+<div class="panel">
+  <div class="panel-head"><h3>This reporter's pattern</h3></div>
+  <p class="panel-note">Across {{ reporter_reports|length }} report{{ reporter_reports|length|pluralize }} from the same account or guest session.</p>
+  <div class="insight-grid" style="padding:0 1.4rem 1.4rem">
+    {% for issue in reporter_insights %}
+    <article class="insight-card severity-{{ issue.severity }}">
+      <div class="insight-top"><span class="insight-count">{{ issue.count }}</span><span class="severity-pill">{{ issue.severity }}</span></div>
+      <h3>{{ issue.label }}</h3>
+      <div class="fix"><i class="fas fa-screwdriver-wrench"></i><div><b>Recommended fix</b><p>{{ issue.fix }}</p></div></div>
+    </article>
+    {% endfor %}
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Report</th><th>Explanation</th><th>Status</th><th>Received</th><th></th></tr></thead>
+      <tbody>
+        {% for r in reporter_reports %}
+        <tr {% if r.pk == report.pk %}style="background:var(--bg-alt)"{% endif %}>
+          <td>#{{ r.pk }}{% if r.pk == report.pk %} <span class="sub-line">(this report)</span>{% endif %}</td>
+          <td class="msg-cell">{{ r.explanation|default:"—"|truncatechars:120 }}</td>
+          <td>{{ r.get_status_display }}</td>
+          <td>{{ r.created_at|date:"d M Y, h:i A" }}</td>
+          <td>{% if r.pk != report.pk %}<a class="edit-btn" href="{% url 'dashboard_ai_report_detail' r.pk %}" title="View report"><i class="fas fa-magnifying-glass"></i></a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head"><h3>Full chat history</h3></div>
+  <p class="panel-note">{{ conversation_count }} conversation{{ conversation_count|pluralize }}, {{ message_count }} message{{ message_count|pluralize }} from this reporter.</p>
+  {% for conversation in conversations %}
+  <div class="transcript">
+    <div class="status-group-head"><i class="fas fa-comments"></i> {{ conversation.title|default:"(untitled conversation)" }}<span class="sub-line" style="margin-left:.6rem;font-weight:400">{{ conversation.created_at|date:"d M Y" }}</span></div>
+    {% for m in conversation.report_messages %}
+    <div class="msg-row {{ m.role }}">
+      <div class="msg-role">{{ m.role }}{% if m.role == 'assistant' and m.model_key %} · {{ m.model_key }}{% endif %}</div>
+      <div class="msg-content">{{ m.content|default:"(no text)" }}{% if m.document_name %}
+📎 {{ m.document_name }}{% endif %}</div>
+      {% if m.image_data %}<img class="report-thumb" src="{% url 'dashboard_ai_message_image' m.id %}" loading="lazy" alt="" onerror="this.hidden=true">{% endif %}
+      <div class="msg-time">{{ m.created_at|date:"d M Y, h:i:s A" }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% empty %}
+  <p class="empty-row">No conversations found for this reporter.</p>
+  {% endfor %}
+</div>
+
+<style>
+.conv-meta{display:flex;flex-wrap:wrap;gap:1.6rem;padding:1.2rem 1.4rem;font-size:.85rem}
+.conv-meta b{display:block;color:var(--head);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.2rem}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.8rem}
+.row-actions{display:flex;gap:.6rem;flex-wrap:wrap}
+.turn-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;padding:0 1.4rem 1rem}
+@media(max-width:700px){.turn-grid{grid-template-columns:1fr}}
+.turn-block p{white-space:pre-wrap;line-height:1.55;font-size:.88rem;color:var(--head);margin:.2rem 0 .5rem}
+.turn-label{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:.68rem;font-weight:900;color:var(--red)}
+.turn-label.ai-label{color:#3b5bdb}
+.evidence-chip{display:inline-flex;align-items:center;gap:.3rem;background:#eef2ff;color:#3b5bdb;border-radius:20px;padding:.18rem .5rem;font-size:.72rem;font-weight:700;margin:.15rem .15rem .25rem 0}
+.doc-excerpt{background:var(--bg-alt);border-radius:10px;padding:.7rem;font-size:.78rem;white-space:pre-wrap}
+.report-thumb-lg{display:block;max-width:100%;max-height:260px;border-radius:12px;border:1px solid var(--line);margin-top:.4rem}
+.report-thumb{display:block;width:76px;height:76px;object-fit:cover;border-radius:10px;border:1px solid var(--line);margin:.4rem 0}
+.complaint-block{padding:0 1.4rem 1.4rem}
+.complaint-block p{white-space:pre-wrap;font-size:.88rem;line-height:1.55;margin-top:.2rem}
+.panel-note{padding:0 1.4rem 1.1rem;font-size:.8rem;color:var(--text)}
+.insight-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:.9rem}
+.insight-card{background:#fff;border:1px solid var(--line);border-top:3px solid #f59f00;border-radius:14px;padding:1rem;box-shadow:var(--shadow-sm)}
+.insight-card.severity-high{border-top-color:var(--red)}
+.insight-card.severity-medium{border-top-color:#f59f00}
+.insight-card.severity-low{border-top-color:#3b82f6}
+.insight-top{display:flex;align-items:center;justify-content:space-between}
+.insight-count{font-size:1.4rem;font-weight:900;color:var(--head)}
+.severity-pill{text-transform:uppercase;font-size:.6rem;letter-spacing:.08em;font-weight:800;background:#fff4e5;color:#a15c00;border-radius:20px;padding:.18rem .5rem}
+.severity-high .severity-pill{background:var(--red-soft);color:var(--red)}
+.severity-low .severity-pill{background:#eaf2ff;color:#2563eb}
+.insight-card h3{font-size:.88rem;margin:.4rem 0}
+.evidence{font-size:.78rem;line-height:1.5}
+.fix{display:flex;gap:.5rem;background:var(--bg-alt);border-radius:10px;padding:.65rem;margin-top:.7rem;font-size:.74rem;line-height:1.45}
+.fix i{color:var(--red);margin-top:.12rem}
+.fix b{color:var(--head)}
+.transcript{padding:0 1.4rem 1.4rem}
+.msg-row{padding:.9rem 0;border-bottom:1px solid var(--line)}
+.msg-row:last-child{border-bottom:none}
+.msg-role{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--red);margin-bottom:.3rem}
+.msg-row.assistant .msg-role{color:#3b5bdb}
+.msg-content{font-size:.86rem;color:var(--head);white-space:pre-wrap;word-break:break-word}
+.msg-time{font-size:.72rem;color:#9aa3b0;margin-top:.3rem}
+</style>
+{% endblock %}
