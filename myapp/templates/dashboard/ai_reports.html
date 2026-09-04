@@ -14,6 +14,30 @@
   <p class="panel-note">Each report preserves what the user asked, what the AI returned, any image or document evidence, and the user’s complaint. Open a full review to inspect every chat and report from that exact account or guest session.</p>
 </div>
 
+<div class="report-stat-grid">
+  <a class="report-stat{% if not status_filter %} active{% endif %}" href="?{% if q %}q={{ q|urlencode }}{% endif %}">
+    <span class="report-stat-label">All reports</span>
+    <span class="report-stat-value">{{ report_stats.total }}</span>
+    <span class="report-stat-note">Click any tile to filter</span>
+  </a>
+  <a class="report-stat open{% if status_filter == 'open' %} active{% endif %}" href="?status=open{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
+    <span class="report-stat-label"><i class="fas fa-flag"></i> Unresolved</span>
+    <span class="report-stat-value">{{ report_stats.open }}</span>
+    <span class="report-stat-note">Still needs attention</span>
+  </a>
+  <a class="report-stat resolved{% if status_filter == 'resolved' %} active{% endif %}" href="?status=resolved{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
+    <span class="report-stat-label"><i class="fas fa-circle-check"></i> Solved</span>
+    <span class="report-stat-value">{{ report_stats.resolved }}</span>
+    <span class="report-stat-note">{{ report_stats.resolved_percent }}% of all reports</span>
+  </a>
+</div>
+{% if status_filter %}
+<p class="filter-note">
+  Showing <b>{% if status_filter == 'open' %}unresolved{% else %}solved{% endif %}</b> reports only.
+  <a href="?{% if q %}q={{ q|urlencode }}{% endif %}">Show all</a>
+</p>
+{% endif %}
+
 {% if failure_insights %}
 <section class="analysis-section" aria-labelledby="failure-heading">
   <div class="section-heading">

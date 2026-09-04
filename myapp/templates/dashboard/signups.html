@@ -47,13 +47,19 @@
 {% endfor %}
 
 <div class="stat-grid">
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_signups }}</div><div class="stat-lbl">Total Signups</div></div></div>
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-user-plus"></i></div><div><div class="stat-num">{{ signups_today }}</div><div class="stat-lbl">Joined Today</div></div></div>
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar-week"></i></div><div><div class="stat-num">{{ signups_last_7_days }}</div><div class="stat-lbl">Last 7 Days</div></div></div>
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar-days"></i></div><div><div class="stat-num">{{ signups_this_month }}</div><div class="stat-lbl">This Month</div></div></div>
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-indian-rupee-sign"></i></div><div><div class="stat-num">₹{{ total_amount_paid|floatformat:2 }}</div><div class="stat-lbl">Total Amount Paid</div></div></div>
-  <div class="stat-card"><div class="stat-ico"><i class="fas fa-location-dot"></i></div><div><div class="stat-num">{{ location_enabled }}</div><div class="stat-lbl">Location Enabled</div></div></div>
+  <a class="stat-card{% if not active_filter %} active{% endif %}" href="?{% if q %}q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_signups }}</div><div class="stat-lbl">Total Signups</div></div></a>
+  <a class="stat-card{% if active_filter == 'today' %} active{% endif %}" href="?filter=today{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-user-plus"></i></div><div><div class="stat-num">{{ signups_today }}</div><div class="stat-lbl">Joined Today</div></div></a>
+  <a class="stat-card{% if active_filter == 'week' %} active{% endif %}" href="?filter=week{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-calendar-week"></i></div><div><div class="stat-num">{{ signups_last_7_days }}</div><div class="stat-lbl">Last 7 Days</div></div></a>
+  <a class="stat-card{% if active_filter == 'month' %} active{% endif %}" href="?filter=month{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-calendar-days"></i></div><div><div class="stat-num">{{ signups_this_month }}</div><div class="stat-lbl">This Month</div></div></a>
+  <a class="stat-card{% if active_filter == 'paid' %} active{% endif %}" href="?filter=paid{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-indian-rupee-sign"></i></div><div><div class="stat-num">₹{{ total_amount_paid|floatformat:2 }}</div><div class="stat-lbl">Total Amount Paid</div></div></a>
+  <a class="stat-card{% if active_filter == 'location' %} active{% endif %}" href="?filter=location{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-location-dot"></i></div><div><div class="stat-num">{{ location_enabled }}</div><div class="stat-lbl">Location Enabled</div></div></a>
 </div>
+{% if active_filter %}
+<p class="filter-note">
+  Showing <b>{{ filtered_count }}</b> account{{ filtered_count|pluralize }} {{ filter_label }}.
+  <a href="?{% if q %}q={{ q|urlencode }}{% endif %}">Clear filter</a>
+</p>
+{% endif %}
 
 <div class="panel">
   <div class="panel-head"><h3>Signups — last 7 days</h3></div>

@@ -46,9 +46,10 @@ from myapp.models import (
     Product, AboutUsContent, PolicyPage, PaymentSettings, Payment,
     DropboxSettings, PhoneVerification, PWASettings, FeeSettings, SiteCustomization,
     AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile,
-    GitHubConnection, YouTubeDownloadJob,
+    AIUserImage, GitHubConnection, YouTubeDownloadJob,
 )
 from myapp import dropbox_backup
+from myapp import dropbox_images
 from myapp import ai_chat
 from myapp import github_ops
 from myapp import doc_extract
@@ -521,23 +522,21 @@ def ai_account_details(request):
             'created_at': timezone.localtime(report.created_at).isoformat(),
         })
 
-    # Every FLUX-generated/edited image across all of this user's own
-    # conversations, newest first — the "My Images" gallery. image_data on
-    # an assistant turn is only ever the real stored URL (see
-    # _ai_flux_response), never trusted/AI-invented text. Do not filter by
-    # model_key here: when ChatGPT 5.6 initiated the generation, that public
-    # identity is stored instead of exposing the internal FLUX worker.
+    # The "My Images" gallery, newest first. Read from AIUserImage, not from
+    # the chat transcript: these rows survive their conversation being deleted,
+    # which is the whole point of the table. The url column is only ever the
+    # real stored media URL written by _ai_flux_response, never model text.
     images = [
         {
-            'id': message.pk,
-            'url': message.image_data,
-            'conversation_id': message.conversation_id,
-            'created_at': timezone.localtime(message.created_at).isoformat(),
+            'id': image.pk,
+            'url': image.url,
+            'prompt': image.prompt,
+            'conversation_id': image.conversation_id,
+            'created_at': timezone.localtime(image.created_at).isoformat(),
         }
-        for message in AIMessage.objects.filter(
-            conversation__user=request.user,
-            role=AIMessage.ROLE_ASSISTANT,
-        ).exclude(image_data='').order_by('-created_at')[:60]
+        for image in AIUserImage.objects.filter(
+            user=request.user,
+        ).exclude(url='').order_by('-created_at')[:120]
     ]
 
     response = JsonResponse({
@@ -711,6 +710,31 @@ def dashboard_signups(request):
         )
     today = timezone.localdate()
     chart_start = today - timedelta(days=6)
+
+    # Each stat tile links here with ?filter=<key>, so clicking "Location
+    # Enabled: 12" actually lists those 12 accounts instead of just stating
+    # the number. Counts above the table stay whole-database totals; only the
+    # listing narrows.
+    signup_filters = {
+        'today': (Q(date_joined__date=today), 'joined today'),
+        'week': (Q(date_joined__date__gte=chart_start), 'joined in the last 7 days'),
+        'month': (
+            Q(date_joined__date__gte=today.replace(day=1), date_joined__date__lte=today),
+            'joined this month',
+        ),
+        'paid': (Q(store_profile__manual_amount_paid__gt=0), 'with a recorded payment'),
+        'location': (
+            Q(store_profile__location_consent=StoreProfile.LOCATION_GRANTED),
+            'with location enabled',
+        ),
+    }
+    active_filter = request.GET.get('filter', '').strip().lower()
+    filter_label = ''
+    if active_filter in signup_filters:
+        condition, filter_label = signup_filters[active_filter]
+        users = users.filter(condition)
+    else:
+        active_filter = ''
     counts_by_day = dict(
         User.objects.filter(date_joined__date__gte=chart_start, date_joined__date__lte=today)
         .values_list('date_joined__date').annotate(total=Count('id'))
@@ -747,6 +771,8 @@ def dashboard_signups(request):
     ]
     return render(request, 'dashboard/signups.html', {
         'active': 'signups', 'users': users, 'q': q, 'add_user_form': AddUserForm(),
+        'active_filter': active_filter, 'filter_label': filter_label,
+        'filtered_count': users.count() if active_filter else None,
         'total_signups': total_signups, 'total_amount_paid': total_amount_paid,
         'signups_today': signups_today, 'signups_last_7_days': signups_last_7_days,
         'signups_this_month': signups_this_month, 'signup_chart': signup_chart,
@@ -1014,6 +1040,10 @@ def dashboard_ai_reports(request):
     session), what reply they flagged, and why — grouped by open/resolved
     so staff can see what still needs attention."""
     q = request.GET.get('q', '').strip()
+    status_filter = request.GET.get('status', '').strip().lower()
+    if status_filter not in {choice for choice, _ in AIReport.STATUS_CHOICES}:
+        status_filter = ''
+
     reports = AIReport.objects.select_related('user', 'conversation', 'message').order_by('-created_at')
     if q:
         reports = reports.filter(
@@ -1023,16 +1053,32 @@ def dashboard_ai_reports(request):
             Q(user_document_name__icontains=q) | Q(model_key__icontains=q) |
             Q(conversation__title__icontains=q)
         )
-    all_reports = list(reports)
+
+    # Totals are counted before the status filter is applied, so clicking
+    # "Resolved" doesn't make the other tiles read zero.
+    matched = list(reports)
+    open_count = sum(1 for r in matched if r.status == AIReport.STATUS_OPEN)
+    resolved_count = sum(1 for r in matched if r.status == AIReport.STATUS_RESOLVED)
+    total_count = len(matched)
+
+    all_reports = [r for r in matched if not status_filter or r.status == status_filter]
     for report in all_reports:
         report.detected_issues = analyze_report(report)
         report.primary_issue = report.detected_issues[0] if report.detected_issues else None
     groups = [
         {'status': value, 'label': label, 'reports': [r for r in all_reports if r.status == value]}
         for value, label in AIReport.STATUS_CHOICES
+        if not status_filter or value == status_filter
     ]
     return render(request, 'dashboard/ai_reports.html', {
         'active': 'ai_reports', 'reports': all_reports, 'groups': groups, 'q': q,
+        'status_filter': status_filter,
+        'report_stats': {
+            'total': total_count,
+            'open': open_count,
+            'resolved': resolved_count,
+            'resolved_percent': round(resolved_count * 100 / total_count) if total_count else 0,
+        },
         'failure_insights': aggregate_report_issues(all_reports),
         'system_health': _ai_report_system_health(),
     })
@@ -1674,7 +1720,13 @@ AI_GENERATED_FILE_EXTENSIONS = frozenset({
 # bare 'excel' that also appears in it, and _ai_generated_file_spec takes the
 # first entry whose label is present.
 AI_GENERATED_FILE_TYPE_EXTENSIONS = {
-    'microsoft word': 'docx', 'word': 'docx', 'docx': 'docx',
+    # "create doc file for me" produced a .txt, because 'doc' was missing and
+    # the lookup fell through to the default. Ordering matters here: the loop
+    # takes the first label found, so 'word document' has to be tried before
+    # the bare 'word', and 'docx' before 'doc'.
+    'word document': 'docx', 'microsoft word': 'docx', 'ms word': 'docx',
+    'word file': 'docx', 'word doc': 'docx', 'docx': 'docx',
+    'word': 'docx', 'doc': 'docx', 'docs': 'docx',
     'pdf': 'pdf',
     'microsoft excel': 'xlsx', 'spreadsheet': 'xlsx', 'excel': 'xlsx',
     'xlsx': 'xlsx', 'xls': 'xlsx',
@@ -1750,6 +1802,10 @@ def _ai_generated_file_spec(message):
 
 
 def _ai_generated_file_instruction(filename):
+    return _ai_generated_file_instruction_body(filename) + _AI_FILE_INSTRUCTION_SUFFIX
+
+
+def _ai_generated_file_instruction_body(filename):
     if filename.lower().endswith('.docx'):
         return (
             f"The user explicitly requested a real downloadable Microsoft Word document named {filename!r}. "
@@ -1793,16 +1849,89 @@ def _ai_generated_file_instruction(filename):
     )
 
 
+# Appended to every file instruction above. Both halves are here because both
+# failure modes were seen in the same session: a fabricated download link that
+# rendered as a second, dead "Download generated.pdf" next to the real one and
+# became the file's only contents, and a clarifying question that was written
+# into a .txt and handed back to the user as their "document".
+_AI_FILE_INSTRUCTION_SUFFIX = (
+    " NEVER write a download link, URL, or file path of your own anywhere in this reply — not in Markdown, "
+    "not as plain text — and never say the file is attached or ready. The application adds the one real "
+    "link by itself, and any link you write is dead and appears as a confusing duplicate. "
+    "If you genuinely cannot write the document because the user has not said what it should contain, "
+    "reply with only your single clarifying question and NO fenced block at all; no file will then be "
+    "created, which is correct. Otherwise write the full content and do not ask anything."
+)
+
+
+# The model is told not to invent a download link, and still sometimes writes
+# its own Markdown one with a made-up token. Two things went wrong when it did:
+# the reply showed two "Download generated.pdf" links (the model's, which is
+# dead, and the real one the server appends), and because that link was the
+# whole reply, it also became the file's entire contents — producing a PDF
+# whose only text was "[Download generated.pdf](http://.../12345678-.../)".
+_AI_FAKE_DOWNLOAD_LINK_RE = re.compile(
+    # A Markdown link pointing at this app's own download endpoint...
+    r'\[[^\]\r\n]{0,160}\]\(\s*[^)\r\n]*/AI/api/files/[^)\r\n]*\)|'
+    # ...or any "[Download ...](...)" / "[Click here ...](...)" link at all,
+    # since the server is the only thing allowed to offer one.
+    r'\[\s*(?:download|click\s+here|get\s+(?:the\s+)?file)[^\]\r\n]{0,160}\]\([^)\r\n]*\)|'
+    # ...or a bare URL to the endpoint, pasted without Markdown.
+    r'https?://\S*/AI/api/files/\S*',
+    re.IGNORECASE,
+)
+
+# "Tell me what it should contain and I'll create it" is a legitimate reply —
+# but it is not document content, and turning it into a file gave the user a
+# .txt containing the question they were just asked.
+_AI_CLARIFYING_REPLY_RE = re.compile(
+    r'\b(?:what (?:topic|content|information|details|data|kind)|'
+    r'which (?:topic|format|details)|'
+    r'could you (?:please )?(?:specify|clarify|tell me|provide|share)|'
+    r'(?:please )?let me know what|'
+    r'please (?:provide|specify|share|tell me|send)|'
+    r'would you like (?:me to|the))\b',
+    re.IGNORECASE,
+)
+
+
+class _NoGeneratedFileContent(Exception):
+    """The model produced no document content, so no file should be attached."""
+
+
+def _strip_fake_download_links(text):
+    """Remove any download link the model invented for itself."""
+    cleaned = _AI_FAKE_DOWNLOAD_LINK_RE.sub('', text or '')
+    # Collapse the blank lines the removal leaves behind.
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
 def _extract_ai_generated_file_content(reply):
-    """Extract the complete fenced payload requested by the server prompt."""
-    text = (reply or '').strip()
+    """Extract the fenced payload the server prompt asked for.
+
+    Returns '' when the model did not actually produce document content — the
+    caller must then skip file creation entirely rather than write a file whose
+    contents are a clarifying question or a fabricated link.
+    """
+    text = _strip_fake_download_links(reply)
     fenced = re.search(r"```[^\r\n]*\r?\n([\s\S]*?)```", text)
     if fenced:
-        return fenced.group(1).rstrip('\r\n')
+        return _strip_fake_download_links(fenced.group(1).rstrip('\r\n'))
     if text.startswith('```') and text.endswith('```'):
         text = text[3:-3]
         text = re.sub(r'^[A-Za-z0-9_+.-]+\r?\n', '', text, count=1)
-    return text.strip()
+        return text.strip()
+
+    # No fenced block: the model ignored the instruction. Accept the reply as
+    # the document only when it actually reads like one — not when it is a
+    # question back to the user, and not when nothing survived link-stripping.
+    text = text.strip()
+    if not text:
+        return ''
+    if _AI_CLARIFYING_REPLY_RE.search(text) or text.rstrip().endswith('?'):
+        return ''
+    return text
 
 
 def _ai_word_document_bytes(content):
@@ -2109,6 +2238,11 @@ def ai_page(request):
         'ai_free_used': ai_free_used,
         'ai_purchase_url': _ai_purchase_url(),
         'ai_models': models,
+        # Drives the homepage's ChatGPT 5.6 call-out: whether to say "it's
+        # already selected" or "here's how to unlock it". Without this the
+        # empty state would tell a free user a model is selected that the
+        # picker below is actually showing as Vidhyora Quick.
+        'ai_full_model_access': ai_full_model_access,
         'ai_default_model': ai_default_model,
         'ai_default_model_label': model_labels[ai_default_model],
         'ai_model_labels': model_labels,
@@ -2749,7 +2883,7 @@ def _ai_chat_failure_reply(error, response_model_key, is_staff=False):
     )
 
 
-def _ai_flux_response(conversation, prompt, source_image, response_model_key=None):
+def _ai_flux_response(conversation, prompt, source_image, response_model_key=None, owner_email=''):
     """Run a FLUX generation/editing turn and persist the real image URL."""
     display_model_key = response_model_key or ai_chat.FLUX_KLEIN_4B_MODEL_KEY
     try:
@@ -2787,6 +2921,15 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
         )
         return response
 
+    # Mirror the image into the owner's Dropbox archive, because local media
+    # storage does not survive a redeploy. Placed after the try/except above
+    # so it can never be mistaken for a generation failure, and enqueue() only
+    # hands the bytes to a background thread — no network happens here, so
+    # this costs the reply nothing measurable.
+    dropbox_images.enqueue(
+        generated.content, generated.extension, owner_email, local_name=stored_name,
+    )
+
     # No caption text — the image speaks for itself, and a canned "Image
     # generated successfully." heading above every single image was just
     # noise. The frontend (finalizeBubble in ai.html) knows not to fall
@@ -2800,6 +2943,20 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
         image_data=generated_url,
         model_key=display_model_key,
     )
+    # Kept outside the conversation so deleting the chat never destroys the
+    # picture — the gallery reads this table, not AIMessage. Best-effort: a
+    # failure here must not turn a successfully generated image into an error.
+    try:
+        AIUserImage.objects.create(
+            user=conversation.user,
+            session_key=conversation.session_key or '',
+            conversation=conversation,
+            url=generated_url,
+            prompt=(prompt or '')[:AI_CHAT_MAX_MESSAGE_CHARS],
+            model_key=display_model_key,
+        )
+    except Exception:
+        logger.exception('Could not record a generated image for the gallery')
     response = HttpResponse(reply, content_type='text/plain; charset=utf-8')
     response['Cache-Control'] = 'private, no-store'
     response['X-Conversation-Id'] = str(conversation.id)
@@ -3131,7 +3288,13 @@ def ai_chat_send(request):
                 response_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
             )
             return response
-        return _ai_flux_response(conversation, message, image_data, response_model_key)
+        # request.user is already loaded by the auth middleware, so reading the
+        # email here is free — resolving it inside the upload thread would cost
+        # an extra query and a database connection per image.
+        owner_email = request.user.email if request.user.is_authenticated else ''
+        return _ai_flux_response(
+            conversation, message, image_data, response_model_key, owner_email=owner_email,
+        )
 
     # First-time-in-AI-chat onboarding: ask a genuinely new user (once) for
     # their name/location/Instagram, then deterministically capture whatever
@@ -3325,6 +3488,19 @@ def ai_chat_send(request):
         released_chars = 0
         had_error = False
         hide_chatgpt_worker = response_model_key == ai_chat.CHATGPT_56_MODEL_KEY
+        # A file-generation turn gets the same held-back streaming on every
+        # model, because the model may write its own fabricated download link
+        # mid-reply and streamed text cannot be taken back. public_text is run
+        # over the WHOLE reply each time and the browser is only ever fed from
+        # its output, so a fake link is removed before any of it is released.
+        def public_text(text):
+            if hide_chatgpt_worker:
+                text = _chatgpt_public_reply(text)
+            if generated_file_spec:
+                text = _strip_fake_download_links(text)
+            return text
+
+        buffered = hide_chatgpt_worker or bool(generated_file_spec)
         try:
             for chunk in ai_chat.stream_chat(
                 clean_history, model_key=model_key,
@@ -3343,7 +3519,7 @@ def ai_chat_send(request):
                 onboarding_ask=onboarding_ask,
             ):
                 full_reply += chunk
-                if not hide_chatgpt_worker:
+                if not buffered:
                     yield chunk
                     continue
                 # ChatGPT 5.6 used to withhold the entire reply until
@@ -3355,23 +3531,31 @@ def ai_chat_send(request):
                 # released, so a worker name split across chunks ("FL" + "UX")
                 # or a sentence-spanning identity claim is still rewritten
                 # before any of it can reach the browser.
-                sanitized = _chatgpt_public_reply(full_reply)
+                sanitized = public_text(full_reply)
                 safe_upto = len(sanitized) - CHATGPT_STREAM_HOLDBACK_CHARS
                 if safe_upto > released_chars:
                     yield sanitized[released_chars:safe_upto]
                     released_chars = safe_upto
-            if hide_chatgpt_worker:
-                full_reply = _chatgpt_public_reply(full_reply)
+            if buffered:
+                full_reply = public_text(full_reply)
                 if len(full_reply) > released_chars:
                     yield full_reply[released_chars:]
                     released_chars = len(full_reply)
             if generated_file_spec and full_reply.strip():
                 try:
+                    file_content = _extract_ai_generated_file_content(full_reply)
+                    # No usable content means the model asked a question back
+                    # (or only produced a fabricated link). Creating a file
+                    # here would hand the user a document containing their own
+                    # question, plus a second, dead download link.
+                    if not file_content.strip():
+                        raise _NoGeneratedFileContent
+
                     generated_file = AIGeneratedFile.objects.create(
                         user=request.user if request.user.is_authenticated else None,
                         session_key='' if request.user.is_authenticated else (request.session.session_key or ''),
                         file_name=generated_file_spec['file_name'],
-                        content=_extract_ai_generated_file_content(full_reply),
+                        content=file_content,
                     )
                     download_url = request.build_absolute_uri(reverse(
                         'ai_generated_file_download', args=[generated_file.token],
@@ -3379,6 +3563,10 @@ def ai_chat_send(request):
                     download_link = f"\n\n[Download {generated_file.file_name}]({download_url})"
                     full_reply += download_link
                     yield download_link
+                except _NoGeneratedFileContent:
+                    # Not an error: the reply stands on its own, there is just
+                    # nothing to attach to it.
+                    pass
                 except Exception:
                     # The model response is still useful if persistence ever
                     # fails; don't mislabel a completed answer as a stream
@@ -3981,7 +4169,7 @@ def ai_report_submit(request):
     reported_image = _snapshot_ai_report_image(reported_image)
 
     ip = _client_ip(request)
-    AIReport.objects.create(
+    report = AIReport.objects.create(
         conversation=conversation, message=message,
         user_prompt=user_prompt, user_image=user_image,
         user_document_name=user_document_name,
@@ -3991,6 +4179,17 @@ def ai_report_submit(request):
         user=request.user if request.user.is_authenticated else None,
         session_key='' if request.user.is_authenticated else (request.session.session_key or ''),
         ip_address=ip if ip and ip != 'unknown' else None,
+    )
+
+    # Archive the report's visual evidence alongside the reporter's own images,
+    # so a reviewer can still see what they were looking at after local media
+    # has been recycled. Queued for the background worker exactly like a
+    # generated image — reporting a bad reply must stay instant.
+    dropbox_images.enqueue_report_images(
+        report.pk,
+        request.user.email if request.user.is_authenticated else '',
+        user_image=user_image,
+        reply_image=reported_image,
     )
     return JsonResponse({'status': 'ok'})
 

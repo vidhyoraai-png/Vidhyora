@@ -994,6 +994,38 @@ class AINote(models.Model):
         return self.heading or f"Note #{self.pk}"
 
 
+class AIUserImage(models.Model):
+    """One AI-generated image, kept for the user's "My Images" gallery.
+
+    Deliberately independent of AIConversation and AIMessage. The gallery used
+    to read straight from AIMessage.image_data, which meant deleting a chat
+    silently destroyed every picture generated in it — people delete old chats
+    to tidy up, not to throw away their images. The conversation link below is
+    SET_NULL so the image outlives the chat it came from, and nothing in the
+    app deletes these rows: they go only when the account itself does.
+    """
+    user         = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='ai_images')
+    session_key  = models.CharField(max_length=40, blank=True, db_index=True)
+    conversation = models.ForeignKey(AIConversation, on_delete=models.SET_NULL, null=True, blank=True, related_name='generated_images')
+    # The stored media URL produced by views._ai_flux_response — never text the
+    # model wrote, and never a data: URI.
+    url          = models.TextField()
+    # What the user asked for, so the gallery can be searched and a picture can
+    # be traced back to its request after its chat is gone.
+    prompt       = models.TextField(blank=True)
+    model_key    = models.CharField(max_length=20, blank=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'AI Generated Image'
+        verbose_name_plural = 'AI Generated Images'
+        indexes = [models.Index(fields=['user', '-created_at'])]
+
+    def __str__(self):
+        return f"Image #{self.pk}"
+
+
 class AIReport(models.Model):
     """A user's 'this answer is wrong / abusive' report against one
     assistant reply, submitted from the Report button under every AI chat

@@ -175,6 +175,53 @@ _PDF_FONT = 'helv'
 _PDF_FONT_BOLD = 'hebo'
 
 
+# Models write Markdown, and the writers below used to lay it down verbatim —
+# a document full of literal **stars**, `backticks` and [text](url). These
+# resolve the inline markers to what the reader should actually see.
+_MD_LINK_RE = re.compile(r'\[([^\]\r\n]*)\]\(\s*([^)\s]*)[^)]*\)')
+_MD_IMAGE_RE = re.compile(r'!\[([^\]\r\n]*)\]\([^)]*\)')
+_MD_BOLD_RE = re.compile(r'(\*\*|__)(?=\S)(.+?)(?<=\S)\1', re.S)
+_MD_ITALIC_RE = re.compile(r'(?<![\w*])\*(?=\S)([^*\r\n]+?)(?<=\S)\*(?![\w*])')
+_MD_CODE_RE = re.compile(r'`([^`\r\n]+)`')
+
+
+def _inline_text(text):
+    """Flatten inline Markdown to plain reading text.
+
+    A link keeps its label and, when the URL adds information, the URL in
+    brackets after it — dropping it silently would lose the destination.
+    """
+    text = _MD_IMAGE_RE.sub(r'\1', text or '')
+    text = _MD_LINK_RE.sub(
+        lambda m: m.group(1) if not m.group(2) or m.group(2) == m.group(1)
+        else (f'{m.group(1)} ({m.group(2)})' if m.group(1) else m.group(2)),
+        text,
+    )
+    text = _MD_BOLD_RE.sub(r'\2', text)
+    text = _MD_ITALIC_RE.sub(r'\1', text)
+    text = _MD_CODE_RE.sub(r'\1', text)
+    return text
+
+
+def _docx_runs(paragraph, text):
+    """Add ``text`` to a DOCX paragraph with **bold** as real bold runs."""
+    text = _MD_IMAGE_RE.sub(r'\1', text or '')
+    text = _MD_LINK_RE.sub(
+        lambda m: m.group(1) if not m.group(2) or m.group(2) == m.group(1)
+        else (f'{m.group(1)} ({m.group(2)})' if m.group(1) else m.group(2)),
+        text,
+    )
+    for index, part in enumerate(_MD_BOLD_RE.split(text)):
+        # split() with two groups yields [plain, marker, inner, plain, ...] —
+        # every third item from index 2 is the bolded text.
+        if part is None:
+            continue
+        if index % 3 == 2:
+            paragraph.add_run(_MD_CODE_RE.sub(r'\1', _MD_ITALIC_RE.sub(r'\1', part))).bold = True
+        elif index % 3 == 0:
+            paragraph.add_run(_MD_CODE_RE.sub(r'\1', _MD_ITALIC_RE.sub(r'\1', part)))
+
+
 def _wrap_line(fitz_module, text, fontsize, max_width, fontname):
     """Greedy word-wrap using the font's real glyph widths."""
     words = text.split(' ')
@@ -232,19 +279,27 @@ def text_to_pdf_bytes(content):
         if not line:
             y += _PDF_BODY_SIZE * 0.5
             continue
+        # A table row or a rule from Markdown would otherwise print as a wall
+        # of pipes and dashes; keep the cell text, drop the drawing characters.
+        if re.fullmatch(r'\|?[\s:|-]{3,}\|?', line):
+            continue
+        if line.startswith('|') and line.endswith('|'):
+            line = '  '.join(cell.strip() for cell in line.strip('|').split('|'))
         heading = re.match(r'^(#{1,6})\s+(.+)$', line)
-        bullet = re.match(r'^[-*]\s+(.+)$', line)
+        bullet = re.match(r'^[-*+]\s+(.+)$', line)
         numbered = re.match(r'^(\d+[.)])\s+(.+)$', line)
         if heading:
-            emit(heading.group(2), _PDF_HEADING_SIZES[min(len(heading.group(1)), 6)], _PDF_FONT_BOLD)
+            emit(_inline_text(heading.group(2)),
+                 _PDF_HEADING_SIZES[min(len(heading.group(1)), 6)], _PDF_FONT_BOLD)
         elif bullet:
             # A plain hyphen, not a Unicode bullet: the base-14 PDF fonts here
             # don't reliably round-trip "•" through every reader/extractor.
-            emit(f'- {bullet.group(1)}', _PDF_BODY_SIZE, _PDF_FONT, indent=14)
+            emit(f'- {_inline_text(bullet.group(1))}', _PDF_BODY_SIZE, _PDF_FONT, indent=14)
         elif numbered:
-            emit(f'{numbered.group(1)} {numbered.group(2)}', _PDF_BODY_SIZE, _PDF_FONT, indent=14)
+            emit(f'{numbered.group(1)} {_inline_text(numbered.group(2))}',
+                 _PDF_BODY_SIZE, _PDF_FONT, indent=14)
         else:
-            emit(line, _PDF_BODY_SIZE, _PDF_FONT)
+            emit(_inline_text(line), _PDF_BODY_SIZE, _PDF_FONT)
 
     data = doc.tobytes()
     doc.close()
@@ -258,17 +313,21 @@ def text_to_docx_bytes(content):
     document = WordDocument()
     for raw_line in (content or '').splitlines():
         line = raw_line.strip()
+        if re.fullmatch(r'\|?[\s:|-]{3,}\|?', line):
+            continue
+        if line.startswith('|') and line.endswith('|'):
+            line = '  '.join(cell.strip() for cell in line.strip('|').split('|'))
         heading = re.match(r'^(#{1,6})\s+(.+)$', line)
-        bullet = re.match(r'^[-*]\s+(.+)$', line)
+        bullet = re.match(r'^[-*+]\s+(.+)$', line)
         numbered = re.match(r'^\d+[.)]\s+(.+)$', line)
         if heading:
-            document.add_heading(heading.group(2), level=min(len(heading.group(1)), 9))
+            document.add_heading(_inline_text(heading.group(2)), level=min(len(heading.group(1)), 9))
         elif bullet:
-            document.add_paragraph(bullet.group(1), style='List Bullet')
+            _docx_runs(document.add_paragraph(style='List Bullet'), bullet.group(1))
         elif numbered:
-            document.add_paragraph(numbered.group(1), style='List Number')
+            _docx_runs(document.add_paragraph(style='List Number'), numbered.group(1))
         else:
-            document.add_paragraph(raw_line)
+            _docx_runs(document.add_paragraph(), line)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()

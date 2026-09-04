@@ -69,6 +69,21 @@ _VOLATILE_TOPIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "Status of X" is a live-state question even without a freshness word in it.
+# AIReport #43 ("Status of Shree cement plant in meghalaya") answered itself
+# with "I don't have current operational status data" — the model knew it
+# needed live information and no search had been run. Kept narrow: it must be
+# the *status of* something, not the bare word "status", which shows up in
+# "WhatsApp status", "order status" and every Hinglish sentence about a
+# status update.
+_LIVE_STATE_RE = re.compile(
+    r"\b(?:status|update|progress|situation|condition|standing|position)\s+(?:of|on|about)\b|"
+    r"\bis\s+.{1,40}\b(?:still|currently)\s+(?:open|closed|running|operational|working|available)\b|"
+    r"\b(?:operational|running|shut\s?down|closed\s+down|under\s+construction)\b|"
+    r"\bkya\s+haal\b|\bhaal\s+chaal\b",
+    re.IGNORECASE,
+)
+
 # A bare year that isn't in the model's reliable range still signals "current
 # events" more often than not ("IPL 2026 schedule", "budget 2026 highlights").
 _RECENT_YEAR_RE = re.compile(r"\b(?:20[2-9]\d)\b")
@@ -78,7 +93,11 @@ _RECENT_YEAR_RE = re.compile(r"\b(?:20[2-9]\d)\b")
 _NO_SEARCH_RE = re.compile(
     r"\b(?:rephrase|rewrite|reword|paraphrase|translate|summari[sz]e|proofread|"
     r"code|coding|program|function|debug|traceback|syntax|"
-    r"generate\s+(?:an?\s+)?image|create\s+(?:an?\s+)?image|draw|poster|logo)\b",
+    r"generate\s+(?:an?\s+)?image|create\s+(?:an?\s+)?image|draw|poster|logo|"
+    # The user's own account/order state is private to this app — a public web
+    # search cannot answer it and would only add a round trip to the reply.
+    r"my\s+(?:order|account|subscription|payment|invoice|booking|ticket)|"
+    r"order\s+status|track\s+my)\b",
     re.IGNORECASE,
 )
 
@@ -100,6 +119,8 @@ def needs_search(text):
     if _FRESHNESS_RE.search(text):
         return True
     if _VOLATILE_TOPIC_RE.search(text):
+        return True
+    if _LIVE_STATE_RE.search(text):
         return True
     # A year alone is only a signal alongside a real question, not inside a
     # date the user is simply quoting back ("my invoice dated 2026-03-01").

@@ -691,7 +691,16 @@ _IMAGE_GEN_NOUN = (
     r"image|photo|picture|poster|logo|wallpaper|banner|graphic|artwork|"
     r"thumbnail|flyer|invitation|invite|card|background|illustration|icon|"
     r"avatar|sticker|greeting card|img|pic|pics|drawing|sketch|diagram|chart|"
-    r"post|instagram post|insta post|social media post|social post|story"
+    r"post|instagram post|insta post|social media post|social post|story|"
+    # Typed-in-a-hurry spellings, mostly from phone keyboards with the Hindi
+    # layout on. AIReport #42 ("COVERT INTO HIGH ANGAEMENT META ADS POSTRES")
+    # fell through to plain chat and was answered "I cannot assist with that
+    # request" purely because 'postres' is not 'posters'. Listing the real
+    # misspellings is deliberate: fuzzy matching would cost time on every turn
+    # and would start firing on words that only look similar.
+    r"postre|postres|poster|potser|poter|imge|imag|imges|immage|"
+    r"picutre|pictre|picure|photoe|photu|phto|grafic|graphi|"
+    r"walpaper|wallpepar|thumbnil|thumnail|banar"
 )
 _IMAGE_GENERATION_RE = re.compile(
     # s? after the noun group — plural phrasing ("generate images",
@@ -752,7 +761,15 @@ _IMAGE_EDIT_ONLY_VERB = (
     r"hatao|hataye|hata do|badlo|badal do|"
     r"dikhao|dikha do|dikhaiye|dikhana|"
     r"daalo|dalo|daal do|dal do|jodo|jod do|lagao|laga do|"
-    r"nikaal|nikalo|nikal do|nikal ke do"
+    r"nikaal|nikalo|nikal do|nikal ke do|"
+    # "convert into X" is an edit only when a picture is already attached —
+    # this list is never consulted otherwise — so the analysis-request worry
+    # that keeps plain "convert" out of _IMAGE_GEN_VERB does not apply here.
+    # 'covert' is the misspelling from AIReport #42; it can only be read as
+    # "covert" the adjective in a sentence that also has an attached image,
+    # which is not a thing users send.
+    r"convert|covert|convet|conver|"
+    r"banado|bnado|banwado"
 )
 _IMAGE_EDIT_ONLY_RE = re.compile(
     # Second branch: AIReport #39 ("use this logo" on an attached image) is
@@ -809,8 +826,28 @@ _LONG_FORM_CUE_RE = re.compile(
 )
 
 
+# "It got cut off, give me the rest." This needs the same raised budget as the
+# original request, but almost never repeats the words that earned it: AIReport
+# #35 and #36 are both literally "still it is half" — a follow-up with no code
+# and no long-form cue in it, so it fell back to the default MAX_TOKENS and was
+# truncated all over again. The same user reported it twice.
+_TRUNCATED_OUTPUT_CUE_RE = re.compile(
+    r"\b(?:half|halfway|incomplete|truncated|cut\s?off|cutoff|"
+    r"not\s+(?:complete|completed|full|finished|done)|"
+    r"continue|carry\s+on|go\s+on|rest\s+of\s+(?:the|it)|remaining|"
+    r"adhura|adhoora|aadha|adha|poora\s+nahi|pura\s+nahi|"
+    r"nahi\s+(?:aaya|aya)\s+poora|baaki|baki|aage\s+likho|puri\s+nahi)\b",
+    re.IGNORECASE,
+)
+
+
+def is_truncated_output_complaint(text):
+    """True when the user is saying a previous answer was cut short."""
+    return bool(_TRUNCATED_OUTPUT_CUE_RE.search(text or ''))
+
+
 def wants_long_form_output(text):
-    return bool(_LONG_FORM_CUE_RE.search(text or ''))
+    return bool(_LONG_FORM_CUE_RE.search(text or '') or _TRUNCATED_OUTPUT_CUE_RE.search(text or ''))
 
 
 def _lucknow_greeting_and_time():
@@ -1100,6 +1137,34 @@ COMPACT_SYSTEM_PROMPT = (
     "provided confirmation. If uncertain, say what is uncertain and name the "
     "specific information needed to resolve it. Prioritize accuracy, clarity, "
     "context and usefulness over speed.\n\n"
+    # Every rule below traces to a specific user report. See the report id in
+    # each sentence — they are all cases of the model denying a capability the
+    # product has, refusing a normal business request, or inventing a source.
+    "WHAT THIS PRODUCT CAN ACTUALLY DO — never deny these: images you generate "
+    "are displayed to the user inline in this chat, right inside the reply, and "
+    "they can download or copy them there; so never say you cannot display, "
+    "show, or send an image, and never tell the user to look for it somewhere "
+    "else or in another interface (AIReport #38). You can also produce real "
+    "downloadable PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), CSV and "
+    "text files, so never say you are unable to create or save a file for them "
+    "(AIReports #28, #33). What you genuinely cannot make is video, animation, "
+    "GIF, audio or music — when asked for one, say plainly and in one sentence "
+    "that video/animation is not supported yet, then immediately offer what you "
+    "can do instead (a still image, a poster, a frame-by-frame storyboard, or "
+    "the script//caption text), rather than a bare refusal (AIReport #32). "
+    "Ordinary business and marketing requests — 'convert this into a Meta ads "
+    "poster', 'make this an Instagram creative', 'write ad copy for this "
+    "product' — are legitimate work: never refuse them with 'I cannot assist "
+    "with that request' (AIReport #42). Reserve refusals for the SAFETY list "
+    "below; a request being brief, oddly worded, or misspelt is never a reason "
+    "to refuse.\n\n"
+    "SOURCES: never present EduTrellis or Vidhyora pages as the source of "
+    "general knowledge. Company pages are a source only for questions about "
+    "EduTrellis' own services, pricing, or contact details. For medicine, law, "
+    "science, exams, textbooks or any outside subject, cite the real source, or "
+    "say plainly that you are answering from general knowledge — never attach a "
+    "vidhyora/edutrellis URL to a fact that did not come from it, and never "
+    "invent a citation, database name, book, or page reference (AIReport #29).\n\n"
     "SAFETY: firmly refuse, with a brief, plain-language warning rather than "
     "silence or a vague non-answer, any request involving: (1) anything that "
     "sexualizes, exploits, or endangers a minor — refuse this instantly and "

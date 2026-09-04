@@ -18,6 +18,68 @@ FLUX_API_URL = (
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_PROMPT_CHARS = 10_000
 
+# Every generated image used to be a hardcoded 1024x1024 square, whatever was
+# asked for. Three of the four newest reports were exactly that: #48 wanted a
+# "wallpaper 4k resolution", #47 a "size 9.12" greeting, #45 an Instagram post
+# — all three got a square back and were reported as wrong.
+#
+# The ceiling is not a guess: the endpoint rejects anything larger with
+# "Requested image size 1069056 exceeds supported image size 1062400", and the
+# sizes below were confirmed against the live API to come back at exactly the
+# requested dimensions. All are multiples of 32, which diffusion models want.
+MAX_PIXELS = 1_062_400
+DEFAULT_SIZE = (1024, 1024)
+
+_ASPECT_SIZES = {
+    "1:1": (1024, 1024),
+    "16:9": (1344, 768),
+    "9:16": (768, 1344),
+    "3:2": (1216, 832),
+    "2:3": (832, 1216),
+    "4:3": (1152, 896),
+    "3:4": (896, 1152),
+    "5:4": (1120, 896),
+    "4:5": (896, 1120),
+}
+
+# Ordered: the more specific phrasing has to win, because a phone wallpaper is
+# portrait while a plain "wallpaper" is a desktop one.
+_ORIENTATION_CUES = (
+    (r"\b(?:phone|mobile|iphone|android|smartphone)\s+(?:wallpaper|background|screen)\b", "9:16"),
+    (r"\b(?:story|stories|reel|reels|short|shorts|status|snapchat|tiktok)\b", "9:16"),
+    (r"\b(?:portrait|vertical|upright|full\s?screen\s+phone)\b", "9:16"),
+    (r"\b(?:instagram|insta|ig|facebook|fb|linkedin)\s+(?:post|feed|creative)\b", "4:5"),
+    (r"\b(?:wallpaper|desktop|laptop|monitor|widescreen|wide\s?screen)\b", "16:9"),
+    (r"\b(?:banner|cover\s+(?:photo|image)|header|thumbnail|youtube|hoarding|billboard)\b", "16:9"),
+    (r"\b(?:landscape|horizontal|panorama|panoramic)\b", "16:9"),
+    (r"\b(?:poster|flyer|pamphlet|brochure|leaflet|invitation|invite|a4|certificate)\b", "3:4"),
+    (r"\b(?:profile\s+(?:picture|pic|photo)|avatar|logo|icon|dp|display\s+picture)\b", "1:1"),
+    (r"\b(?:square)\b", "1:1"),
+)
+_ORIENTATION_CUES = tuple(
+    (re.compile(pattern, re.IGNORECASE), ratio) for pattern, ratio in _ORIENTATION_CUES
+)
+
+# "1920x1080", "1080 X 1920" — an exact pixel request states the ratio outright.
+_PIXEL_SIZE_RE = re.compile(r"\b(\d{3,5})\s*[x×*]\s*(\d{3,5})\b", re.IGNORECASE)
+# "16:9", "4/5". A bare dot is deliberately NOT accepted here: it would read
+# "ChatGPT 5.6" as a 5:6 portrait.
+_RATIO_RE = re.compile(r"\b(\d{1,2})\s*[:/]\s*(\d{1,2})\b")
+# An unannounced "9:30" is a clock time far more often than an aspect ratio,
+# and "the number 1/2" is a fraction. Without a size word to anchor it, only
+# ratios people genuinely use for images count — "good morning image at 9:30
+# am" was otherwise coming out as a portrait.
+_BARE_RATIO_ALLOWLIST = frozenset({
+    (1, 1), (3, 2), (2, 3), (4, 3), (3, 4), (5, 4), (4, 5),
+    (16, 9), (9, 16), (16, 10), (10, 16), (21, 9), (5, 3), (3, 5),
+})
+# After an explicit size word a dot is safe, which is what makes report #47's
+# "size 9.12" readable as the 9:12 (i.e. 3:4) portrait they wanted.
+_SIZED_RATIO_RE = re.compile(
+    r"\b(?:size|ratio|aspect|resolution|dimensions?)\b\D{0,10}(\d{1,2})\s*[.:/x]\s*(\d{1,2})\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class GeneratedImage:
@@ -65,6 +127,56 @@ def _safe_error(response):
     return ImageGenerationError(
         "NVIDIA's image service is temporarily unavailable. Please try again in a moment.",
     )
+
+
+def _size_for_ratio(width_units, height_units):
+    """Snap any requested ratio to the nearest size FLUX actually accepts."""
+    if width_units <= 0 or height_units <= 0:
+        return None
+    target = width_units / height_units
+    # Ignore absurd ratios rather than generating a 20:1 sliver — they are far
+    # more likely to be a misread number than a real request.
+    if not 0.2 <= target <= 5:
+        return None
+    return min(
+        _ASPECT_SIZES.values(),
+        key=lambda size: abs((size[0] / size[1]) - target),
+    )
+
+
+def resolve_dimensions(prompt):
+    """Work out the width/height a prompt is asking for.
+
+    Falls back to the square default whenever nothing is stated, so an ordinary
+    "draw a cat" behaves exactly as it always has. Pure string work — no model
+    call, no network — so this costs nothing measurable on the request path.
+    """
+    text = prompt or ""
+
+    match = _PIXEL_SIZE_RE.search(text)
+    if match:
+        size = _size_for_ratio(int(match.group(1)), int(match.group(2)))
+        if size:
+            return size
+
+    # A ratio introduced by an explicit size word is taken at face value; a
+    # bare one has to look like a real aspect ratio first (see the allowlist).
+    for found in _SIZED_RATIO_RE.finditer(text):
+        size = _size_for_ratio(int(found.group(1)), int(found.group(2)))
+        if size:
+            return size
+    for found in _RATIO_RE.finditer(text):
+        pair = (int(found.group(1)), int(found.group(2)))
+        if pair in _BARE_RATIO_ALLOWLIST:
+            size = _size_for_ratio(*pair)
+            if size:
+                return size
+
+    for pattern, ratio in _ORIENTATION_CUES:
+        if pattern.search(text):
+            return _ASPECT_SIZES[ratio]
+
+    return DEFAULT_SIZE
 
 
 def _api_key(*, editing=False):
@@ -170,10 +282,11 @@ def generate_image(prompt, source_image=None):
             f"Image generation is not configured yet. Set {setting_name} on the server.",
         )
 
+    width, height = resolve_dimensions(prompt)
     body = {
         "prompt": prompt,
-        "width": 1024,
-        "height": 1024,
+        "width": width,
+        "height": height,
         "steps": 4,
         "samples": 1,
         "seed": 0,

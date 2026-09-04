@@ -78,11 +78,36 @@ a{color:inherit;text-decoration:none}
 
 .dash-body{padding:2rem}
 
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1.2rem;margin-bottom:2rem}
-.stat-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:1.4rem 1.5rem;display:flex;align-items:center;gap:1rem;box-shadow:var(--shadow-sm)}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:1.2rem;margin-bottom:2rem}
+.stat-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:1.3rem 1.2rem;display:flex;align-items:center;gap:.85rem;box-shadow:var(--shadow-sm);min-width:0;color:inherit;text-decoration:none;transition:border-color .15s,box-shadow .15s,transform .12s}
+/* Without min-width:0 a flex child refuses to shrink below its content, so a
+   long value like "₹1234567.00" pushed straight out of the card. */
+.stat-card>div{min-width:0}
 .stat-ico{width:48px;height:48px;border-radius:14px;background:var(--red-soft);color:var(--red);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
-.stat-num{font-family:'Sora',sans-serif;font-size:1.6rem;font-weight:800;color:var(--head);line-height:1}
-.stat-lbl{font-size:.8rem;color:var(--text);margin-top:.2rem}
+/* Scales down on a narrow tile instead of overflowing, and can break mid-number
+   as a last resort rather than being clipped. */
+.stat-num{font-family:'Sora',sans-serif;font-size:clamp(1.05rem,1.9vw,1.45rem);font-weight:800;color:var(--head);line-height:1.15;overflow-wrap:anywhere}
+.stat-lbl{font-size:.8rem;color:var(--text);margin-top:.2rem;overflow-wrap:anywhere}
+/* Only tiles that are actually links react to the pointer. */
+a.stat-card:hover{border-color:var(--red);box-shadow:var(--shadow-md,0 6px 18px rgba(17,20,24,.1));transform:translateY(-2px)}
+a.stat-card.active{border-color:var(--red);box-shadow:0 0 0 2px var(--red-soft)}
+a.stat-card.active .stat-ico{background:var(--red);color:#fff}
+
+.filter-note{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;background:var(--red-soft);border:1px solid var(--line);border-radius:var(--radius);padding:.65rem 1rem;margin:-1rem 0 1.6rem;font-size:.85rem;color:var(--head)}
+.filter-note a{color:var(--red);font-weight:700}
+
+/* Report totals: same idea as .stat-card, sized for three wide tiles. */
+.report-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:1.2rem;margin-bottom:1.6rem}
+.report-stat{display:flex;flex-direction:column;gap:.25rem;min-width:0;background:#fff;border:1px solid var(--line);border-left:4px solid var(--line);border-radius:var(--radius);padding:1.1rem 1.3rem;box-shadow:var(--shadow-sm);text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s,transform .12s}
+.report-stat:hover{box-shadow:var(--shadow-md,0 6px 18px rgba(17,20,24,.1));transform:translateY(-2px)}
+.report-stat.active{box-shadow:0 0 0 2px var(--red-soft)}
+.report-stat.open{border-left-color:var(--red)}
+.report-stat.resolved{border-left-color:#1da851}
+.report-stat-label{font-size:.78rem;font-weight:700;color:var(--text);display:flex;align-items:center;gap:.4rem;overflow-wrap:anywhere}
+.report-stat.open .report-stat-label i{color:var(--red)}
+.report-stat.resolved .report-stat-label i{color:#1da851}
+.report-stat-value{font-family:'Sora',sans-serif;font-size:clamp(1.4rem,3vw,2rem);font-weight:800;color:var(--head);line-height:1.1}
+.report-stat-note{font-size:.72rem;color:#8c95a3;overflow-wrap:anywhere}
 
 .panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden;margin-bottom:1.6rem}
 .panel-head{padding:1.1rem 1.4rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}

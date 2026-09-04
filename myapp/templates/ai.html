@@ -365,15 +365,88 @@ main.wallpaper-on{background:transparent}
 .suggest-chip{font-size:.8rem;font-weight:600;color:var(--head);background:var(--bg-alt);border:1px solid var(--line);padding:.5rem .9rem;border-radius:50px;cursor:pointer;transition:border-color .15s,color .15s,transform .1s}
 .suggest-chip:hover{border-color:var(--red);color:var(--red)}
 .suggest-chip:active{transform:scale(.97)}
+/* "ChatGPT 5.6" called out inside the intro copy. */
+.hl-model{background:linear-gradient(135deg,var(--red),var(--red-dark));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:var(--red);font-weight:800;white-space:nowrap}
+.empty-lead{font-size:.95rem;line-height:1.6}
 
-.msg-row{display:flex;gap:.7rem;max-width:100%;animation:rise .25s ease}
-@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+/* A slow aurora behind the wordmark. Sits under everything, ignores pointer
+   events, and animates only transform/opacity so it never triggers layout. */
+.empty-state{position:relative}
+.empty-state::before{content:'';position:absolute;top:12%;left:50%;width:min(560px,84%);height:260px;transform:translateX(-50%);z-index:-1;pointer-events:none;background:radial-gradient(circle at 35% 40%,rgba(var(--accent-rgb),.16),transparent 62%),radial-gradient(circle at 68% 58%,rgba(var(--accent-rgb),.1),transparent 58%);filter:blur(26px);animation:aurora 9s ease-in-out infinite alternate}
+@keyframes aurora{from{transform:translateX(-50%) scale(1) rotate(0deg);opacity:.75}to{transform:translateX(-50%) scale(1.14) rotate(6deg);opacity:1}}
+
+/* Staggered entrance so the page assembles instead of appearing all at once. */
+.empty-state>*{animation:empty-in .5s cubic-bezier(.22,1,.36,1) both}
+.empty-state>*:nth-child(1){animation-delay:.02s}
+.empty-state>*:nth-child(2){animation-delay:.10s}
+.empty-state>*:nth-child(3){animation-delay:.18s}
+.empty-state>*:nth-child(4){animation-delay:.26s}
+@keyframes empty-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+@media (prefers-reduced-motion:reduce){
+  .empty-state::before,.empty-state>*{animation:none}
+}
+
+/* Entrance is deliberately transform+opacity only: both are composited on the
+   GPU, so a message appearing costs no layout and no reflow of the thread
+   above it. Same reason the streaming loop never touches these. */
+.msg-row{display:flex;gap:.7rem;max-width:100%;animation:rise .28s cubic-bezier(.22,1,.36,1)}
+@keyframes rise{from{opacity:0;transform:translateY(8px) scale(.995)}to{opacity:1;transform:none}}
 .msg-row.user{flex-direction:row-reverse}
 .msg-avatar{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.85rem;color:#fff}
 .msg-row.user .msg-avatar{background:var(--dark)}
-.msg-row.assistant .msg-avatar{background:linear-gradient(135deg,var(--red),var(--red-dark));border-radius:10px;box-shadow:0 3px 10px rgba(var(--accent-rgb),.4),inset 0 1px 0 rgba(255,255,255,.3);position:relative;overflow:hidden}
-.msg-row.assistant .msg-avatar::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.22),transparent 55%)}
-.msg-row.assistant .msg-avatar svg{width:17px;height:17px;position:relative;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.18))}
+/* Three stacked shadows do the work here: an outward coloured glow for lift,
+   a bright inset top edge so the tile catches light, and a dark inset bottom
+   so it has a body instead of looking like a flat swatch. */
+.msg-row.assistant .msg-avatar{
+  background:linear-gradient(150deg,var(--m-hi,var(--m-a,var(--red))) 0%,var(--m-a,var(--red)) 45%,var(--m-b,var(--red-dark)) 100%);
+  border-radius:11px;position:relative;overflow:hidden;
+  box-shadow:0 4px 12px var(--m-glow,rgba(var(--accent-rgb),.4)),
+             inset 0 1px 0 rgba(255,255,255,.42),
+             inset 0 -2px 3px rgba(0,0,0,.16);
+  transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s ease;
+}
+/* Specular sweep across the top-left corner — a diagonal highlight rather
+   than a flat wash, so the tile reads as glass, not paint. */
+.msg-row.assistant .msg-avatar::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:
+    linear-gradient(145deg,rgba(255,255,255,.34) 0%,rgba(255,255,255,.1) 34%,transparent 52%),
+    radial-gradient(120% 80% at 50% 118%,rgba(0,0,0,.16),transparent 60%);
+}
+.msg-row.assistant .msg-avatar svg{width:18px;height:18px;position:relative;z-index:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.22))}
+.msg-row.assistant:hover .msg-avatar{transform:translateY(-1.5px) scale(1.07);box-shadow:0 7px 18px var(--m-glow,rgba(var(--accent-rgb),.4)),inset 0 1px 0 rgba(255,255,255,.5),inset 0 -2px 3px rgba(0,0,0,.16)}
+
+/* Per-model identity. Each model gets its own mark and colour so a glance at
+   the thread says which one answered — the label tag says it in words, this
+   says it before you read. Set as custom properties so the avatar rule above
+   stays single-source. */
+/* --m-hi is the light end of the gradient, --m-b the deep end. Three stops
+   instead of two gives the tile a rolled, dimensional surface. */
+.msg-avatar[data-m="chatgpt56"]{--m-hi:#3ddba6;--m-a:#10a37f;--m-b:#076b52;--m-glow:rgba(16,163,127,.5)}
+.msg-avatar[data-m="ultra"]{--m-hi:#a78bfa;--m-a:#7c5cff;--m-b:#4c2bc9;--m-glow:rgba(124,92,255,.45)}
+.msg-avatar[data-m="quick"]{--m-hi:#fbbf24;--m-a:#f5a524;--m-b:#c2660a;--m-glow:rgba(245,165,36,.45)}
+.msg-avatar[data-m="code"]{--m-hi:#6ba6f5;--m-a:#2f80ed;--m-b:#1550b0;--m-glow:rgba(47,128,237,.45)}
+.msg-avatar[data-m="reasoning"]{--m-hi:#818cf8;--m-a:#4f46e5;--m-b:#2e2789;--m-glow:rgba(79,70,229,.45)}
+.msg-avatar[data-m="vision"]{--m-hi:#4dd9ee;--m-a:#06b6d4;--m-b:#0b6480;--m-glow:rgba(6,182,212,.45)}
+.msg-avatar[data-m="flux-klein-4b"]{--m-hi:#f9a8d4;--m-a:#ec4899;--m-b:#8f13a0;--m-glow:rgba(236,72,153,.45)}
+
+/* ChatGPT 5.6 is the flagship, so its tile gets one extra touch the others
+   don't: a faint ring of its own colour sitting just outside the edge. */
+.msg-avatar[data-m="chatgpt56"]{box-shadow:0 4px 14px var(--m-glow),0 0 0 1px rgba(16,163,127,.28),inset 0 1px 0 rgba(255,255,255,.45),inset 0 -2px 3px rgba(0,0,0,.16)}
+.msg-row.assistant:hover .msg-avatar[data-m="chatgpt56"]{box-shadow:0 8px 20px var(--m-glow),0 0 0 1px rgba(16,163,127,.4),inset 0 1px 0 rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.16)}
+/* The mark breathes very slowly — alive, but never distracting. Opacity only,
+   so it composites and costs no layout. */
+.msg-avatar[data-m="chatgpt56"] svg{animation:core-breathe 4.5s ease-in-out infinite}
+@keyframes core-breathe{0%,100%{opacity:1}50%{opacity:.82}}
+@media (prefers-reduced-motion:reduce){.msg-avatar[data-m="chatgpt56"] svg{animation:none}}
+/* While a reply is generating, its avatar breathes — a quiet "still working"
+   signal that costs one composited animation and no JavaScript at all. */
+.msg-row.assistant.is-generating .msg-avatar{animation:avatar-pulse 1.6s ease-in-out infinite}
+@keyframes avatar-pulse{
+  0%,100%{box-shadow:0 3px 10px var(--m-glow,rgba(var(--accent-rgb),.4)),inset 0 1px 0 rgba(255,255,255,.3)}
+  50%{box-shadow:0 3px 18px var(--m-glow,rgba(var(--accent-rgb),.4)),0 0 0 4px var(--m-glow,rgba(var(--accent-rgb),.4)),inset 0 1px 0 rgba(255,255,255,.3)}
+}
 .msg-bubble{font-size:.92rem;line-height:1.6;padding:.75rem 1rem;border-radius:14px;white-space:pre-wrap;word-wrap:break-word;max-width:min(600px,80%);box-shadow:0 1px 2px rgba(17,20,24,.04)}
 .msg-row.user .msg-bubble{background:var(--dark);color:#fff;border-top-right-radius:4px}
 .msg-row.assistant .msg-bubble{background:var(--bg-alt);color:var(--head);border-top-left-radius:4px;border:1px solid var(--line)}
@@ -409,14 +482,51 @@ main.wallpaper-on{background:transparent}
 .msg-bubble.md .code-block pre code{background:none;padding:0;font-size:1em;white-space:pre;color:inherit}
 .msg-bubble.md hr{border:none;border-top:1px solid var(--line);margin:.7rem 0}
 .msg-bubble.md blockquote{margin:.5rem 0;padding:.15rem .9rem;border-left:3px solid var(--red);color:#9aa3b0;font-style:italic}
-.msg-table-wrap{overflow-x:auto;margin:.5rem 0}
+.msg-table-wrap{overflow-x:auto;margin:.6rem 0;border:1px solid var(--line);border-radius:10px}
 .msg-bubble.md table{border-collapse:collapse;width:100%;font-size:.85rem}
 .msg-bubble.md th,.msg-bubble.md td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
 .msg-bubble.md th{background:rgba(17,20,24,.04);font-weight:700;color:var(--head)}
+/* The wrapper already draws the outer frame, so the cells shouldn't double
+   it up at the edges — and zebra striping makes a wide table far easier to
+   read across. Presentation only; the markdown renderer is untouched. */
+.msg-bubble.md .msg-table-wrap table{border:0}
+.msg-bubble.md .msg-table-wrap tr:nth-child(even) td{background:rgba(17,20,24,.022)}
+.msg-bubble.md .msg-table-wrap th:first-child,.msg-bubble.md .msg-table-wrap td:first-child{border-left:0}
+.msg-bubble.md .msg-table-wrap th:last-child,.msg-bubble.md .msg-table-wrap td:last-child{border-right:0}
+.msg-bubble.md .msg-table-wrap tr:last-child td{border-bottom:0}
+.msg-bubble.md .msg-table-wrap thead th{position:sticky;top:0;z-index:1}
+
+/* Headings need their own rhythm — without it a '## Section' reads at the
+   same weight as the paragraph before it and long answers turn into a wall. */
+.msg-bubble.md h1,.msg-bubble.md h2,.msg-bubble.md h3,
+.msg-bubble.md h4,.msg-bubble.md h5,.msg-bubble.md h6{margin:.85rem 0 .35rem;line-height:1.3;font-weight:800;color:var(--head)}
+.msg-bubble.md h1:first-child,.msg-bubble.md h2:first-child,.msg-bubble.md h3:first-child{margin-top:0}
+.msg-bubble.md h1{font-size:1.12rem}
+.msg-bubble.md h2{font-size:1.04rem}
+.msg-bubble.md h3{font-size:.97rem}
+.msg-bubble.md h4,.msg-bubble.md h5,.msg-bubble.md h6{font-size:.92rem}
+.msg-bubble.md a{color:var(--red);text-decoration:none;border-bottom:1px solid rgba(var(--accent-rgb),.35);transition:border-color .15s}
+.msg-bubble.md a:hover{border-bottom-color:var(--red)}
+.msg-bubble.md strong{font-weight:750;color:var(--head)}
+.msg-bubble.md li{margin:.22rem 0}
+.msg-bubble.md li::marker{color:#9aa3b0}
 :root[data-theme="dark"] .msg-bubble.md th{background:rgba(255,255,255,.06)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .msg-bubble.md th{background:rgba(255,255,255,.06)}}
-.msg-cursor{display:inline-block;width:.5em;height:1em;background:var(--head);vertical-align:text-bottom;animation:blink 1s step-start infinite;margin-left:1px}
-@keyframes blink{50%{opacity:0}}
+/* Zebra striping has to invert in dark mode — a dark tint on a dark row is
+   invisible, so the stripe would silently do nothing. Both forms, matching
+   how the rest of this file handles the toggle and the system preference. */
+:root[data-theme="dark"] .msg-bubble.md .msg-table-wrap tr:nth-child(even) td{background:rgba(255,255,255,.03)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .msg-bubble.md .msg-table-wrap tr:nth-child(even) td{background:rgba(255,255,255,.03)}}
+/* A tapered caret with a soft glow rather than a hard block, and a smooth
+   fade instead of a hard step — the old one read as a rendering glitch on
+   fast-arriving text. Still one composited opacity animation. */
+.msg-cursor{display:inline-block;width:.42em;height:1.05em;border-radius:2px;background:linear-gradient(180deg,var(--red),var(--red-dark));box-shadow:0 0 6px rgba(var(--accent-rgb),.55);vertical-align:text-bottom;animation:blink 1.05s ease-in-out infinite;margin-left:2px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.15}}
+/* The bubble grows as tokens arrive; easing the height stops each new line
+   from snapping in. Only while streaming, so finished messages never animate
+   on scroll or re-render. */
+.msg-bubble.is-streaming{transition:box-shadow .3s ease}
+.msg-row.assistant.is-generating .msg-bubble{box-shadow:0 2px 14px rgba(var(--accent-rgb),.1)}
 .typing-indicator{display:inline-flex;align-items:center;gap:.55rem}
 .typing-orb{width:14px;height:14px;flex:none;border-radius:50%;background:linear-gradient(135deg,var(--red),#ffb84d,var(--red));background-size:250% 250%;animation:typingOrbPulse 1.6s ease-in-out infinite,typingOrbShift 2.4s ease-in-out infinite}
 @keyframes typingOrbPulse{0%,100%{transform:scale(.78);box-shadow:0 0 0 0 rgba(var(--accent-rgb),.35)}50%{transform:scale(1);box-shadow:0 0 7px 2px rgba(var(--accent-rgb),.4)}}
@@ -552,10 +662,53 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 .document-action-hint{flex:1 1 100%;font-size:.72rem;color:var(--text);line-height:1.4}
 .attach-error{max-width:780px;margin:.4rem auto 0;font-size:.75rem;color:var(--red);text-align:center;font-weight:600}
 .msg-img{max-width:220px;max-height:220px;border-radius:12px;display:block;margin-bottom:.45rem;object-fit:cover}
-.msg-generated-img{width:min(100%,512px);height:auto;max-height:none;border-radius:14px;display:block;margin:.7rem 0;object-fit:contain;cursor:zoom-in;transition:opacity .15s}
-.msg-generated-img:hover{opacity:.92}
-.msg-generated-link{display:inline-flex;align-items:center;gap:.35rem;margin-top:.15rem;font-size:.82rem;font-weight:700;color:var(--red);text-decoration:none}
-.msg-generated-link:hover{text-decoration:underline}
+/* ---- generated-image card: framed picture + its actions ----
+   All presentation, no scripting: the card is built once when a reply
+   finishes, and every state below (shimmer, fade-in, hover) is CSS, so
+   none of it costs anything while a reply is streaming. */
+.msg-image-card{margin:.7rem 0 .1rem;padding:0;border:0}
+.msg-image-frame{position:relative;width:min(100%,512px);border-radius:14px;overflow:hidden;background:var(--bg-alt);border:1px solid var(--line);box-shadow:0 2px 10px rgba(17,20,24,.07);line-height:0}
+/* Holds a sensible height while the picture loads so the conversation
+   above it never jumps once it paints. */
+.msg-image-frame.is-loading{min-height:220px;background:linear-gradient(100deg,var(--bg-alt) 30%,var(--line) 50%,var(--bg-alt) 70%);background-size:220% 100%;animation:img-shimmer 1.4s ease-in-out infinite}
+.msg-image-frame.is-broken{min-height:0}
+/* Reveal: a slight scale-down-into-place reads as the picture "developing"
+   rather than popping in. transform+opacity only — composited, no layout. */
+.msg-generated-img{width:100%;height:auto;display:block;object-fit:contain;cursor:zoom-in;opacity:1;transition:transform .3s cubic-bezier(.22,1,.36,1),opacity .2s ease;animation:img-reveal .45s cubic-bezier(.22,1,.36,1) both}
+@keyframes img-reveal{from{opacity:0;transform:scale(1.035)}to{opacity:1;transform:none}}
+.msg-image-frame.is-loading .msg-generated-img{opacity:0}
+.msg-image-frame:hover .msg-generated-img{transform:scale(1.018)}
+/* A single light sweep across the picture the moment it lands, then gone.
+   Pure CSS on a pseudo-element, so it never touches the image element. */
+.msg-image-frame::before{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(255,255,255,.42) 50%,transparent 62%);transform:translateX(-120%);animation:img-shine .9s ease-out .12s both}
+.msg-image-frame.is-loading::before,.msg-image-frame.is-broken::before{animation:none;opacity:0}
+@keyframes img-shine{from{transform:translateX(-120%)}to{transform:translateX(120%)}}
+.msg-image-badge{position:absolute;left:.6rem;bottom:.6rem;display:inline-flex;align-items:center;gap:.3rem;padding:.24rem .55rem;border-radius:999px;background:rgba(8,10,14,.62);color:#fff;font-size:.66rem;font-weight:700;line-height:1.4;letter-spacing:.01em;backdrop-filter:blur(4px);opacity:0;transition:opacity .18s}
+.msg-image-frame:hover .msg-image-badge{opacity:1}
+.msg-image-frame.is-loading .msg-image-badge{display:none}
+.msg-image-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.55rem}
+.msg-image-btn{display:inline-flex;align-items:center;gap:.35rem;border:1.5px solid var(--line);background:var(--surface);color:var(--head);font-family:inherit;font-size:.76rem;font-weight:700;padding:.36rem .7rem;border-radius:9px;cursor:pointer;text-decoration:none;transition:border-color .15s,color .15s,background .15s}
+.msg-image-btn:hover{border-color:var(--red);color:var(--red)}
+.msg-image-btn:disabled{opacity:.6;cursor:default}
+@keyframes img-shimmer{0%{background-position:120% 0}100%{background-position:-120% 0}}
+@keyframes img-fade-in{from{opacity:0}to{opacity:1}}
+
+/* Shown in place of the picture while it is still being generated. The tint
+   and the slow drifting glow make the wait feel like something is being made,
+   rather than like a grey box failed to load. */
+.img-skeleton{position:relative;width:min(100%,512px);height:220px;margin-top:.7rem;border-radius:14px;border:1px solid var(--line);overflow:hidden;background:linear-gradient(100deg,var(--bg-alt) 30%,var(--line) 50%,var(--bg-alt) 70%);background-size:220% 100%;animation:img-shimmer 1.4s ease-in-out infinite}
+.img-skeleton::after{content:'';position:absolute;inset:-40%;background:radial-gradient(circle at 30% 40%,rgba(var(--accent-rgb),.16),transparent 55%),radial-gradient(circle at 70% 65%,rgba(var(--accent-rgb),.12),transparent 52%);animation:img-drift 5s ease-in-out infinite alternate}
+@keyframes img-drift{from{transform:translate3d(-4%,-3%,0) scale(1)}to{transform:translate3d(4%,3%,0) scale(1.08)}}
+
+@media (prefers-reduced-motion:reduce){
+  .msg-image-frame.is-loading,.img-skeleton,.img-skeleton::after{animation:none}
+  .msg-generated-img{animation:none;transition:none}
+  .msg-image-frame:hover .msg-generated-img{transform:none}
+  .msg-image-frame::before{animation:none;opacity:0}
+  .msg-row{animation:none}
+  .msg-row.assistant.is-generating .msg-avatar{animation:none}
+  .msg-row.assistant:hover .msg-avatar{transform:none}
+}
 
 /* ---- image lightbox: full-size preview + download for a generated image ---- */
 .img-lightbox-backdrop{position:fixed;inset:0;background:rgba(6,8,12,.86);z-index:14000}
@@ -787,8 +940,13 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     <div class="feature-modal-item">
       <i class="fas fa-wand-magic-sparkles feature-modal-icon"></i>
       <div>
-        <span class="feature-modal-item-label">Generate and edit images</span>
-        <span class="feature-modal-item-desc">Describe an image to create, or upload one and tell Vidhyora AI what to change.</span>
+        <span class="feature-modal-item-label">Generate images</span>
+        <!-- Promised "upload one and tell Vidhyora AI what to change" until
+             now, but editing an uploaded photo is unavailable upstream, so
+             this panel was selling a feature that returns an error. Says what
+             actually works instead, including the sizes users kept asking for
+             (AIReports #45, #47, #48). -->
+        <span class="feature-modal-item-desc">Describe any image and I'll create it — say "wallpaper", "story", "poster" or "4:5" and you'll get that exact shape.</span>
       </div>
     </div>
     <div class="feature-modal-item">
@@ -1025,13 +1183,16 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
             <span class="logo-txt">Vidhyora <span>AI</span></span>
             <span class="logo-sub">A Fun, Powerful AI</span>
           </div>
-          <p>A powerful AI with access to multiple models — fast chat, deep reasoning, coding, vision, and image generation, all in one place.</p>
-          <div class="suggest-row" id="suggestRow">
-            <button type="button" class="suggest-chip" data-prompt="What is Vidhyora and what can you do?">What is Vidhyora?</button>
-            <button type="button" class="suggest-chip" data-prompt="Help me choose a service for my business website.">Help me pick a service</button>
-            <button type="button" class="suggest-chip" data-prompt="Write me a short poem about the ocean.">Write something creative</button>
-            <button type="button" class="suggest-chip" data-prompt="Explain a tricky topic to me in simple terms.">Explain something simply</button>
-          </div>
+          {% if ai_authenticated %}
+          <p class="empty-lead">
+            {% if ai_full_model_access %}Full access to{% else %}Get{% endif %}
+            <span class="hl-model">ChatGPT&nbsp;5.6</span> — plus deep reasoning,
+            coding, vision and image generation, all in one place.
+          </p>
+          {% else %}
+          {# A signed-out visitor sees the original, product-neutral line. #}
+          <p class="empty-lead">A powerful AI with access to multiple models — fast chat, deep reasoning, coding, vision, and image generation, all in one place.</p>
+          {% endif %}
         </div>
       </div>
     </main>
@@ -1610,6 +1771,17 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     wrap.appendChild(span);
     bubble.innerHTML = '';
     bubble.appendChild(wrap);
+    // Image generation takes several seconds, and a lone line of dots gives
+    // no sense that something the size of a picture is on its way. A
+    // correctly-proportioned shimmer both fills that wait and reserves the
+    // space the image will occupy, so nothing jumps when it arrives. Pure
+    // CSS animation — no timers, no work per frame from us.
+    if (statusKey === 'flux-klein-4b') {
+      var skeleton = document.createElement('div');
+      skeleton.className = 'img-skeleton';
+      skeleton.setAttribute('aria-hidden', 'true');
+      bubble.appendChild(skeleton);
+    }
     var timer = setInterval(function(){
       i = (i + 1) % phrases.length;
       span.textContent = phrases[i] + '…';
@@ -1621,6 +1793,69 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   }
   function stopBubbleTyping(bubble){
     if (bubble && bubble._stopTyping) bubble._stopTyping();
+  }
+
+  // One builder for a generated image, shared by a live reply and by a
+  // reloaded conversation, so both show the same card instead of the two
+  // near-identical copies this replaced.
+  //
+  // Everything here runs once, after a reply has finished — nothing touches
+  // the streaming render loop, and the polish itself (frame, hover, fade-in)
+  // is CSS, so it costs no JavaScript work at all.
+  function buildGeneratedImageCard(url, opts){
+    opts = opts || {};
+    var card = document.createElement('figure');
+    card.className = 'msg-image-card';
+
+    var frame = document.createElement('div');
+    frame.className = 'msg-image-frame is-loading';
+
+    var img = document.createElement('img');
+    img.className = 'msg-generated-img';
+    img.alt = 'AI-generated image';
+    if (opts.lazy) img.loading = 'lazy';
+    // The frame holds its own height until this resolves, so the message
+    // above never jumps when the picture finally paints.
+    img.addEventListener('load', function(){ frame.classList.remove('is-loading'); });
+    img.addEventListener('error', function(){
+      frame.classList.remove('is-loading');
+      frame.classList.add('is-broken');
+    });
+    img.src = url;
+    frame.appendChild(img);
+
+    var badge = document.createElement('span');
+    badge.className = 'msg-image-badge';
+    badge.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> AI generated';
+    frame.appendChild(badge);
+    card.appendChild(frame);
+
+    var actions = document.createElement('div');
+    actions.className = 'msg-image-actions';
+
+    var download = document.createElement('a');
+    download.className = 'msg-image-btn';
+    download.href = url;
+    download.setAttribute('download', downloadNameFor(url));
+    download.innerHTML = '<i class="fas fa-download"></i> Download';
+    actions.appendChild(download);
+
+    var full = document.createElement('button');
+    full.type = 'button';
+    full.className = 'msg-image-btn';
+    full.setAttribute('data-image-full', url);
+    full.innerHTML = '<i class="fas fa-expand"></i> Full size';
+    actions.appendChild(full);
+
+    var copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'msg-image-btn';
+    copy.setAttribute('data-image-copy', url);
+    copy.innerHTML = '<i class="fas fa-copy"></i> Copy';
+    actions.appendChild(copy);
+
+    card.appendChild(actions);
+    return card;
   }
 
   // Stashes the raw (pre-formatMd) reply text on the bubble so the copy
@@ -1724,6 +1959,59 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       });
   }
 
+  // One mark per model, so a glance down the thread says which one answered.
+  // Inline SVG rather than icon-font glyphs or image files: no extra request,
+  // no flash of a missing icon, and they inherit the avatar's own colours.
+  var MODEL_GLYPHS = {
+    // Flagship mark: a solid core inside two crossed orbits, with a single
+    // satellite. The old version was an eight-ray sunburst that read as a
+    // generic weather/brightness icon at 18px. This keeps only three shapes,
+    // so it still resolves cleanly at avatar size.
+    // Monoline interlocking rings with 3-fold symmetry — the woven, even-weight
+    // style asked for. Chosen over a true over-under knot after rendering both
+    // at true size: the finer weaving blurred into a smudge at 18px, while
+    // three clean rings stay readable.
+    'chatgpt56':
+      '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.75">' +
+      '<circle cx="12" cy="8.4" r="4.5"/>' +
+      '<circle cx="8.88" cy="13.8" r="4.5"/>' +
+      '<circle cx="15.12" cy="13.8" r="4.5"/>' +
+      '</svg>',
+    // Stacked layers — the most capable, "deepest" model.
+    'ultra': '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2.6 2.8 7.3 12 12l9.2-4.7L12 2.6z"/><path d="m3.9 11.4-1.1.6L12 16.7l9.2-4.7-1.1-.6L12 15.3l-8.1-3.9z" opacity=".75"/><path d="m3.9 15.6-1.1.6L12 20.9l9.2-4.7-1.1-.6L12 19.5l-8.1-3.9z" opacity=".5"/></svg>',
+    // Lightning — fast and lightweight.
+    'quick': '<svg viewBox="0 0 24 24" fill="#fff"><path d="M13.4 2 4.9 13.1h5.3L9.9 22l8.9-11.6h-5.6L13.4 2z"/></svg>',
+    // Angle brackets — coding.
+    'code': '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m8.4 7.5-4.6 4.6 4.6 4.6M15.6 7.5l4.6 4.6-4.6 4.6"/></svg>',
+    // Connected nodes — multi-step reasoning.
+    'reasoning': '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7"><circle cx="12" cy="4.6" r="2.3" fill="#fff"/><circle cx="5.2" cy="17" r="2.3" fill="#fff"/><circle cx="18.8" cy="17" r="2.3" fill="#fff"/><path d="M12 6.9 6.4 14.8M12 6.9l5.6 7.9M7.5 17h9"/></svg>',
+    // Eye — image understanding.
+    'vision': '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M1.9 12S5.5 5.4 12 5.4 22.1 12 22.1 12 18.5 18.6 12 18.6 1.9 12 1.9 12z"/><circle cx="12" cy="12" r="2.6" fill="#fff" stroke="none"/></svg>',
+    // Wand and sparkles — image generation.
+    'flux-klein-4b': '<svg viewBox="0 0 24 24" fill="#fff"><path d="M14.7 3.1 16 6.4l3.3 1.3-3.3 1.3-1.3 3.3-1.3-3.3L10.1 7.7l3.3-1.3 1.3-3.3z"/><path d="M4.6 20.8 3.2 19.4 12.3 10.3l1.4 1.4-9.1 9.1z"/><path d="M6.6 3.4 7.3 5.2l1.8.7-1.8.7-.7 1.8-.7-1.8L4.1 5.9l1.8-.7.7-1.8z" opacity=".85"/></svg>',
+    _default: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M11 2.2c.3 3.9 1.1 6.5 2.7 8.1s4.2 2.4 8.1 2.7c-3.9.3-6.5 1.1-8.1 2.7S11.3 19.9 11 23.8c-.3-3.9-1.1-6.5-2.7-8.1S4.1 13.3.2 13c3.9-.3 6.5-1.1 8.1-2.7S11.7 6.1 11 2.2z"/><path d="M18.3 1c.13 1.15.44 1.9 1.02 2.48.58.58 1.33.89 2.48 1.02-1.15.13-1.9.44-2.48 1.02-.58.58-.89 1.33-1.02 2.48-.13-1.15-.44-1.9-1.02-2.48C16.7 4.94 15.95 4.63 14.8 4.5c1.15-.13 1.9-.44 2.48-1.02.58-.58.89-1.33 1.02-2.48z" opacity=".8"/></svg>'
+  };
+
+  // Both take the bubble (what every caller already holds) and walk up to its
+  // row. Called at most twice per reply — never from the streaming loop.
+  function setRowGenerating(bubble, on){
+    var row = bubble && bubble.closest ? bubble.closest('.msg-row') : null;
+    if (row) row.classList.toggle('is-generating', !!on);
+  }
+
+  function setRowModel(bubble, modelKey){
+    var row = bubble && bubble.closest ? bubble.closest('.msg-row') : null;
+    var avatar = row ? row.querySelector('.msg-avatar') : null;
+    if (!avatar) return;
+    if (MODEL_GLYPHS[modelKey]) {
+      avatar.setAttribute('data-m', modelKey);
+      avatar.innerHTML = MODEL_GLYPHS[modelKey];
+    } else {
+      avatar.removeAttribute('data-m');
+      avatar.innerHTML = MODEL_GLYPHS._default;
+    }
+  }
+
   function renderRow(role, text, opts){
     opts = opts || {};
     if (emptyState) { emptyState.remove(); emptyState = null; }
@@ -1731,9 +2019,16 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     row.className = 'msg-row ' + role;
     var avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
-    avatar.innerHTML = role === 'user'
-      ? '<i class="fas fa-user"></i>'
-      : '<svg viewBox="0 0 24 24" fill="#fff"><path d="M11 2.2c.3 3.9 1.1 6.5 2.7 8.1s4.2 2.4 8.1 2.7c-3.9.3-6.5 1.1-8.1 2.7S11.3 19.9 11 23.8c-.3-3.9-1.1-6.5-2.7-8.1S4.1 13.3.2 13c3.9-.3 6.5-1.1 8.1-2.7S11.7 6.1 11 2.2z"/><path d="M18.3 1c.13 1.15.44 1.9 1.02 2.48.58.58 1.33.89 2.48 1.02-1.15.13-1.9.44-2.48 1.02-.58.58-.89 1.33-1.02 2.48-.13-1.15-.44-1.9-1.02-2.48C16.7 4.94 15.95 4.63 14.8 4.5c1.15-.13 1.9-.44 2.48-1.02.58-.58.89-1.33 1.02-2.48z" opacity=".8"/></svg>';
+    if (role === 'user') {
+      avatar.innerHTML = '<i class="fas fa-user"></i>';
+    } else {
+      // Keyed off the model that actually answered, so scrolling back through
+      // a thread shows which model produced each reply. Falls back to the
+      // house mark when the key is unknown (older stored messages).
+      var mKey = opts.modelKey || '';
+      if (MODEL_GLYPHS[mKey]) avatar.setAttribute('data-m', mKey);
+      avatar.innerHTML = MODEL_GLYPHS[mKey] || MODEL_GLYPHS._default;
+    }
     var bubble = document.createElement('div');
     bubble.className = 'msg-bubble' + (opts.error ? ' error' : '') + (role === 'assistant' ? ' md' : '');
     if (opts.typing) {
@@ -1757,18 +2052,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         bubble.insertBefore(imgEl, bubble.firstChild);
       }
       if (opts.generatedImage) {
-        var generatedEl = document.createElement('img');
-        generatedEl.className = 'msg-generated-img';
-        generatedEl.alt = 'AI-generated image';
-        generatedEl.loading = 'lazy';
-        generatedEl.src = opts.generatedImage;
-        bubble.appendChild(generatedEl);
-        var generatedLink = document.createElement('a');
-        generatedLink.className = 'msg-generated-link';
-        generatedLink.href = opts.generatedImage;
-        generatedLink.setAttribute('download', downloadNameFor(opts.generatedImage));
-        generatedLink.innerHTML = '<i class="fas fa-download"></i> Download';
-        bubble.appendChild(generatedLink);
+        bubble.appendChild(buildGeneratedImageCard(opts.generatedImage, { lazy: true }));
       }
       if (opts.documentName) {
         var docChip = document.createElement('div');
@@ -3944,7 +4228,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var statusKey = currentModel === 'flux-klein-4b'
       ? currentModel
       : (imageToSend ? 'vision' : (STATUS_PHRASES[currentModel] ? currentModel : 'default'));
-    var bubble = renderRow('assistant', '', { typing: true, statusKey: statusKey });
+    var bubble = renderRow('assistant', '', {
+      typing: true, statusKey: statusKey, modelKey: currentModel,
+    });
+    setRowGenerating(bubble, true);
     var wasNewConversation = !state.currentConversationId;
 
     var abortController = new AbortController();
@@ -3956,6 +4243,11 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         streamRenderTimer = null;
       }
       stopBubbleTyping(bubble);
+      setRowGenerating(bubble, false);
+      // The reply may have been routed to a different worker than the one
+      // picked in the dropdown, so the avatar is corrected to whoever actually
+      // answered — once, here, never during streaming.
+      setRowModel(bubble, answeredModelKey || currentModel);
       var label = answeredModelKey ? MODEL_LABELS[answeredModelKey] : null;
       var tagHtml = label ? '<div class="msg-model-tag">' + escHtml(label) + '</div>' : '';
       // A generated image with no caption text is a real, successful reply
@@ -3963,17 +4255,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       // neither text nor an image to show.
       bubble.innerHTML = tagHtml + (formatMd(assistantText) || (generatedImageUrl ? '' : '<i>No response — please try again.</i>'));
       if (generatedImageUrl) {
-        var generatedEl = document.createElement('img');
-        generatedEl.className = 'msg-generated-img';
-        generatedEl.alt = 'AI-generated image';
-        generatedEl.src = generatedImageUrl;
-        bubble.appendChild(generatedEl);
-        var generatedLink = document.createElement('a');
-        generatedLink.className = 'msg-generated-link';
-        generatedLink.href = generatedImageUrl;
-        generatedLink.setAttribute('download', downloadNameFor(generatedImageUrl));
-        generatedLink.innerHTML = '<i class="fas fa-download"></i> Download';
-        bubble.appendChild(generatedLink);
+        bubble.appendChild(buildGeneratedImageCard(generatedImageUrl));
       }
       addMsgCopyAction(bubble, assistantText, {
         conversationId: state.currentConversationId,
@@ -4255,11 +4537,58 @@ document.addEventListener('keydown', function(e){
   // separate script/closure entirely) — one listener instead of wiring a
   // click handler in three different places.
   document.addEventListener('click', function(e){
-    var bubbleImg = e.target.closest && e.target.closest('.msg-generated-img');
+    if (!e.target.closest) return;
+    var fullBtn = e.target.closest('[data-image-full]');
+    if (fullBtn) { openLightbox(fullBtn.getAttribute('data-image-full')); return; }
+    var copyBtn = e.target.closest('[data-image-copy]');
+    if (copyBtn) { copyImageToClipboard(copyBtn); return; }
+    var bubbleImg = e.target.closest('.msg-generated-img');
     if (bubbleImg && bubbleImg.src) { openLightbox(bubbleImg.src); return; }
-    var galleryItem = e.target.closest && e.target.closest('.image-gallery-item');
+    var galleryItem = e.target.closest('.image-gallery-item');
     if (galleryItem && galleryItem.dataset.url) openLightbox(galleryItem.dataset.url);
   });
+
+  // Puts the picture itself on the clipboard so it can be pasted straight
+  // into WhatsApp, a doc, or a post. Only fetched on click — never as part
+  // of rendering a reply.
+  function copyImageToClipboard(btn){
+    var url = btn.getAttribute('data-image-copy');
+    var original = btn.innerHTML;
+    function done(message, ok){
+      btn.innerHTML = (ok ? '<i class="fas fa-check"></i> ' : '<i class="fas fa-triangle-exclamation"></i> ') + message;
+      setTimeout(function(){ btn.innerHTML = original; }, 1800);
+    }
+    // Safari/Firefox lack ClipboardItem for images; say so instead of
+    // silently doing nothing.
+    if (!(navigator.clipboard && window.ClipboardItem)) { done('Not supported', false); return; }
+    btn.disabled = true;
+    fetch(url, { credentials: 'same-origin' })
+      .then(function(resp){ return resp.blob(); })
+      .then(function(blob){
+        // Clipboard image support is PNG-only in practice; draw through a
+        // canvas when the source is a JPEG/WEBP so the copy still works.
+        if (blob.type === 'image/png') return blob;
+        return new Promise(function(resolve, reject){
+          var image = new Image();
+          image.crossOrigin = 'anonymous';
+          image.onload = function(){
+            var canvas = document.createElement('canvas');
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+            canvas.getContext('2d').drawImage(image, 0, 0);
+            canvas.toBlob(function(out){ out ? resolve(out) : reject(new Error('encode failed')); }, 'image/png');
+          };
+          image.onerror = function(){ reject(new Error('load failed')); };
+          image.src = URL.createObjectURL(blob);
+        });
+      })
+      .then(function(png){
+        return navigator.clipboard.write([new window.ClipboardItem({ 'image/png': png })]);
+      })
+      .then(function(){ done('Copied', true); })
+      .catch(function(){ done('Copy failed', false); })
+      .then(function(){ btn.disabled = false; });
+  }
   if (closeBtn) closeBtn.addEventListener('click', closeLightbox);
   backdrop.addEventListener('click', closeLightbox);
   // .img-lightbox itself is a full-viewport flex container centering the

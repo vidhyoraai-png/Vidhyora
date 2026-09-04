@@ -18,6 +18,7 @@ from django.contrib.sessions.models import Session
 from django.test import RequestFactory
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from docx import Document
 from openpyxl import load_workbook
 from PIL import Image
 from pptx import Presentation
@@ -25,14 +26,17 @@ from pypdf import PdfReader
 
 from . import (
     ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup,
-    file_convert, image_generation, privacy, request_router, web_search,
+    dropbox_images, file_convert, image_generation, privacy, request_router,
+    web_search,
 )
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, PWASettings, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, PWASettings, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
-    _ai_excel_bytes, _ai_generated_file_spec, _ai_powerpoint_bytes,
-    _extract_ai_generated_file_content, site_customization_context,
+    _ai_excel_bytes, _ai_generated_file_spec, _ai_pdf_bytes,
+    _ai_powerpoint_bytes, _ai_word_document_bytes,
+    _extract_ai_generated_file_content, _strip_fake_download_links,
+    site_customization_context,
 )
 
 
@@ -382,6 +386,840 @@ class NVIDIAImageGenerationTests(TestCase):
         )
         for hidden_name in ('NVIDIA', 'FLUX', 'Nemotron', 'Black Forest'):
             self.assertNotIn(hidden_name.lower(), detail.lower())
+
+
+class ImageAspectRatioFromPromptTests(TestCase):
+    """Reports #45, #47 and #48: every image came back a 1024x1024 square.
+
+    The sizes asserted here were confirmed against the live FLUX endpoint —
+    it returns exactly the requested dimensions, and rejects anything over
+    1,062,400 pixels.
+    """
+
+    def test_every_supported_size_is_within_the_api_pixel_ceiling(self):
+        for ratio, (width, height) in image_generation._ASPECT_SIZES.items():
+            with self.subTest(ratio=ratio):
+                self.assertLessEqual(width * height, image_generation.MAX_PIXELS)
+                # Diffusion models want dimensions on a 32px grid.
+                self.assertEqual((width % 32, height % 32), (0, 0))
+
+    def test_wallpaper_request_becomes_landscape(self):
+        # Report #48: "wallpaper 4k resolution" returned a square.
+        self.assertEqual(
+            image_generation.resolve_dimensions(
+                'Generate image of spiderman with black background wallpaper 4k resolution'
+            ),
+            (1344, 768),
+        )
+
+    def test_size_written_with_a_dot_is_read_as_a_ratio(self):
+        # Report #47: "size 9.12" means 9:12, i.e. a 3:4 portrait.
+        self.assertEqual(
+            image_generation.resolve_dimensions(
+                'Create image good morning size 9.12 with motivational msg'
+            ),
+            (896, 1152),
+        )
+
+    def test_instagram_post_becomes_a_feed_shaped_portrait(self):
+        # Report #45: "turn in to instagram post".
+        self.assertEqual(
+            image_generation.resolve_dimensions('turn in to instagram post'), (896, 1120),
+        )
+
+    def test_orientation_words_pick_the_matching_shape(self):
+        cases = {
+            'make a youtube thumbnail of a cat': (1344, 768),
+            'instagram story for diwali sale': (768, 1344),
+            'a poster for our new shop': (896, 1152),
+            'profile picture of a lion': (1024, 1024),
+            'landscape photo of a beach': (1344, 768),
+            'portrait of a woman': (768, 1344),
+            '1920x1080 image of a sunset': (1344, 768),
+            'image with 4:5 ratio': (896, 1120),
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(image_generation.resolve_dimensions(prompt), expected)
+
+    def test_a_phone_wallpaper_beats_the_plain_wallpaper_cue(self):
+        # Both words match; the more specific one has to win.
+        self.assertEqual(
+            image_generation.resolve_dimensions('phone wallpaper of mountains'), (768, 1344),
+        )
+        self.assertEqual(
+            image_generation.resolve_dimensions('desktop wallpaper of mountains'), (1344, 768),
+        )
+
+    def test_numbers_that_are_not_aspect_ratios_leave_the_default_alone(self):
+        for prompt in (
+            'draw a cat',
+            'ChatGPT 5.6 logo',                 # a version number, not 5:6
+            'good morning image at 9:30 am',    # a clock time, not 9:30
+            'image of a 16 year old birthday cake',
+            'generate an image of the number 1/2',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    image_generation.resolve_dimensions(prompt),
+                    image_generation.DEFAULT_SIZE,
+                )
+
+    @patch('myapp.image_generation.requests.post')
+    def test_the_resolved_size_is_what_actually_reaches_the_api(self, post):
+        post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={'artifacts': [{
+                'base64': base64.b64encode(
+                    base64.b64decode(
+                        b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQ'
+                        b'DwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+                    )
+                ).decode(),
+            }]}),
+        )
+
+        with override_settings(NVIDIA_FLUX_API_KEY='test-key'):
+            image_generation.generate_image('a 16:9 banner for my website')
+
+        body = post.call_args.kwargs['json']
+        self.assertEqual((body['width'], body['height']), (1344, 768))
+
+
+class ImageGallerySurvivesChatDeletionTests(TestCase):
+    """Deleting a chat must not destroy the images generated inside it."""
+
+    PNG_BYTES = base64.b64decode(
+        b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    )
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username='gallery-user', email='gallery@example.com',
+            password='test-password-123', is_staff=True,
+        )
+        StoreProfile.objects.get_or_create(user=self.user)
+        self.client.force_login(self.user)
+
+    @patch('myapp.views.default_storage.url', return_value='/media/ai_generated/kept.png')
+    @patch('myapp.views.default_storage.save', return_value='ai_generated/kept.png')
+    @patch('myapp.views.image_generation.generate_image')
+    def test_image_stays_in_the_gallery_after_its_chat_is_deleted(
+        self, generate, save, storage_url,
+    ):
+        generate.return_value = image_generation.GeneratedImage(self.PNG_BYTES, 'png')
+        send = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({
+                'message': 'a calm blue lake',
+                'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(send.status_code, 200)
+        conversation_id = int(send['X-Conversation-Id'])
+
+        gallery = self.client.get('/AI/api/account/').json()['images']
+        self.assertEqual([i['url'] for i in gallery], ['/media/ai_generated/kept.png'])
+
+        delete = self.client.post(f'/AI/api/conversations/{conversation_id}/delete/')
+        self.assertEqual(delete.status_code, 200)
+        self.assertEqual(AIMessage.objects.count(), 0)
+
+        # The whole point: the picture is still there.
+        after = self.client.get('/AI/api/account/').json()['images']
+        self.assertEqual([i['url'] for i in after], ['/media/ai_generated/kept.png'])
+        self.assertEqual(after[0]['prompt'], 'a calm blue lake')
+        # ...and it no longer points at a chat that does not exist.
+        self.assertIsNone(after[0]['conversation_id'])
+
+    def test_the_gallery_never_shows_another_account_images(self):
+        other = User.objects.create_user('other-user', password='pw')
+        AIUserImage.objects.create(user=other, url='/media/ai_generated/theirs.png')
+        AIUserImage.objects.create(user=self.user, url='/media/ai_generated/mine.png')
+
+        images = self.client.get('/AI/api/account/').json()['images']
+        self.assertEqual([i['url'] for i in images], ['/media/ai_generated/mine.png'])
+
+    def test_there_is_no_endpoint_that_deletes_a_gallery_image(self):
+        # "cannot be deleted": nothing in the app removes these rows, so a
+        # stray URL should not quietly become a delete route.
+        image = AIUserImage.objects.create(user=self.user, url='/media/ai_generated/x.png')
+        for path in (
+            f'/AI/api/images/{image.pk}/delete/',
+            f'/AI/api/account/images/{image.pk}/delete/',
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.post(path).status_code, 404)
+        self.assertTrue(AIUserImage.objects.filter(pk=image.pk).exists())
+
+
+class DashboardReportStatsTests(TestCase):
+    """Solved/unresolved totals, and tiles that filter when clicked."""
+
+    def setUp(self):
+        cache.clear()
+        staff = User.objects.create_user('report-staff', password='pw', is_staff=True)
+        StoreProfile.objects.create(user=staff)
+        self.client.force_login(staff)
+        conversation = AIConversation.objects.create(title='c')
+        for index in range(3):
+            AIReport.objects.create(
+                conversation=conversation, user_prompt=f'p{index}',
+                reported_reply='r', explanation=f'wrong {index}',
+                status=AIReport.STATUS_OPEN,
+            )
+        for index in range(2):
+            AIReport.objects.create(
+                conversation=conversation, user_prompt=f'q{index}',
+                reported_reply='r', explanation=f'fixed {index}',
+                status=AIReport.STATUS_RESOLVED,
+            )
+
+    def test_counts_of_solved_and_unresolved_are_shown(self):
+        stats = self.client.get('/store/dashboard/ai/reports/').context['report_stats']
+        self.assertEqual(stats['total'], 5)
+        self.assertEqual(stats['open'], 3)
+        self.assertEqual(stats['resolved'], 2)
+        self.assertEqual(stats['resolved_percent'], 40)
+
+    def test_status_filter_narrows_the_listing_but_not_the_totals(self):
+        response = self.client.get('/store/dashboard/ai/reports/?status=resolved')
+        self.assertEqual(len(response.context['reports']), 2)
+        # Totals must stay whole so the other tiles don't read zero.
+        self.assertEqual(response.context['report_stats']['open'], 3)
+        self.assertEqual(response.context['report_stats']['total'], 5)
+
+    def test_an_unknown_status_filter_is_ignored_rather_than_erroring(self):
+        response = self.client.get('/store/dashboard/ai/reports/?status=banana')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['status_filter'], '')
+        self.assertEqual(len(response.context['reports']), 5)
+
+
+class DashboardSignupFilterTests(TestCase):
+    """Clicking a signup stat tile lists exactly those accounts."""
+
+    def setUp(self):
+        cache.clear()
+        staff = User.objects.create_user('signup-staff', password='pw', is_staff=True)
+        StoreProfile.objects.create(user=staff)
+        self.client.force_login(staff)
+
+        located = User.objects.create_user('located-user', password='pw')
+        StoreProfile.objects.create(
+            user=located, location_consent=StoreProfile.LOCATION_GRANTED,
+        )
+        payer = User.objects.create_user('paying-user', password='pw')
+        StoreProfile.objects.create(user=payer, manual_amount_paid=Decimal('499.00'))
+        plain = User.objects.create_user('plain-user', password='pw')
+        StoreProfile.objects.create(user=plain)
+
+    def test_location_tile_lists_only_accounts_with_location_enabled(self):
+        response = self.client.get('/store/dashboard/signups/?filter=location')
+        self.assertEqual(
+            [u.username for u in response.context['users']], ['located-user'],
+        )
+        self.assertEqual(response.context['filtered_count'], 1)
+        self.assertIn('location enabled', response.context['filter_label'])
+
+    def test_paid_tile_lists_only_accounts_with_a_recorded_payment(self):
+        response = self.client.get('/store/dashboard/signups/?filter=paid')
+        self.assertEqual([u.username for u in response.context['users']], ['paying-user'])
+
+    def test_no_filter_lists_everyone(self):
+        response = self.client.get('/store/dashboard/signups/')
+        self.assertEqual(len(response.context['users']), 4)
+        self.assertEqual(response.context['active_filter'], '')
+
+    def test_an_unknown_filter_is_ignored_rather_than_erroring(self):
+        response = self.client.get('/store/dashboard/signups/?filter=banana')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['active_filter'], '')
+        self.assertEqual(len(response.context['users']), 4)
+
+    def test_the_filter_combines_with_the_search_box(self):
+        response = self.client.get('/store/dashboard/signups/?filter=location&q=located')
+        self.assertEqual([u.username for u in response.context['users']], ['located-user'])
+
+
+class GeneratedFileQualityTests(TestCase):
+    """The 'create a pdf/doc for me' failures seen in real use.
+
+    Three separate bugs showed up in one screenshot set: two download links
+    under one reply, a PDF whose only text was a fabricated link, and 'create
+    doc file for me' producing a .txt.
+    """
+
+    def test_doc_and_word_requests_produce_a_real_word_file(self):
+        cases = {
+            'create doc file for me': 'generated.docx',
+            'make a summarise note in word file': 'generated.docx',
+            'create a word document about our pricing': 'generated.docx',
+            'create this data in pdf file and give to me': 'generated.pdf',
+            'give me an excel sheet of this': 'generated.xlsx',
+            'make a presentation on solar energy': 'generated.pptx',
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(_ai_generated_file_spec(prompt)['file_name'], expected)
+
+    def test_a_model_invented_download_link_is_removed_from_the_reply(self):
+        # Verbatim from the failing screenshot, fake token and all.
+        reply = ('[Download generated.pdf](http://127.0.0.1:8000/AI/api/files/'
+                 '12345678-1234-1234-1234-123456789012/download/)')
+        self.assertEqual(_strip_fake_download_links(reply), '')
+
+    def test_a_reply_that_is_only_a_fake_link_creates_no_file(self):
+        # This was becoming a PDF whose entire contents were the link text.
+        reply = ('Here you go!\n\n[Download generated.pdf](http://x/AI/api/files/'
+                 '12345678-1234-1234-1234-123456789012/download/)')
+        self.assertNotIn('AI/api/files', _strip_fake_download_links(reply))
+        self.assertEqual(_extract_ai_generated_file_content(reply), 'Here you go!')
+
+    def test_a_clarifying_question_creates_no_file(self):
+        # This was handed back as a .txt containing the question itself.
+        for reply in (
+            "I can help you create a document file. What topic or content would you "
+            "like the document to cover?",
+            "Please let me know what you'd like the document to contain.",
+            "Could you specify the details you want included?",
+        ):
+            with self.subTest(reply=reply[:40]):
+                self.assertEqual(_extract_ai_generated_file_content(reply), '')
+
+    def test_real_content_still_reaches_the_file(self):
+        reply = "Here it is.\n\n```markdown\n# Title\n\nSome **real** content.\n```"
+        self.assertEqual(
+            _extract_ai_generated_file_content(reply),
+            '# Title\n\nSome **real** content.',
+        )
+
+    def test_generated_pdf_contains_the_actual_text(self):
+        content = '# Quarterly Report\n\nRevenue grew by **18%**.\n\n- Delhi: 42\n- Mumbai: 31'
+        reader = PdfReader(io.BytesIO(_ai_pdf_bytes(content)))
+        text = '\n'.join(page.extract_text() or '' for page in reader.pages)
+
+        self.assertIn('Quarterly Report', text)
+        self.assertIn('Revenue grew by 18%', text)
+        self.assertIn('Delhi: 42', text)
+        # Markdown markers must not survive into a finished document.
+        self.assertNotIn('**', text)
+
+    def test_generated_word_file_uses_real_headings_and_bold(self):
+        content = '# Title\n\nRevenue grew by **18%** this quarter.\n\n- One\n- Two\n\n1. First'
+        document = Document(io.BytesIO(_ai_word_document_bytes(content)))
+        styles = [p.style.name for p in document.paragraphs if p.text.strip()]
+        texts = [p.text for p in document.paragraphs if p.text.strip()]
+
+        self.assertIn('Heading 1', styles)
+        self.assertIn('List Bullet', styles)
+        self.assertIn('List Number', styles)
+        self.assertIn('Revenue grew by 18% this quarter.', texts)
+        for line in texts:
+            self.assertNotIn('**', line)
+        # "18%" must be a genuine bold run, not asterisks in the text.
+        body = next(p for p in document.paragraphs if p.text.startswith('Revenue'))
+        self.assertTrue(any(run.bold and '18%' in run.text for run in body.runs))
+
+    def test_markdown_tables_and_links_render_as_readable_text(self):
+        content = ('| Region | Clients |\n| --- | --- |\n| North | 42 |\n\n'
+                   'See [our site](https://example.com) for more.')
+        text = '\n'.join(
+            page.extract_text() or ''
+            for page in PdfReader(io.BytesIO(_ai_pdf_bytes(content))).pages
+        )
+
+        self.assertIn('Region', text)
+        self.assertIn('North', text)
+        self.assertNotIn('---', text)
+        self.assertIn('our site', text)
+        self.assertNotIn('](', text)
+
+    def test_file_instruction_forbids_the_model_writing_its_own_link(self):
+        instruction = _ai_document_instruction  # imported symbol still exists
+        self.assertTrue(callable(instruction))
+        from myapp.views import _ai_generated_file_instruction
+        for name in ('generated.pdf', 'generated.docx', 'generated.txt'):
+            with self.subTest(name=name):
+                text = _ai_generated_file_instruction(name)
+                self.assertIn('NEVER write a download link', text)
+                self.assertIn('NO fenced block at all', text)
+
+
+class ReportDrivenRoutingFixTests(TestCase):
+    """Routing and prompt fixes traced to specific user reports."""
+
+    def test_misspelt_edit_instruction_reaches_image_editing(self):
+        # AIReport #42, verbatim. 'covert'/'postres' sent it to plain chat,
+        # which answered "I cannot assist with that request".
+        self.assertTrue(
+            ai_chat.is_image_edit_instruction('COVERT INTO HIGH ANGAEMENT META ADS POSTRES')
+        )
+
+    def test_misspelt_generation_requests_still_route_to_image(self):
+        for prompt in (
+            'make a postre for my shop',
+            'generate imge of a cat',
+            'create a picutre of sunset',
+            'walpaper of mountains banao',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(ai_chat.is_image_generation_request(prompt))
+
+    def test_analysis_requests_are_not_mistaken_for_edits(self):
+        # These arrive with an image attached too. Treating them as edits would
+        # send them to FLUX, which cannot answer a question about a picture.
+        for prompt in (
+            'what is in this image',
+            'read the text in this photo',
+            'explain this diagram',
+            'summarise this document',
+            'how much is the total in this bill',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(ai_chat.is_image_edit_instruction(prompt))
+
+    def test_ordinary_chat_is_not_pulled_into_image_generation(self):
+        for prompt in (
+            'hello how are you',
+            'what is the capital of India',
+            'write an email to my client',
+            'explain recursion',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(ai_chat.is_image_generation_request(prompt))
+
+    def test_live_state_questions_trigger_a_web_search(self):
+        # AIReport #43 answered "I don't have current operational status data"
+        # with no search having run.
+        for prompt in (
+            'Status of Shree cement plant in meghalaya',
+            'current status on the highway project',
+            'is the factory still operational',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(web_search.needs_search(prompt))
+
+    def test_private_account_questions_never_cost_a_web_search(self):
+        # A public search cannot answer these and would only add a round trip.
+        for prompt in (
+            'what is the status of my order',
+            'my subscription status',
+            'track my order',
+            'make my whatsapp status funny',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(web_search.needs_search(prompt))
+
+    def test_prompt_states_the_capabilities_users_were_wrongly_denied(self):
+        prompt = ai_chat.COMPACT_SYSTEM_PROMPT
+        # #38: told users it could not display a generated image.
+        self.assertIn('never say you cannot display', prompt)
+        # #28/#33: claimed it could not create a file.
+        self.assertIn('.docx', prompt)
+        # #32: flat "I cannot help you with that" for a video request.
+        self.assertIn('video/animation is not supported yet', prompt)
+        # #42: refused a normal marketing request.
+        self.assertIn('never refuse them', prompt)
+        # #29: cited an EduTrellis page as the source of pharmacology facts.
+        self.assertIn('never attach a', prompt)
+
+
+class TruncatedOutputFollowUpTests(TestCase):
+    """Reports #35 and #36: 'still it is half' truncated all over again.
+
+    The follow-up carries no code or long-form keyword, so it fell back to the
+    default token budget and cut off at the same place. The same user reported
+    it twice.
+    """
+
+    def test_saying_the_answer_was_cut_short_earns_the_long_budget(self):
+        for prompt in (
+            'still it is half',
+            'the code is not complete',
+            'continue',
+            'it got cut off',
+            'yeh adhura hai',
+            'aage likho',
+            'baaki code do',
+            'rest of the code please',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(ai_chat.wants_long_form_output(prompt))
+                self.assertTrue(ai_chat.is_truncated_output_complaint(prompt))
+
+    def test_ordinary_turns_still_use_the_normal_budget(self):
+        # The long budget also raises the request timeout, so this must not
+        # fire on everyday chat.
+        for prompt in (
+            'hello',
+            'what is the capital of India',
+            'thanks',
+            'write a tweet about coffee',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(ai_chat.wants_long_form_output(prompt))
+
+    def test_the_existing_long_form_cues_are_unaffected(self):
+        # AIReport #29's original case must keep working.
+        self.assertTrue(ai_chat.wants_long_form_output('Complete reference from Kdt'))
+        self.assertFalse(ai_chat.is_truncated_output_complaint('give me a detailed breakdown'))
+
+
+class DropboxArchiveIsOffDuringTestsTests(TestCase):
+    """Regression guard: the suite must never upload into the live account.
+
+    Several tests drive the real image and report views with only the storage
+    layer mocked. Before DROPBOX_IMAGE_ARCHIVE_ENABLED existed, those quietly
+    uploaded their fake images to the project owner's actual Dropbox.
+    """
+
+    def test_archiving_is_disabled_by_default_under_the_test_runner(self):
+        self.assertFalse(dropbox_images.is_enabled())
+
+    def test_a_test_run_cannot_queue_an_upload_with_the_real_credentials(self):
+        with patch('myapp.dropbox_images._ensure_worker') as worker:
+            self.assertFalse(dropbox_images.enqueue(b'bytes', 'png', 'real@example.com'))
+            self.assertEqual(
+                dropbox_images.enqueue_report_images(
+                    1, 'real@example.com', user_image='data:image/png;base64,AA==',
+                ),
+                0,
+            )
+
+        worker.assert_not_called()
+
+    def test_the_worker_itself_also_refuses_while_archiving_is_disabled(self):
+        # The worker outlives any one request, so it re-checks rather than
+        # trusting the decision made when the item was queued.
+        with patch('myapp.dropbox_images.is_configured', return_value=True):
+            self.assertIsNone(dropbox_images._build_client())
+
+
+@override_settings(
+    DROPBOX_IMAGE_ARCHIVE_ENABLED=True,
+    DROPBOX_APP_KEY='test-key',
+    DROPBOX_APP_SECRET='test-secret',
+    DROPBOX_REFRESH_TOKEN='test-refresh-token',
+)
+class DropboxGeneratedImageArchiveTests(TestCase):
+    """Generated images are mirrored to /vidhyora/<email>/ without delaying the reply."""
+
+    PNG_BYTES = base64.b64decode(
+        b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    )
+
+    def setUp(self):
+        cache.clear()
+        # Module-level worker state survives between tests; start each one from
+        # a drained queue and no cached client so assertions can't pick up a
+        # previous test's upload.
+        dropbox_images.flush(timeout=5)
+        dropbox_images._client = None
+        self.user = User.objects.create_user(
+            username='archive-tests',
+            email='Studio.Owner+AI@Example.com',
+            password='test-password-123',
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+
+    def test_folder_name_is_lowercased_and_stripped_of_path_characters(self):
+        # Dropbox rejects these characters outright in a path component, and
+        # an unsanitised one would send the upload to a different folder.
+        self.assertEqual(dropbox_images.folder_for('User@Example.com'), 'user@example.com')
+        self.assertEqual(dropbox_images.folder_for('a/b\\c:d?e*f'), 'a_b_c_d_e_f')
+        self.assertEqual(dropbox_images.folder_for('  spaced@x.com  '), 'spaced@x.com')
+
+    def test_missing_email_falls_back_to_the_shared_guest_folder(self):
+        # Guests can generate images too — they still get archived, just not
+        # filed under an address that does not exist.
+        for empty in ('', None, '   ', '...'):
+            self.assertEqual(dropbox_images.folder_for(empty), dropbox_images.GUEST_FOLDER)
+
+    def test_filename_is_sortable_and_keeps_the_local_storage_name(self):
+        name = dropbox_images._filename('png', 'ai_generated/2026/09/05/abc123.png')
+
+        self.assertTrue(name.endswith('-abc123.png'))
+        # Leading YYYYMMDD-HHMMSS stamp, so a Dropbox folder listing sorts
+        # chronologically by name.
+        self.assertRegex(name, r'^\d{8}-\d{6}-')
+
+    def test_unexpected_extension_is_not_trusted_into_the_filename(self):
+        self.assertTrue(dropbox_images._filename('php', 'x.php').endswith('.png'))
+        self.assertTrue(dropbox_images._filename('JPG', 'x.jpg').endswith('.jpg'))
+
+    def test_enqueue_uploads_to_the_per_email_folder_under_vidhyora(self):
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            self.assertTrue(
+                dropbox_images.enqueue(b'image-bytes', 'png', 'owner@example.com', 'local.png')
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        client.files_upload.assert_called_once()
+        content, path = client.files_upload.call_args.args
+        self.assertEqual(content, b'image-bytes')
+        self.assertTrue(path.startswith('/vidhyora/owner@example.com/'))
+        self.assertTrue(path.endswith('-local.png'))
+
+    def test_upload_failures_are_swallowed_so_a_saved_image_is_never_lost(self):
+        client = Mock()
+        client.files_upload.side_effect = RuntimeError('Dropbox is down')
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            self.assertTrue(dropbox_images.enqueue(b'bytes', 'png', 'owner@example.com'))
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        # A failed upload must also drop the cached client, so the next image
+        # rebuilds one instead of reusing a possibly-broken connection.
+        self.assertIsNone(dropbox_images._client)
+
+    @override_settings(DROPBOX_REFRESH_TOKEN='')
+    def test_incomplete_credentials_skip_the_upload_entirely(self):
+        with patch('myapp.dropbox_images._build_client') as build:
+            self.assertFalse(dropbox_images.enqueue(b'bytes', 'png', 'owner@example.com'))
+
+        build.assert_not_called()
+
+    @patch('myapp.views.default_storage.url', return_value='/media/ai_generated/robot.png')
+    @patch('myapp.views.default_storage.save', return_value='ai_generated/2026/09/05/robot.png')
+    @patch('myapp.views.image_generation.generate_image')
+    def test_generated_image_is_archived_under_the_logged_in_users_email(
+        self, generate, save, storage_url,
+    ):
+        generate.return_value = image_generation.GeneratedImage(self.PNG_BYTES, 'png')
+        client = Mock()
+
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'A futuristic learning robot',
+                    'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['X-Generated-Image-Url'], '/media/ai_generated/robot.png')
+
+        content, path = client.files_upload.call_args.args
+        self.assertEqual(content, self.PNG_BYTES)
+        # The email is normalised to lowercase, so one person never ends up
+        # with two archive folders.
+        self.assertTrue(path.startswith('/vidhyora/studio.owner+ai@example.com/'))
+        self.assertTrue(path.endswith('-robot.png'))
+
+    @patch('myapp.views.default_storage.url', return_value='/media/ai_generated/guest.png')
+    @patch('myapp.views.default_storage.save', return_value='ai_generated/guest.png')
+    @patch('myapp.views.image_generation.generate_image')
+    def test_account_without_an_email_still_gets_its_image_archived(
+        self, generate, save, storage_url,
+    ):
+        # An account can exist with a blank email (staff-created ones here do),
+        # so the folder fallback has to cover logged-in users too, not just
+        # guests — otherwise those images would go to '/vidhyora//...'.
+        generate.return_value = image_generation.GeneratedImage(self.PNG_BYTES, 'png')
+        no_email = User.objects.create_user(
+            username='no-email-account', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(no_email)
+        client = Mock()
+
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'A blue mountain',
+                    'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertEqual(response.status_code, 200)
+        _, path = client.files_upload.call_args.args
+        self.assertTrue(path.startswith(f'/vidhyora/{dropbox_images.GUEST_FOLDER}/'))
+
+    @patch('myapp.views.default_storage.url', return_value='/media/ai_generated/x.png')
+    @patch('myapp.views.default_storage.save', return_value='ai_generated/x.png')
+    @patch('myapp.views.image_generation.generate_image')
+    def test_a_broken_dropbox_still_returns_the_image_to_the_user(
+        self, generate, save, storage_url,
+    ):
+        generate.return_value = image_generation.GeneratedImage(self.PNG_BYTES, 'png')
+
+        # The archive is a mirror, not the delivery path. Break it as badly as
+        # possible — the real (unmocked) enqueue runs here, so this proves its
+        # own error handling is what protects the reply, not the caller's.
+        with patch('myapp.dropbox_images._ensure_worker', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'A red car',
+                    'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['X-Generated-Image-Url'], '/media/ai_generated/x.png')
+        self.assertEqual(
+            AIMessage.objects.get(role=AIMessage.ROLE_ASSISTANT).image_data,
+            '/media/ai_generated/x.png',
+        )
+
+    def test_enqueue_never_raises_even_when_the_worker_cannot_start(self):
+        with patch('myapp.dropbox_images._ensure_worker', side_effect=RuntimeError('no threads')):
+            self.assertFalse(dropbox_images.enqueue(b'bytes', 'png', 'owner@example.com'))
+
+    def _data_uri(self):
+        return 'data:image/png;base64,' + base64.b64encode(self.PNG_BYTES).decode('ascii')
+
+    def test_report_evidence_is_archived_under_the_reporters_reports_folder(self):
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            queued = dropbox_images.enqueue_report_images(
+                42, 'Owner@Example.com',
+                user_image=self._data_uri(), reply_image=self._data_uri(),
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertEqual(queued, 2)
+        paths = sorted(call.args[1] for call in client.files_upload.call_args_list)
+        self.assertEqual(len(paths), 2)
+        for path in paths:
+            self.assertTrue(path.startswith('/vidhyora/owner@example.com/reports/'))
+        # Named by report number and side, so a reviewer can find the evidence
+        # for report #42 without opening every file in the folder.
+        self.assertTrue(paths[0].endswith('-report-42-reply.png'))
+        self.assertTrue(paths[1].endswith('-report-42-user.png'))
+
+    def test_report_evidence_data_uri_is_decoded_to_the_original_image_bytes(self):
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            dropbox_images.enqueue_report_images(7, 'owner@example.com', user_image=self._data_uri())
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        # A real PNG must land in Dropbox, not the base64 text of one.
+        content = client.files_upload.call_args.args[0]
+        self.assertEqual(content, self.PNG_BYTES)
+        self.assertTrue(content.startswith(b'\x89PNG'))
+
+    def test_report_evidence_that_is_only_a_url_is_skipped_not_uploaded(self):
+        # _snapshot_ai_report_image falls back to the bare media URL when the
+        # file is already gone. There are no bytes behind that, so uploading it
+        # would just create a file containing a URL.
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            queued = dropbox_images.enqueue_report_images(
+                9, 'owner@example.com',
+                user_image='/media/ai_generated/lost.png', reply_image='',
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertEqual(queued, 0)
+        client.files_upload.assert_not_called()
+
+    def test_corrupt_report_evidence_never_uploads_an_empty_file(self):
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            dropbox_images.enqueue_report_images(
+                11, 'owner@example.com', user_image='data:image/png;base64,!!!not base64!!!',
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        client.files_upload.assert_not_called()
+
+    def test_jpeg_report_evidence_keeps_a_usable_file_extension(self):
+        client = Mock()
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            dropbox_images.enqueue_report_images(
+                3, 'owner@example.com',
+                user_image='data:image/jpeg;base64,' + base64.b64encode(b'\xff\xd8\xff-jpeg').decode(),
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertTrue(client.files_upload.call_args.args[1].endswith('.jpg'))
+
+    def test_submitting_a_report_archives_its_image_evidence(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Report archive')
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_USER,
+            content='Make this poster blue', image_data=self._data_uri(),
+        )
+        assistant = AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
+            content='', image_data=self._data_uri(),
+            model_key=ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+        )
+        client = Mock()
+
+        with patch('myapp.dropbox_images._build_client', return_value=client):
+            response = self.client.post(
+                '/AI/api/report/',
+                data=json.dumps({
+                    'conversation_id': conversation.id,
+                    'message_id': assistant.pk,
+                    'reply_image': assistant.image_data,
+                    'explanation': 'The poster came out the wrong colour.',
+                }),
+                content_type='application/json',
+            )
+            self.assertTrue(dropbox_images.flush(timeout=10))
+
+        self.assertEqual(response.status_code, 200)
+        report = AIReport.objects.get()
+        paths = sorted(call.args[1] for call in client.files_upload.call_args_list)
+        self.assertEqual(len(paths), 2, f'expected both sides archived, got {paths}')
+        for path in paths:
+            self.assertTrue(
+                path.startswith('/vidhyora/studio.owner+ai@example.com/reports/'), path,
+            )
+        self.assertTrue(paths[0].endswith(f'-report-{report.pk}-reply.png'))
+        self.assertTrue(paths[1].endswith(f'-report-{report.pk}-user.png'))
+
+    def test_a_broken_dropbox_still_lets_a_report_be_filed(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Report resilience')
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_USER, content='Why is this wrong?',
+        )
+        assistant = AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
+            content='A wrong answer.', model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+        )
+
+        with patch('myapp.dropbox_images._ensure_worker', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                '/AI/api/report/',
+                data=json.dumps({
+                    'conversation_id': conversation.id,
+                    'message_id': assistant.pk,
+                    'reply_text': 'A wrong answer.',
+                    'explanation': 'This is not correct.',
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(AIReport.objects.count(), 1)
+
+    def test_image_archive_folder_cannot_collide_with_the_database_backup_folder(self):
+        # dropbox_backup.py writes db.sqlite3 snapshots to its own root. If
+        # these two ever shared a folder, delete_all_backups() would wipe the
+        # users' generated images along with the backups.
+        self.assertNotEqual(
+            dropbox_images.ROOT_FOLDER.lower().rstrip('/'),
+            dropbox_backup.BACKUP_ROOT.lower().rstrip('/'),
+        )
+        self.assertFalse(
+            dropbox_backup.BACKUP_FOLDER.lower().startswith(
+                dropbox_images.ROOT_FOLDER.lower().rstrip('/') + '/'
+            )
+        )
 
 
 class AIResponseReliabilityTests(TestCase):
@@ -2276,11 +3114,46 @@ class RemovedPublicSurfaceTests(TestCase):
 
     def test_mobile_feature_intro_lists_images_and_models_and_closes_model_stack(self):
         response = self.client.get('/AI/')
-        self.assertContains(response, 'Generate and edit images')
+        # Deliberately "Generate images", not "Generate and edit images":
+        # editing an uploaded photo is unavailable upstream, so advertising it
+        # here sent users straight into an error (AIReports #37, #44, #46).
+        self.assertContains(response, 'Generate images')
+        self.assertNotContains(response, 'Generate and edit images')
         self.assertContains(response, 'Access multiple AI models')
         self.assertContains(response, "localStorage.setItem('ai_model_intro_seen', '1')")
         self.assertContains(response, 'if (modelDropdown) modelDropdown.hidden = true')
         self.assertContains(response, 'max-height:calc(100dvh - 24px)')
+
+    def test_homepage_shows_no_starter_questions_or_model_hint(self):
+        response = self.client.get('/AI/')
+        for removed in (
+            'Help me pick a service',
+            'How to use ChatGPT 5.6',
+            'What is Vidhyora?',
+            'Write something creative',
+            'Explain something simply',
+            'is ready — just type below',
+            'from the model box below',
+        ):
+            with self.subTest(removed=removed):
+                self.assertNotContains(response, removed)
+
+    def test_signed_out_visitor_sees_the_neutral_description(self):
+        response = self.client.get('/AI/')
+        self.assertContains(response, 'A powerful AI with access to multiple models')
+        # The rendered element, not the class name — '.hl-model' also appears
+        # in the stylesheet, which is served to everyone.
+        self.assertNotContains(response, '<span class="hl-model">')
+
+    def test_signed_in_user_sees_the_chatgpt_description(self):
+        staff = User.objects.create_user('full-access', password='password', is_staff=True)
+        StoreProfile.objects.create(user=staff)
+        self.client.force_login(staff)
+
+        response = self.client.get('/AI/')
+        self.assertContains(response, '<span class="hl-model">')
+        self.assertContains(response, 'Full access to')
+        self.assertNotContains(response, 'A powerful AI with access to multiple models')
 
     def test_apex_domain_redirects_to_ai_homepage(self):
         middleware = CanonicalHostMiddleware(lambda request: HttpResponse('page'))

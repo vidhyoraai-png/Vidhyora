@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -170,6 +171,34 @@ NVIDIA_API_KEY = 'nvapi-KUqw-oj05S7KpJ4W8MoAfygvRl-4l_t63stRfapTII0QubZO8G6Tbl4z
 # Intentionally hardcoded at the project owner's request.
 NVIDIA_FLUX_API_KEY = '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'
 NVIDIA_FLUX_EDIT_API_KEY = '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'
+
+# ── Dropbox archive for AI-generated images ──────────────────────────────────
+# Every image the AI generates is mirrored to /vidhyora/<user email>/ in this
+# Dropbox account (myapp/dropbox_images.py), because local media storage is
+# wiped on every redeploy. Uploading happens on a background thread, so this
+# adds nothing to image reply times.
+#
+# Hardcoded at the project owner's explicit request, like the keys above —
+# which means a refresh token with full access to that Dropbox account is
+# visible to anyone who can read this repo or its git history. Rotate it from
+# the Dropbox App Console if that ever stops being acceptable.
+#
+# These are separate from the dashboard-configured DropboxSettings row that
+# dropbox_backup.py uses for db.sqlite3 backups; the two write to different
+# folders and neither can disturb the other.
+DROPBOX_APP_KEY = 'wgg2fsw5pf16x8q'
+DROPBOX_APP_SECRET = '38dg9gi6djz3zuu'
+DROPBOX_REFRESH_TOKEN = 'Si57f7yXuB0AAAAAAAAAAZGrsYbd1YLQpvGHxlJES4DRvKr7mDfZo8xqLaJBTY_s'
+
+# Master switch, off while the test suite runs. Tests exercise the real image
+# and report views, and those now archive to Dropbox — without this, running
+# `manage.py test` uploads the suite's fake images into the live account (it
+# did exactly that once). Tests that mean to cover archiving turn it back on
+# with override_settings and patch the client, so they never touch the network.
+DROPBOX_IMAGE_ARCHIVE_ENABLED = not (
+    'test' in sys.argv
+    or os.path.basename(sys.argv[0] if sys.argv else '').startswith(('pytest', 'py.test'))
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
