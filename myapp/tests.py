@@ -1,4 +1,5 @@
 import base64
+import datetime
 import io
 import json
 import tempfile
@@ -6,6 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -16,15 +18,21 @@ from django.contrib.sessions.models import Session
 from django.test import RequestFactory
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from openpyxl import load_workbook
 from PIL import Image
+from pptx import Presentation
+from pypdf import PdfReader
 
-from . import ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup, image_generation, privacy, request_router
+from . import (
+    ai_chat, business_info, company_knowledge, doc_extract, dropbox_backup,
+    file_convert, image_generation, privacy, request_router, web_search,
+)
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
 from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, GitHubConnection, PWASettings, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
-    _ai_generated_file_spec, _extract_ai_generated_file_content,
-    site_customization_context,
+    _ai_excel_bytes, _ai_generated_file_spec, _ai_powerpoint_bytes,
+    _extract_ai_generated_file_content, site_customization_context,
 )
 
 
@@ -621,6 +629,31 @@ class AIResponseReliabilityTests(TestCase):
         # AIReport #29 — explicit long-form ask that used to be cut off.
         self.assertTrue(ai_chat.wants_long_form_output('Complete reference from Kdt'))
 
+        # AIReport #27 — "birthday card" wasn't recognised; only the fixed
+        # two-word phrase "greeting card" was in the noun list.
+        self.assertTrue(ai_chat.is_image_generation_request('please make a birthday card'))
+
+        # AIReport #45 — an attached-image "turn in to instagram post" (note
+        # the two-word "in to", not "into") fell through to Vision because
+        # neither "post" nor a "turn into" verb form was recognised.
+        self.assertTrue(ai_chat.is_image_generation_request('turn in to instagram post'))
+        self.assertTrue(ai_chat.is_image_edit_instruction('turn in to instagram post'))
+
+        # AIReport #46 — "Made" (past tense of "make") wasn't in the verb list.
+        self.assertTrue(ai_chat.is_image_generation_request('Made light background of this post'))
+
+        # AIReport #39 — "use this logo" on an attached image is a real
+        # composite/edit instruction with no verb from the edit-only list.
+        self.assertTrue(ai_chat.is_image_edit_instruction('use this logo'))
+        # But a generic "use this ..." with no image-shaped noun must not
+        # misfire on an attached image that's actually about something else.
+        self.assertFalse(ai_chat.is_image_edit_instruction('use this data to build a report'))
+
+        # AIReport #44 — Hindi "Is ladki ko cafe me dikhao" ("show/place this
+        # girl in a cafe") on an attached photo needs an edit-shaped verb;
+        # none of dikhao/daalo/lagao/jodo/nikaal were recognised before.
+        self.assertTrue(ai_chat.is_image_edit_instruction('Is ladki ko cafe me dikhao'))
+
         # Must not misfire on ordinary chat/analysis text.
         for prompt in [
             'what is in this image', 'describe this photo', 'is this a cat or a dog',
@@ -769,6 +802,71 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(assistant.content, body)
         self.assertEqual(assistant.model_key, ai_chat.CHATGPT_56_MODEL_KEY)
 
+    def test_chatgpt_never_claims_a_backend_vendor_trained_it(self):
+        """The reported symptom: replies saying "I was trained by NVIDIA".
+
+        ai_chat's own retry guard only inspects the opening few hundred
+        characters, so a claim made partway through a long answer used to
+        reach the browser untouched.
+        """
+        from myapp.views import _chatgpt_public_reply
+
+        for leak in (
+            'I was trained by NVIDIA.',
+            'My underlying model was developed by NVIDIA.',
+            "I'm an NVIDIA model.",
+            'I was trained by Meta on the Llama architecture.',
+            'I am based on the Nemotron base model from NVIDIA.',
+            'I was developed by NVIDIA, not OpenAI.',
+            'A' * 600 + ' To be clear, I was actually built by NVIDIA.',
+        ):
+            cleaned = _chatgpt_public_reply(leak)
+            for vendor in ('nvidia', 'nemotron', 'llama', 'mistral'):
+                self.assertNotIn(vendor, cleaned.lower(), msg=leak[:60])
+
+        # ...while a genuine answer *about* those companies must survive: the
+        # word itself is not the problem, claiming it built this assistant is.
+        for factual in (
+            'NVIDIA is a semiconductor company founded in 1993.',
+            'GPUs are made by NVIDIA and AMD.',
+            'Llama is an open-weights model family released by Meta.',
+        ):
+            self.assertEqual(_chatgpt_public_reply(factual), factual)
+
+    def test_chatgpt_streams_progressively_without_duplicating_text(self):
+        """ChatGPT 5.6 used to withhold the whole reply until generation
+        finished — nothing rendered for the entire wait. It now releases text
+        as it arrives, holding back only a short tail for the sanitizer."""
+        user = User.objects.create_user(
+            username='chatgpt-streaming@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+
+        sentence = 'This is a normal, clean sentence of assistant output. '
+        chunks = [sentence] * 40
+        with patch('myapp.views.ai_chat.stream_chat', return_value=iter(chunks)):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Explain something at length',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            parts = [part.decode() for part in response.streaming_content]
+
+        body = ''.join(parts)
+        expected = sentence * 40
+        # Delivered exactly once, in full, and in order.
+        self.assertEqual(body, expected)
+        # Genuinely progressive: the reply arrived in several pieces rather
+        # than one final dump, and the first piece came well before the end.
+        released = [p for p in parts if p]
+        self.assertGreater(len(released), 1)
+        self.assertLess(len(released[0]), len(expected))
+        assistant = AIMessage.objects.get(role=AIMessage.ROLE_ASSISTANT)
+        self.assertEqual(assistant.content, expected)
+
     def test_chatgpt_reports_disconnected_text_access_without_worker_names(self):
         class RemovedWorkerError(Exception):
             status_code = 404
@@ -899,6 +997,298 @@ class AIResponseReliabilityTests(TestCase):
         document_text = '\n'.join(paragraph.text for paragraph in word_document.paragraphs)
         self.assertIn('Summary Note', document_text)
         self.assertIn('First important point', document_text)
+
+    def test_report_33_pdf_request_with_attached_image_still_generates_a_real_pdf(self):
+        # AIReport #33: "Make renewal notice to send to client using this
+        # data and add logo I have attached in pdf" — an attached image
+        # used to unconditionally skip file-generation routing and fall
+        # through to Vision (which can only describe an image, never
+        # produce a download), and PDF wasn't even a supported output
+        # format yet. This locks in both fixes: the object regex accepts
+        # a bare "pdf" (not just "file"/"document"), file-generation intent
+        # is checked even with an image attached, and the download is a
+        # genuine PDF. Embedding the attached logo into the PDF itself is
+        # not implemented — only the real text content and download link.
+        cache.clear()
+        self.addCleanup(cache.clear)
+        user = User.objects.create_user(
+            username='pdf-file-owner@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        prompt = 'Make renewal notice to send to client using this data and add logo I have attached in pdf'
+
+        with patch(
+            'myapp.views.ai_chat.stream_chat',
+            return_value=iter(['```markdown\n# Renewal Notice\n\n- Policy is due for renewal\n```']),
+        ) as stream_chat:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': prompt,
+                    'image': 'data:image/png;base64,AA==',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('[Download generated.pdf](', body)
+        self.assertEqual(response['X-Request-Category'], 'file_generation')
+        self.assertIn('genuine PDF', stream_chat.call_args.kwargs['document_instruction'])
+        generated_file = AIGeneratedFile.objects.get(user=user)
+        self.assertEqual(generated_file.file_name, 'generated.pdf')
+
+        download = self.client.get(f'/AI/api/files/{generated_file.token}/download/')
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download['Content-Type'], 'application/pdf')
+        self.assertTrue(download.content.startswith(b'%PDF'))
+        pdf_text = ''.join(page.extract_text() for page in PdfReader(io.BytesIO(download.content)).pages)
+        self.assertIn('Renewal Notice', pdf_text)
+        self.assertIn('Policy is due for renewal', pdf_text)
+
+    def test_every_model_is_told_the_real_current_date_and_time(self):
+        """A model can't read a clock, so "what's today's date?" was answered
+        from its training cutoff. The live clock is now stated on every turn."""
+        note = ai_chat.current_datetime_note()
+        now = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+        self.assertIn(now.strftime('%d %B %Y'), note)
+        self.assertIn(str(now.year), note)
+        self.assertIn('IST', note)
+        self.assertIn("never say you don't have access to the current date", note.lower())
+
+        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='ok'))])
+        for model_key in ('quick', 'ultra', 'code', 'vision', 'reasoning', ai_chat.CHATGPT_56_MODEL_KEY):
+            create = Mock(return_value=iter([chunk]))
+            client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+            with patch('myapp.ai_chat._get_client', return_value=client):
+                list(ai_chat.stream_chat(
+                    [{'role': 'user', 'content': 'what is the date today?'}],
+                    model_key=model_key,
+                ))
+            system_prompt = create.call_args.kwargs['messages'][0]['content']
+            self.assertIn(now.strftime('%d %B %Y'), system_prompt, msg=model_key)
+
+    def test_web_search_only_fires_on_time_sensitive_questions(self):
+        for should_search in (
+            'what is the latest news about AI',
+            'current gold rate in india',
+            'who won the match yesterday',
+            'aaj ka petrol price kya hai',
+            'search for the best hosting providers',
+        ):
+            self.assertTrue(web_search.needs_search(should_search), msg=should_search)
+
+        # A search is a network round trip on the critical path of a reply, so
+        # everything answerable without one must stay out of it.
+        for should_not in (
+            'write a python function to sort a list',
+            'rephrase this message for me',
+            'generate an image of a cat',
+            'what is 15% of 2400',
+            'explain object oriented programming',
+            'hello how are you',
+        ):
+            self.assertFalse(web_search.needs_search(should_not), msg=should_not)
+
+    def test_web_search_failure_degrades_to_a_normal_answer(self):
+        """A search outage must never break the chat — it just means the model
+        answers from its own knowledge, as it did before search existed."""
+        cache.clear()
+        self.addCleanup(cache.clear)
+        # ddgs.DDGS is a lazy proxy that forwards to ddgs.ddgs.DDGS; patching
+        # the proxy leaves the real class (and so the real network call) in
+        # place, so the implementation class is the target here.
+        with patch('ddgs.ddgs.DDGS.text', side_effect=RuntimeError('rate limited')):
+            self.assertEqual(web_search.search('current gold rate'), [])
+            self.assertIsNone(web_search.build_context('current gold rate'))
+
+    def test_web_results_are_passed_to_the_model_as_grounding(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        fake = [{'title': 'Gold Rate Today', 'href': 'https://example.com/gold',
+                 'body': 'Gold is 71,000 per 10g today.'}]
+        with patch('ddgs.ddgs.DDGS.text', return_value=fake):
+            context = web_search.build_context('current gold rate in india')
+        self.assertIn('Gold Rate Today', context)
+        self.assertIn('https://example.com/gold', context)
+        self.assertIn('71,000', context)
+        # The model must be told not to invent beyond what was actually found.
+        self.assertIn('never invent a result', context.lower())
+
+    def test_spreadsheet_and_presentation_requests_produce_real_office_files(self):
+        for message, expected in (
+            ('make an excel sheet of monthly expenses', 'generated.xlsx'),
+            ('give me a slide deck about our services', 'generated.pptx'),
+            ('put this data in a spreadsheet', 'generated.xlsx'),
+            ('mujhe ek presentation chahiye', 'generated.pptx'),
+        ):
+            self.assertEqual(_ai_generated_file_spec(message), {'file_name': expected}, msg=message)
+
+        workbook_bytes = _ai_excel_bytes('Item,Qty,Price\nPens,10,25.5\n"Books, hardcover",3,499\n')
+        self.assertTrue(workbook_bytes.startswith(b'PK'))
+        sheet = load_workbook(io.BytesIO(workbook_bytes)).active
+        rows = list(sheet.iter_rows(values_only=True))
+        self.assertEqual(rows[0], ('Item', 'Qty', 'Price'))
+        # Numbers stored as numbers, so the sheet is actually usable for
+        # formulas, and a quoted value containing a comma stays one cell.
+        self.assertEqual(rows[1], ('Pens', 10, 25.5))
+        self.assertEqual(rows[2][0], 'Books, hardcover')
+
+        deck_bytes = _ai_powerpoint_bytes('# Intro\n- Who we are\n# Services\n- SEO\n- Websites\n')
+        self.assertTrue(deck_bytes.startswith(b'PK'))
+        deck = Presentation(io.BytesIO(deck_bytes))
+        self.assertEqual([slide.shapes.title.text for slide in deck.slides], ['Intro', 'Services'])
+        second = [p.text for p in deck.slides[1].placeholders[1].text_frame.paragraphs]
+        self.assertEqual(second, ['SEO', 'Websites'])
+
+    def test_file_conversion_covers_every_offered_format_pair(self):
+        """Every pair the UI offers must actually produce a valid file — an
+        offered conversion that then fails is worse than not offering it."""
+        docx_source = file_convert.text_to_docx_bytes('# Report\n\n- one\n- two\n\nA paragraph.')
+        pdf_source = file_convert.text_to_pdf_bytes('# Invoice\n\n- line A\n\nTotal 4999.')
+        csv_source = b'Item,Qty,Price\nPens,10,25.5\n"Books, hardcover",3,499\n'
+        xlsx_source = file_convert.rows_to_xlsx_bytes([['Item', 'Qty'], ['Pens', '10']])
+        image_buffer = io.BytesIO()
+        Image.new('RGBA', (120, 80), (255, 0, 0, 128)).save(image_buffer, 'PNG')
+        png_source = image_buffer.getvalue()
+
+        signatures = {
+            'pdf': b'%PDF', 'docx': b'PK', 'xlsx': b'PK',
+            'jpg': b'\xff\xd8\xff', 'png': b'\x89PNG', 'webp': b'RIFF',
+        }
+        sources = {
+            'invoice.pdf': pdf_source, 'report.docx': docx_source,
+            'data.csv': csv_source, 'sheet.xlsx': xlsx_source,
+            'logo.png': png_source, 'notes.txt': b'plain text\nsecond line',
+        }
+        for name, data in sources.items():
+            targets = file_convert.targets_for(name)
+            self.assertTrue(targets, msg=name)
+            for target in targets:
+                payload, filename, _ = file_convert.convert(data, name, target)
+                self.assertTrue(payload, msg=f'{name}->{target}')
+                self.assertTrue(filename.endswith(f'.{target}'), msg=f'{name}->{target}')
+                if target in signatures:
+                    self.assertTrue(
+                        payload.startswith(signatures[target]), msg=f'{name}->{target}',
+                    )
+
+        # Content actually survives the round trip, rather than producing a
+        # valid-but-empty file.
+        csv_out, _, _ = file_convert.convert(xlsx_source, 'sheet.xlsx', 'csv')
+        self.assertIn(b'Item', csv_out)
+        xlsx_out, _, _ = file_convert.convert(csv_source, 'data.csv', 'xlsx')
+        rows = list(load_workbook(io.BytesIO(xlsx_out)).active.iter_rows(values_only=True))
+        self.assertEqual(rows[1], ('Pens', 10, 25.5))
+        self.assertEqual(rows[2][0], 'Books, hardcover')
+
+    def test_file_conversion_rejects_unsupported_pairs_with_a_clear_reason(self):
+        with self.assertRaises(file_convert.ConvertError):
+            file_convert.convert(b'data', 'thing.exe', 'pdf')
+        with self.assertRaises(file_convert.ConvertError):
+            file_convert.convert(b'data', 'notes.txt', 'xlsx')
+        with self.assertRaises(file_convert.ConvertError):
+            file_convert.convert(b'', 'notes.txt', 'pdf')
+        # A scanned PDF has no text layer; say so instead of returning an
+        # empty document that looks like a successful conversion.
+        blank_pdf = file_convert.text_to_pdf_bytes('')
+        with self.assertRaises(file_convert.ConvertError) as caught:
+            file_convert.convert(blank_pdf, 'scan.pdf', 'docx')
+        self.assertIn('scan', str(caught.exception).lower())
+
+    def test_convert_endpoint_returns_the_converted_file(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        user = User.objects.create_user(
+            username='convert-user@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        upload = SimpleUploadedFile('data.csv', b'Name,Score\nAsha,91\n', content_type='text/csv')
+
+        response = self.client.post('/AI/api/convert/', {'file': upload, 'target': 'xlsx'})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b'PK'))
+        self.assertIn('data.xlsx', response['Content-Disposition'])
+        self.assertEqual(response['Cache-Control'], 'private, no-store')
+
+        bad = SimpleUploadedFile('data.csv', b'Name,Score\n', content_type='text/csv')
+        rejected = self.client.post('/AI/api/convert/', {'file': bad, 'target': 'docx'})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn('CSV', rejected.json()['detail'])
+
+    def test_conversation_exports_as_a_real_pdf_and_word_file(self):
+        user = User.objects.create_user(
+            username='export-user@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        conversation = AIConversation.objects.create(user=user, title='Pricing questions')
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_USER, content='What are your rates?',
+        )
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
+            content='Our website packages start at 14999.',
+        )
+
+        pdf = self.client.get(f'/AI/api/conversations/{conversation.id}/export/pdf/')
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf['Content-Type'], 'application/pdf')
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+        text = ''.join(page.extract_text() for page in PdfReader(io.BytesIO(pdf.content)).pages)
+        self.assertIn('What are your rates?', text)
+        self.assertIn('14999', text)
+
+        docx = self.client.get(f'/AI/api/conversations/{conversation.id}/export/docx/')
+        self.assertEqual(docx.status_code, 200)
+        self.assertTrue(docx.content.startswith(b'PK'))
+
+        self.assertEqual(
+            self.client.get(f'/AI/api/conversations/{conversation.id}/export/rtf/').status_code, 400,
+        )
+        # Someone else's conversation must not be exportable.
+        other = User.objects.create_user(username='other-export@example.com', password='pw')
+        self.client.force_login(other)
+        self.assertEqual(
+            self.client.get(f'/AI/api/conversations/{conversation.id}/export/pdf/').status_code, 404,
+        )
+
+    def test_report_on_an_image_only_turn_still_records_what_was_asked(self):
+        """Six real reports arrived with a blank prompt because the reported
+        turn carried only an image, leaving nothing to diagnose."""
+        user = User.objects.create_user(
+            username='report-context@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        conversation = AIConversation.objects.create(user=user, title='Poster help')
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_USER,
+            content='make me a birthday poster',
+        )
+        AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_USER,
+            content='', image_data='data:image/png;base64,AA==',
+        )
+        reply = AIMessage.objects.create(
+            conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
+            content='I cannot help with that.', model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+        )
+
+        response = self.client.post(
+            '/AI/api/report/',
+            data=json.dumps({
+                'conversation_id': conversation.id, 'message_id': reply.id,
+                'reply_text': 'I cannot help with that.',
+                'explanation': 'poster nahin ban raha',
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        report = AIReport.objects.get()
+        # The blank turn is described, and the real instruction is carried
+        # through so the report can actually be triaged.
+        self.assertIn('image with no text', report.user_prompt)
+        self.assertIn('make me a birthday poster', report.user_prompt)
 
     def test_accuracy_rules_cover_maths_and_unclear_images(self):
         self.assertTrue(ai_chat.is_math_request('Solve 2x + 5 = 17'))

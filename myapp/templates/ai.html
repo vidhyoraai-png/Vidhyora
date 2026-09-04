@@ -306,6 +306,20 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 .conv-del{border:none;background:none;color:#c3c9d3;cursor:pointer;font-size:.78rem;padding:.2rem;flex-shrink:0;opacity:0;transition:opacity .12s,color .12s}
 .conv-item:hover .conv-del{opacity:1}
 .conv-del:hover{color:var(--red)}
+.conv-export:hover{color:var(--head)}
+
+/* ---- convert-a-file modal (local conversion, never touches the AI) ---- */
+.convert-hint{font-size:.72rem;color:#9aa3b0;margin:0 0 .8rem;line-height:1.5}
+.convert-pick{width:100%;display:flex;align-items:center;justify-content:center;gap:.45rem;border:1.5px dashed var(--line);background:var(--bg-alt);color:var(--head);font-weight:700;font-size:.8rem;padding:.75rem;border-radius:11px;cursor:pointer;transition:border-color .15s,color .15s}
+.convert-pick:hover{border-color:var(--red);color:var(--red)}
+.convert-targets{margin-top:.9rem}
+.convert-targets-label{font-size:.74rem;font-weight:700;color:var(--head);margin:0 0 .5rem}
+.convert-target-list{display:flex;flex-wrap:wrap;gap:.4rem}
+.convert-target{border:1.5px solid var(--line);background:var(--surface);color:var(--head);font-weight:700;font-size:.76rem;padding:.42rem .8rem;border-radius:9px;cursor:pointer;text-transform:uppercase;transition:border-color .15s,color .15s}
+.convert-target:hover{border-color:var(--red);color:var(--red)}
+.convert-target:disabled{opacity:.55;cursor:default}
+.convert-note{font-size:.74rem;margin:.8rem 0 0;line-height:1.5;color:#9aa3b0}
+.convert-note.error{color:var(--red)}
 
 /* ---- sidebar Chats/My Notes tabs + note cards (Google-Keep style) ---- */
 .sidebar-tabs{display:flex;gap:.35rem;padding:.7rem .9rem 0}
@@ -737,6 +751,20 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 </div>
 {% endif %}
 
+<div class="feature-modal-backdrop" id="convertBackdrop" hidden></div>
+<div class="feature-modal" id="convertModal" hidden role="dialog" aria-modal="true" aria-label="Convert a file">
+  <button type="button" class="feature-modal-close" id="convertClose" aria-label="Dismiss"><i class="fas fa-xmark"></i></button>
+  <p class="feature-modal-title">Convert a file</p>
+  <p class="convert-hint">Runs on our own server — your file isn't sent to the AI or stored anywhere.</p>
+  <input type="file" id="convertInput" accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.png,.jpg,.jpeg,.webp,.bmp" hidden>
+  <button type="button" class="convert-pick" id="convertPick"><i class="fas fa-file-arrow-up"></i> <span id="convertPickLabel">Choose a file</span></button>
+  <div id="convertTargets" class="convert-targets" hidden>
+    <p class="convert-targets-label">Convert to:</p>
+    <div id="convertTargetList" class="convert-target-list"></div>
+  </div>
+  <p class="convert-note" id="convertNote" hidden></p>
+</div>
+
 <div class="feature-modal-backdrop" id="featureModalBackdrop" hidden></div>
 <div class="feature-modal" id="featureModal" hidden role="dialog" aria-modal="true" aria-label="What Vidhyora AI can do">
   <button type="button" class="feature-modal-close" id="featureModalClose" aria-label="Dismiss"><i class="fas fa-xmark"></i></button>
@@ -972,6 +1000,9 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           <button type="button" class="lang-option" data-lang="hinglish" data-label="Hinglish">Hinglish</button>
         </div>
       </div>
+      <button type="button" class="sidebar-tool-btn" id="convertBtn" title="Convert a file to another format">
+        <i class="fas fa-right-left"></i>
+      </button>
       <button type="button" class="sidebar-tool-btn" id="themeToggleBtn" title="Toggle dark mode">
         <i class="fas fa-moon" id="themeToggleIcon"></i>
       </button>
@@ -1889,6 +1920,115 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         document.documentElement.setAttribute('data-theme', next);
         localStorage.setItem(STORAGE_KEY, next);
         applyIcon(next);
+      });
+    }
+  })();
+
+  // ---- convert a file to another format ----
+  // Conversion runs entirely on our own server (see myapp/file_convert.py):
+  // nothing here goes to the AI, so it costs a reply exactly nothing. The
+  // map below only decides which buttons to show — the server validates the
+  // pair again and returns a clear message if it can't do it.
+  (function setupFileConvert(){
+    var openBtn = document.getElementById('convertBtn');
+    var modal = document.getElementById('convertModal');
+    var backdrop = document.getElementById('convertBackdrop');
+    var closeBtn = document.getElementById('convertClose');
+    var pickBtn = document.getElementById('convertPick');
+    var pickLabel = document.getElementById('convertPickLabel');
+    var input = document.getElementById('convertInput');
+    var targetsWrap = document.getElementById('convertTargets');
+    var targetList = document.getElementById('convertTargetList');
+    var note = document.getElementById('convertNote');
+    if (!openBtn || !modal || !input) return;
+
+    var TARGETS = {
+      pdf: ['docx', 'txt'], docx: ['pdf', 'txt'],
+      txt: ['pdf', 'docx'], md: ['pdf', 'docx'],
+      csv: ['xlsx', 'pdf'], xlsx: ['csv', 'pdf'],
+      png: ['pdf', 'jpg', 'webp'], jpg: ['pdf', 'png', 'webp'],
+      jpeg: ['pdf', 'png', 'webp'], webp: ['pdf', 'png', 'jpg'],
+      bmp: ['pdf', 'png', 'jpg', 'webp']
+    };
+
+    function setNote(text, isError){
+      note.textContent = text || '';
+      note.classList.toggle('error', !!isError);
+      note.hidden = !text;
+    }
+    function open(){
+      modal.hidden = false; backdrop.hidden = false;
+    }
+    function close(){
+      modal.hidden = true; backdrop.hidden = true;
+      input.value = ''; pickLabel.textContent = 'Choose a file';
+      targetsWrap.hidden = true; targetList.innerHTML = ''; setNote('');
+    }
+    openBtn.addEventListener('click', open);
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    if (backdrop) backdrop.addEventListener('click', close);
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape' && !modal.hidden) close();
+    });
+    pickBtn.addEventListener('click', function(){ input.click(); });
+
+    input.addEventListener('change', function(){
+      var file = input.files && input.files[0];
+      targetList.innerHTML = '';
+      setNote('');
+      if (!file) { targetsWrap.hidden = true; return; }
+      pickLabel.textContent = file.name;
+      var ext = (file.name.split('.').pop() || '').toLowerCase();
+      var targets = TARGETS[ext] || [];
+      if (!targets.length) {
+        targetsWrap.hidden = true;
+        setNote("That file type can't be converted here.", true);
+        return;
+      }
+      targets.forEach(function(target){
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'convert-target';
+        btn.textContent = target;
+        btn.addEventListener('click', function(){ run(file, target, btn); });
+        targetList.appendChild(btn);
+      });
+      targetsWrap.hidden = false;
+    });
+
+    function run(file, target, btn){
+      var buttons = targetList.querySelectorAll('.convert-target');
+      for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+      setNote('Converting...');
+      var form = new FormData();
+      form.append('file', file);
+      form.append('target', target);
+      fetch('/AI/api/convert/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': csrfToken() }, body: form
+      }).then(function(resp){
+        if (!resp.ok) {
+          return resp.json().catch(function(){ return {}; }).then(function(data){
+            throw new Error((data && data.detail) || 'Conversion failed.');
+          });
+        }
+        return resp.blob();
+      }).then(function(blob){
+        // Saved straight from the blob so a converted file never has to make
+        // a second round trip to the server to be downloaded.
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = file.name.replace(/\.[^.]+$/, '') + '.' + target;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+        setNote('Done — saved as ' + link.download + '.');
+      }).catch(function(err){
+        setNote(err.message || 'Conversion failed.', true);
+      }).then(function(){
+        for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
       });
     }
   })();
@@ -2921,6 +3061,12 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         var title = document.createElement('span');
         title.className = 'conv-title';
         title.textContent = c.title || 'New chat';
+        var save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'conv-del conv-export';
+        save.setAttribute('data-export', c.id);
+        save.title = 'Download this chat as PDF';
+        save.innerHTML = '<i class="fas fa-file-arrow-down"></i>';
         var del = document.createElement('button');
         del.type = 'button';
         del.className = 'conv-del';
@@ -2928,6 +3074,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         del.innerHTML = '<i class="fas fa-trash"></i>';
         item.appendChild(icon);
         item.appendChild(title);
+        item.appendChild(save);
         item.appendChild(del);
         convList.appendChild(item);
       });
@@ -3017,6 +3164,14 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   }
 
   convList.addEventListener('click', function(e){
+    var exportBtn = e.target.closest('[data-export]');
+    if (exportBtn) {
+      // A plain navigation, not fetch(): the endpoint replies with
+      // Content-Disposition: attachment, so the browser saves it directly
+      // and nothing has to be buffered in JS.
+      window.location.href = '/AI/api/conversations/' + exportBtn.getAttribute('data-export') + '/export/pdf/';
+      return;
+    }
     var del = e.target.closest('[data-del]');
     if (del) { deleteConversation(parseInt(del.getAttribute('data-del'), 10)); return; }
     var item = e.target.closest('.conv-item');

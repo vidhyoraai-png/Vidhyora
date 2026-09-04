@@ -71,7 +71,14 @@ VISION_CHECK_BUFFER_CHARS = 380
 # (see _IdentityLeakDetected) was the entire reply or its first sentence, so
 # a bounded opening window catches them without holding back a whole long
 # code/document answer.
-IDENTITY_CHECK_BUFFER_CHARS = 300
+#
+# Now that views._chatgpt_public_reply rewrites a backend-identity claim
+# anywhere in the reply (not just its opening) and the reply streams instead
+# of being withheld in full, this window is purely about getting a cleanly
+# *regenerated* answer rather than a rewritten one — so it's kept just long
+# enough to cover the observed first-sentence leaks, since every character
+# here is delay before the user sees anything at all.
+IDENTITY_CHECK_BUFFER_CHARS = 180
 
 
 class _VisionNoImageDetected(Exception):
@@ -670,14 +677,21 @@ def _message_text(content):
 # real reports phrased this in Hindi/Hinglish word order — "Background
 # change kijiye" (noun first), not "change the background" (verb first).
 _IMAGE_GEN_VERB = (
-    r"generate|gen|create|make|design|draw|produce|edit|change|update|remove|"
-    r"give me|prepare|convert|banao|banado|bana do|banaiye|banane|"
+    r"generate|gen|create|make|made|design|draw|produce|edit|change|update|remove|"
+    r"give me|prepare|convert|turn(?:\s+(?:this|it|that))?\s+in\s*to|"
+    r"banao|banado|bana do|banaiye|banane|banwao|banwa do|"
     r"bna|bnao|bna do|bna ke do|bana ke do|bnado|bnaiye"
 )
+# "post"/"card" added after AIReport #27 (a birthday "card" request was
+# treated as a plain-text message, not an image one — the noun list only
+# had "greeting card" as a fixed two-word phrase) and #45 (an image-attached
+# "turn in to instagram post" fell through to Vision, which cannot edit,
+# because "post" wasn't a recognised image-shaped noun at all).
 _IMAGE_GEN_NOUN = (
     r"image|photo|picture|poster|logo|wallpaper|banner|graphic|artwork|"
-    r"thumbnail|flyer|invitation|invite|background|illustration|icon|"
-    r"avatar|sticker|greeting card|img|pic|pics|drawing|sketch|diagram|chart"
+    r"thumbnail|flyer|invitation|invite|card|background|illustration|icon|"
+    r"avatar|sticker|greeting card|img|pic|pics|drawing|sketch|diagram|chart|"
+    r"post|instagram post|insta post|social media post|social post|story"
 )
 _IMAGE_GENERATION_RE = re.compile(
     # s? after the noun group — plural phrasing ("generate images",
@@ -725,13 +739,30 @@ def is_image_capability_question(text):
 # to describe/read/analyze the image (views.ai_chat_send otherwise sends an
 # attached image to Vision, which cannot edit anything). "convert"/"fix" are
 # left out on purpose — "convert this handwriting to text" and "fix the
-# error in this code screenshot" are analysis asks, not edits.
+# error in this code screenshot" are analysis asks, not edits. The Hindi/
+# Hinglish verbs below (dikhao/daalo/lagao/jodo/nikaal, etc) round out
+# hatao/badlo — AIReport #44 ("Is ladki ko cafe me dikhao" = "show/place
+# this girl in a cafe" on an attached photo) fell through to Vision, which
+# only describes an image, because none of those meant "show/place" or
+# "put/add" in the edit-verb list yet.
 _IMAGE_EDIT_ONLY_VERB = (
     r"remove|delete|erase|replace|crop|resize|blur|sharpen|brighten|darken|"
     r"whiten|desaturate|colorize|colourize|straighten|rotate|flip|redact|"
-    r"blackout|change|update|hatao|hataye|hata do|badlo|badal do"
+    r"blackout|change|update|turn(?:\s+(?:this|it|that))?\s+in\s*to|"
+    r"hatao|hataye|hata do|badlo|badal do|"
+    r"dikhao|dikha do|dikhaiye|dikhana|"
+    r"daalo|dalo|daal do|dal do|jodo|jod do|lagao|laga do|"
+    r"nikaal|nikalo|nikal do|nikal ke do"
 )
-_IMAGE_EDIT_ONLY_RE = re.compile(rf"\b(?:{_IMAGE_EDIT_ONLY_VERB})\b", re.IGNORECASE)
+_IMAGE_EDIT_ONLY_RE = re.compile(
+    # Second branch: AIReport #39 ("use this logo" on an attached image) is
+    # a real edit/composite instruction with no verb from the list above —
+    # "use" alone is too generic to add there (it would misfire on "use this
+    # data"/"use this method"), so it's only recognised when immediately
+    # followed by one of the known image-shaped nouns.
+    rf"\b(?:{_IMAGE_EDIT_ONLY_VERB})\b|\buse\s+(?:this|that|the)\s+(?:{_IMAGE_GEN_NOUN})\b",
+    re.IGNORECASE,
+)
 
 
 def is_image_edit_instruction(text):
@@ -794,6 +825,39 @@ def _lucknow_greeting_and_time():
     else:
         greeting = 'Good night'
     return greeting, now
+
+
+def current_datetime_note():
+    """The real current date/time, stated to the model on every single turn.
+
+    Without this, "what's today's date?", "what time is it?", "how many days
+    until X?", or anything else anchored to *now* is answered from the model's
+    training cutoff — confidently and wrongly. A model cannot read a clock, so
+    the clock has to be handed to it, fresh, each request.
+
+    Asia/Kolkata because that's where the business and effectively all of its
+    users are (same timezone the persona greetings already use).
+    """
+    now = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+    return (
+        "\n\nCURRENT DATE AND TIME (authoritative — this is right now, read "
+        "from the server clock at the moment of this message):\n"
+        f"- {now.strftime('%A, %d %B %Y, %I:%M %p')} IST (India Standard "
+        "Time, UTC+05:30)\n"
+        f"- ISO 8601: {now.isoformat(timespec='seconds')}\n"
+        f"- Today's date is {now.strftime('%d %B %Y')} and the current year "
+        f"is {now.year}.\n"
+        "Use these values for anything that depends on the present moment — "
+        "today's date, the time, the current year, day of the week, someone's "
+        "age, how long until or since a date, what 'tomorrow'/'next Monday' "
+        "resolves to, or how recent something is. They override anything you "
+        "remember from training, which is older than this. Never say you "
+        "don't have access to the current date or time, never guess it, and "
+        "never state a year or date that contradicts the values above. When "
+        "asked for the date or time, answer directly and plainly. You still "
+        "have no live feed for anything else (prices, news, scores, weather) "
+        "unless it is supplied to you elsewhere in this prompt."
+    )
 
 
 def _persona_farewell_note(name):
@@ -1006,7 +1070,17 @@ COMPACT_SYSTEM_PROMPT = (
     "question, and do not end with a generic offer to help. Prefer a useful "
     "answer over unnecessary clarification. Answer naturally, accurately, and "
     "concisely; expand only when the task needs detail. Match the user's language "
-    "and technical level. Use plain Markdown with short paragraphs, **bold** labels, - "
+    "and technical level. Most users are in India and write in Hindi (Devanagari "
+    "or Latin-script/Hinglish transliteration), Hinglish code-mixed with English "
+    "in the same sentence, or another Indian language (Tamil, Telugu, Bengali, "
+    "Marathi, Gujarati, Punjabi, Kannada, Malayalam, Odia, Urdu, etc.), often "
+    "code-mixed with English and with inconsistent transliteration spelling — "
+    "understand all of this as fluently as English, from context and common verb "
+    "roots rather than exact spelling (e.g. banao/bnao/banwa do all mean 'make', "
+    "dikhao/dikha do means 'show/put', hatao/nikaal means 'remove', daalo/lagao "
+    "means 'put/add'), and never ask the user to repeat themselves in English. "
+    "Reply in the same language/mix the user wrote in unless a specific reply "
+    "language is set below. Use plain Markdown with short paragraphs, **bold** labels, - "
     "bullets, and fenced code blocks when useful. Do not invent facts, URLs, "
     "prices, quotes, capabilities, or actions. Ask one brief question only "
     "when missing information would materially change the answer. Preserve "
@@ -1063,6 +1137,14 @@ COMPACT_SYSTEM_PROMPT = (
     "or backend. A real image request is handled by the application before "
     "it reaches this text-chat response; never claim a visual file was "
     "created in a text response and never output a fake attachment link. "
+    "Conversation history may include a short bracketed system note such as "
+    "'[An image was generated in this turn.]' or '[Earlier image was "
+    "analysed.]' — the application inserted these to describe a past turn; "
+    "they are not something you wrote and not a format to imitate. Never "
+    "invent a similar bracketed line, or any other claim that an image, "
+    "post, or file was produced, unless the system actually generated one "
+    "for this exact reply — if you cannot fulfil an image/edit/post request "
+    "yourself, say so plainly instead of announcing that you will or did. "
     "Video or animation generation is NOT supported by this application at "
     "all — if asked to create/generate/make a video, animation, motion "
     "graphic, or clip, say plainly that video generation isn't available "
@@ -1249,7 +1331,9 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
             "see or weren't given an image when one is attached to the "
             "current message."
         )
-    system_prompt = COMPACT_SYSTEM_PROMPT + current_mode_line
+    # Every model, every turn — an assistant that can't tell you today's date
+    # reads as broken, and a wrong one is worse than an admission.
+    system_prompt = COMPACT_SYSTEM_PROMPT + current_datetime_note() + current_mode_line
     if model_key == 'code':
         system_prompt += CODE_SYSTEM_SUFFIX
     if identity_key == CHATGPT_56_MODEL_KEY:
@@ -1267,6 +1351,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         source_label = {
             'knowledge_base': "Vidhyora's saved knowledge base",
             'company_site': "Vidhyora's verified public website data",
+            'web_search': 'a live web search run moments ago',
         }.get(retrieved_source, 'a live web search')
         system_prompt += (
             f"\n\nFor this reply, here is relevant information retrieved from "

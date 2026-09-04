@@ -143,12 +143,16 @@ def _patterns(*expressions: str) -> tuple[Pattern[str], ...]:
 _IMAGE_NOUN = (
     r"(?:images?|photos?|pictures?|posters?|logos?|wallpapers?|banners?|graphics?|"
     r"artworks?|thumbnails?|flyers?|illustrations?|drawings?|diagrams?|icons?|avatars?|"
-    r"stickers?|backgrounds?|greeting cards?|birthday cards?|imgs?)"
+    r"stickers?|backgrounds?|cards?|greeting cards?|birthday cards?|imgs?|"
+    r"posts?|instagram posts?|insta posts?|social media posts?|stories?)"
 )
 _IMAGE_ACTION = (
-    r"(?:generate|gen|create|make|design|draw|produce|render|edit|change|update|remove|"
-    r"replace|retouch|enhance|convert|banao|banado|bana do|banaiye|bna|bnao|"
-    r"bna do|bna ke do|bana ke do|bnado|bnaiye)"
+    r"(?:generate|gen|create|make|made|design|draw|produce|render|edit|change|update|remove|"
+    r"replace|retouch|enhance|convert|turn(?:\s+(?:this|it|that))?\s+in\s*to|"
+    r"banao|banado|bana do|banaiye|banwao|banwa do|bna|bnao|"
+    r"bna do|bna ke do|bana ke do|bnado|bnaiye|"
+    r"dikhao|dikha do|dikhaiye|dikhana|daalo|dalo|daal do|dal do|"
+    r"jodo|jod do|lagao|laga do|nikaal|nikalo|nikal do|nikal ke do)"
 )
 
 _IMAGE_REQUEST_PATTERNS = _patterns(

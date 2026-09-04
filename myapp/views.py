@@ -1,5 +1,6 @@
 import base64
 import binascii
+import csv
 import io
 import json
 import logging
@@ -56,6 +57,8 @@ from myapp import image_ocr
 from myapp import image_generation
 from myapp import privacy
 from myapp import request_router
+from myapp import file_convert
+from myapp import web_search
 from myapp import audio_transcribe
 from myapp import youtube_download
 from myapp.ai_report_analysis import analyze_report, aggregate_report_issues
@@ -1661,25 +1664,48 @@ def _ai_document_instruction(mode, filename, truncated=False):
 
 
 AI_GENERATED_FILE_EXTENSIONS = frozenset({
-    'txt', 'md', 'docx', 'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'tsx',
+    'txt', 'md', 'docx', 'pdf', 'xlsx', 'pptx',
+    'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'tsx',
     'jsx', 'py', 'json', 'csv', 'xml', 'yaml', 'yml', 'sql', 'sh', 'ps1',
     'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'swift',
     'kt', 'kts', 'vue', 'svelte', 'toml', 'ini',
 })
+# Longest label first within each format — 'microsoft excel' must win over the
+# bare 'excel' that also appears in it, and _ai_generated_file_spec takes the
+# first entry whose label is present.
 AI_GENERATED_FILE_TYPE_EXTENSIONS = {
     'microsoft word': 'docx', 'word': 'docx', 'docx': 'docx',
+    'pdf': 'pdf',
+    'microsoft excel': 'xlsx', 'spreadsheet': 'xlsx', 'excel': 'xlsx',
+    'xlsx': 'xlsx', 'xls': 'xlsx',
+    'microsoft powerpoint': 'pptx', 'presentation': 'pptx',
+    'powerpoint': 'pptx', 'slide deck': 'pptx', 'slides': 'pptx',
+    'pptx': 'pptx', 'ppt': 'pptx',
     'markdown': 'md', 'html': 'html', 'css': 'css', 'javascript': 'js',
     'typescript': 'ts', 'python': 'py', 'json': 'json', 'csv': 'csv',
     'xml': 'xml', 'yaml': 'yaml', 'sql': 'sql', 'powershell': 'ps1',
     'java': 'java', 'php': 'php', 'ruby': 'rb', 'golang': 'go', 'rust': 'rs',
     'swift': 'swift', 'kotlin': 'kt', 'vue': 'vue', 'svelte': 'svelte',
 }
+# "give me a slide deck", "put this in a spreadsheet", "I need a PDF" are all
+# the same ask as "create a ..." — the object pattern below is what actually
+# keeps this from firing on ordinary chat, so the verb list can afford to
+# cover how people really phrase it, including the Hindi/Hinglish imperatives
+# this audience types.
 _AI_FILE_ACTION_RE = re.compile(
-    r"\b(?:create|generate|make|write|produce|prepare|build|export|save)\b",
+    r"\b(?:create|generate|make|write|produce|prepare|build|export|save|"
+    r"give|put|turn|convert|compile|draft|need|want|send|share|"
+    r"banao|bana\s?do|bnao|bna\s?do|banaiye|chahiye|de\s?do|do\s?na)\b",
     re.IGNORECASE,
 )
+# Format names count as the object on their own. AIReport #33 ("... add logo
+# I have attached in pdf") never said "file"/"document"/"downloadable", just
+# the format — and the same is true of "make me a presentation" or "put this
+# in an excel sheet", which named no generic file word at all.
 _AI_FILE_OBJECT_RE = re.compile(
-    r"\b(?:file|document|downloadable|download\s+link)\b",
+    r"\b(?:file|document|downloadable|download\s+link|pdf|"
+    r"excel|spreadsheet|xlsx?|sheet|workbook|"
+    r"powerpoint|presentation|slide\s?deck|slides?|pptx?)\b",
     re.IGNORECASE,
 )
 _AI_EXPLICIT_FILENAME_RE = re.compile(
@@ -1732,6 +1758,33 @@ def _ai_generated_file_instruction(filename):
             "Do not output XML, base64, a fake URL, or claim that you attached a file. The application will "
             "convert this content into a genuine DOCX file and attach the real download link."
         )
+    if filename.lower().endswith('.pdf'):
+        return (
+            f"The user explicitly requested a real downloadable PDF named {filename!r}. Write the complete "
+            "final document content now in exactly one fenced Markdown block. Use clear headings and lists "
+            "where helpful, with no placeholders or explanatory text outside the block. Do not output "
+            "base64, a fake URL, or claim that you attached a file. The application will render this content "
+            "into a genuine PDF and attach the real download link."
+        )
+    if filename.lower().endswith('.xlsx'):
+        return (
+            f"The user explicitly requested a real downloadable Excel spreadsheet named {filename!r}. "
+            "Write the complete final table now as CSV in exactly one fenced block: the first row is the "
+            "column headers, every following row is one record, values separated by commas, and any value "
+            "containing a comma wrapped in double quotes. Write real values, never placeholders. Put no "
+            "explanatory text, notes, or totals commentary outside the block. The application will convert "
+            "this into a genuine XLSX workbook and attach the real download link."
+        )
+    if filename.lower().endswith('.pptx'):
+        return (
+            f"The user explicitly requested a real downloadable PowerPoint deck named {filename!r}. "
+            "Write the complete final deck now in exactly one fenced Markdown block, using this exact "
+            "structure: start each slide with '# ' followed by that slide's title on its own line, then "
+            "the slide's bullet points as lines starting with '- '. Use one slide per idea, keep bullets "
+            "short, and write real content with no placeholders. Put no explanatory text outside the "
+            "block. The application will convert this into a genuine PPTX deck and attach the real "
+            "download link."
+        )
     return (
         f"The user explicitly requested a downloadable file named {filename!r}. Create the complete final "
         "contents now. Return exactly one fenced code block containing the entire file and no placeholders, "
@@ -1754,22 +1807,84 @@ def _extract_ai_generated_file_content(reply):
 
 def _ai_word_document_bytes(content):
     """Convert model-produced document text into a genuine DOCX package."""
-    document = WordDocument()
+    return file_convert.text_to_docx_bytes(content)
+
+
+def _ai_pdf_bytes(content):
+    """Convert model-produced document text into a genuine, paginated PDF.
+
+    Both this and the file-conversion endpoint render through the same writer
+    (file_convert.text_to_pdf_bytes), so an AI-generated PDF and a converted
+    one come out formatted identically. ConvertError is re-raised as
+    RuntimeError because that is what the download view below catches for
+    "this format is temporarily unavailable".
+    """
+    try:
+        return file_convert.text_to_pdf_bytes(content)
+    except file_convert.ConvertError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _ai_excel_bytes(content):
+    """Convert the model's CSV output into a genuine XLSX workbook.
+
+    CSV is the intermediate on purpose (see _ai_generated_file_instruction):
+    it is the tabular format models emit most reliably, and csv.reader handles
+    the quoting rules so a value containing a comma survives intact.
+    """
+    rows = list(csv.reader(io.StringIO(content or '')))
+    try:
+        return file_convert.rows_to_xlsx_bytes(rows)
+    except file_convert.ConvertError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _ai_powerpoint_bytes(content):
+    """Convert the model's '# title / - bullet' Markdown into a real PPTX deck."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Pt
+    except ImportError as exc:
+        raise RuntimeError('PowerPoint generation is temporarily unavailable.') from exc
+
+    presentation = Presentation()
+    # Layout 1 is the stock "Title and Content" master — using it means the
+    # deck opens with normal, editable placeholders rather than loose boxes.
+    layout = presentation.slide_layouts[1]
+
+    slides = []
     for raw_line in (content or '').splitlines():
         line = raw_line.strip()
-        heading = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if not line:
+            continue
+        heading = re.match(r'^#{1,6}\s+(.+)$', line)
         bullet = re.match(r'^[-*]\s+(.+)$', line)
-        numbered = re.match(r'^\d+[.)]\s+(.+)$', line)
         if heading:
-            document.add_heading(heading.group(2), level=min(len(heading.group(1)), 9))
-        elif bullet:
-            document.add_paragraph(bullet.group(1), style='List Bullet')
-        elif numbered:
-            document.add_paragraph(numbered.group(1), style='List Number')
+            slides.append({'title': heading.group(1), 'bullets': []})
+        elif slides:
+            slides[-1]['bullets'].append(bullet.group(1) if bullet else line)
         else:
-            document.add_paragraph(raw_line)
+            # Content before any heading still deserves a slide rather than
+            # being silently dropped.
+            slides.append({'title': bullet.group(1) if bullet else line, 'bullets': []})
+
+    if not slides:
+        slides = [{'title': 'Untitled', 'bullets': []}]
+
+    for entry in slides:
+        slide = presentation.slides.add_slide(layout)
+        slide.shapes.title.text = entry['title'][:250]
+        body = slide.placeholders[1].text_frame
+        body.clear()
+        if not entry['bullets']:
+            continue
+        for index, bullet_text in enumerate(entry['bullets']):
+            paragraph = body.paragraphs[0] if index == 0 else body.add_paragraph()
+            paragraph.text = bullet_text
+            paragraph.font.size = Pt(18)
+
     buffer = io.BytesIO()
-    document.save(buffer)
+    presentation.save(buffer)
     return buffer.getvalue()
 
 
@@ -1833,6 +1948,24 @@ def ai_generated_file_download(request, token):
     if generated_file.file_name.lower().endswith('.docx'):
         payload = _ai_word_document_bytes(generated_file.content)
         content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif generated_file.file_name.lower().endswith('.pdf'):
+        try:
+            payload = _ai_pdf_bytes(generated_file.content)
+        except RuntimeError as exc:
+            return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
+        content_type = 'application/pdf'
+    elif generated_file.file_name.lower().endswith('.xlsx'):
+        try:
+            payload = _ai_excel_bytes(generated_file.content)
+        except RuntimeError as exc:
+            return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
+        content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    elif generated_file.file_name.lower().endswith('.pptx'):
+        try:
+            payload = _ai_powerpoint_bytes(generated_file.content)
+        except RuntimeError as exc:
+            return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
+        content_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
     else:
         payload = generated_file.content.encode('utf-8')
         content_type = f"{mimetypes.guess_type(generated_file.file_name)[0] or 'text/plain'}; charset=utf-8"
@@ -2490,13 +2623,94 @@ _CHATGPT_HIDDEN_MODEL_PATTERNS = (
     re.compile(r'\bVidhyora\s+(?:Ultra|Quick|Light|Code|Vision)(?:\s+model)?\b', re.IGNORECASE),
 )
 
+# The backend vendors this persona must never name as its own origin. Bare
+# "nvidia" deliberately isn't in _CHATGPT_HIDDEN_MODEL_PATTERNS above, because
+# blindly rewriting the word would corrupt a legitimate answer *about* the
+# company ("NVIDIA is a semiconductor firm" must stay correct). The two
+# patterns below therefore only fire on self-attribution.
+_CHATGPT_BACKEND_VENDOR = (
+    r'nvidia|nemotron|meta(?:\s+ai)?|llama|mistral|black[-\s]?forest(?:\s+labs)?'
+)
+
+# "I was trained by NVIDIA", "my underlying model was developed by Meta",
+# "I'm running on Llama" — a first-person subject earlier in the SAME sentence
+# is what separates these from "GPUs are made by NVIDIA", which must survive
+# untouched. Only the vendor name itself is replaced, so the sentence keeps
+# its shape and reads naturally.
+_CHATGPT_SELF_ATTRIBUTION_RE = re.compile(
+    r"((?:\bi\b|\bi'?m\b|\bi\s+am\b|\bmy\b|\bme\b)[^.!?\n]{0,80}?"
+    r'\b(?:trained|train|built|build|created|develop(?:ed)?|made|designed|'
+    r'powered|based|running|run|fine[-\s]?tuned|hosted|provided|'
+    r'comes?|came|derived?|originates?)\b'
+    r'[^.!?\n]{0,40}?\b(?:by|on|upon|from|with)\s+)'
+    rf'(?:{_CHATGPT_BACKEND_VENDOR})\b',
+    re.IGNORECASE,
+)
+
+# Swapping a vendor name into a sentence that then denies OpenAI leaves a
+# self-contradiction ("developed by OpenAI, not OpenAI"). Collapse it.
+_CHATGPT_REDUNDANT_DENIAL_RE = re.compile(
+    r'\bOpenAI\b(\s*[,;-]?\s*(?:and\s+)?not\s+(?:by\s+)?OpenAI\b)',
+    re.IGNORECASE,
+)
+
+# "I am an NVIDIA model", "I'm Nemotron", "I am Meta's assistant".
+_CHATGPT_SELF_IDENTITY_RE = re.compile(
+    r"\b(?:i'?m|i\s+am)\s+(?:an?\s+)?"
+    rf"(?:{_CHATGPT_BACKEND_VENDOR})(?:'s)?"
+    r'(?:\s+(?:ai|model|assistant|llm))?\b',
+    re.IGNORECASE,
+)
+
+# "the Llama architecture", "a Nemotron base model" — a vendor named as the
+# thing this assistant is built out of, rather than as an actor. Requires one
+# of the architecture nouns, so "Meta's quarterly results" stays intact.
+_CHATGPT_ARCHITECTURE_RE = re.compile(
+    rf'\b(?:the\s+|an?\s+)?(?:{_CHATGPT_BACKEND_VENDOR})(?:\'s)?\s+'
+    r'(?:architecture|base\s+model|foundation\s+model|model\s+family|family|'
+    r'backbone|weights|checkpoint)\b',
+    re.IGNORECASE,
+)
+
+# A sentence can attribute twice ("I run on X and was built by Y"); a single
+# re.sub pass consumes the first-person prefix along with the first match, so
+# the second one needs another look. Bounded so a pathological input can't spin.
+_CHATGPT_SANITIZE_MAX_PASSES = 4
+
+# How much of the tail of a streaming ChatGPT 5.6 reply is withheld from the
+# browser so the sanitizer above can still rewrite a name that straddles the
+# release point. Must comfortably exceed the longest pattern there
+# (_CHATGPT_SELF_ATTRIBUTION_RE tops out around 155 characters); larger only
+# costs a slightly later first paint, while too small would let a leak
+# through, so this errs generous.
+CHATGPT_STREAM_HOLDBACK_CHARS = 240
+
 
 def _chatgpt_public_reply(reply):
-    """Keep routed worker identities out of ChatGPT-visible response text."""
+    """Keep routed worker identities out of ChatGPT-visible response text.
+
+    Runs over the whole visible reply, not just its opening — ai_chat's
+    _IDENTITY_LEAK_RE retry only inspects the first few hundred characters,
+    so a backend name mentioned midway through a long answer (reported by the
+    user as replies still saying "I was trained by NVIDIA") reaches the
+    browser unless it is rewritten here too.
+    """
     cleaned = str(reply or '')
+    # Self-attribution runs FIRST, while the text is still the model's own
+    # words. The replacements below inject "ChatGPT 5.6", whose "5.6" contains
+    # a period — and these patterns are deliberately sentence-bounded
+    # ([^.!?\n]), so a substitution made first would wall off a second vendor
+    # mention later in the same sentence and let it through.
+    for _ in range(_CHATGPT_SANITIZE_MAX_PASSES):
+        replaced = _CHATGPT_SELF_ATTRIBUTION_RE.sub(r'\1OpenAI', cleaned)
+        replaced = _CHATGPT_SELF_IDENTITY_RE.sub('I am ChatGPT 5.6', replaced)
+        if replaced == cleaned:
+            break
+        cleaned = replaced
+    cleaned = _CHATGPT_ARCHITECTURE_RE.sub('ChatGPT 5.6', cleaned)
     for pattern in _CHATGPT_HIDDEN_MODEL_PATTERNS:
         cleaned = pattern.sub('ChatGPT 5.6', cleaned)
-    return cleaned
+    return _CHATGPT_REDUNDANT_DENIAL_RE.sub('OpenAI', cleaned)
 
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
@@ -2728,8 +2942,14 @@ def ai_chat_send(request):
         or (not image_data and ai_chat.is_probable_image_prompt(message))
     )
     generated_file_spec = (
+        # Deliberately not gated on "no attached image" — AIReport #33
+        # asked for a real PDF with a logo image attached "to add", and
+        # having an image on the turn silently dropped the file request
+        # straight through to Vision (which can only describe an image,
+        # never produce a download). is_image_request still wins first
+        # when the message itself is genuinely an image create/edit ask.
         _ai_generated_file_spec(message)
-        if message and not image_data and not document_text and not is_image_request
+        if message and not document_text and not is_image_request
         else None
     )
     if generated_file_spec:
@@ -2773,6 +2993,11 @@ def ai_chat_send(request):
             request_category = 'image_edit'
         else:
             model_key = 'vision'
+            # Previously left unset here — harmless only because the old
+            # 'image' if image_data else request_category' response header
+            # below never actually evaluated this variable on this branch.
+            # Setting it explicitly avoids relying on that short-circuit.
+            request_category = 'image'
     elif document_mode == 'coding':
         # "Start coding" is an explicit mode choice, so use the code-tuned
         # route even if the general model picker was previously on Light/etc.
@@ -3070,6 +3295,21 @@ def ai_chat_send(request):
     if message and company_knowledge.is_company_query(recent_company_text):
         retrieved_context = company_knowledge.PUBLIC_SITE_CONTEXT
         retrieved_source = 'company_site'
+    elif message and not image_data and web_search.needs_search(message):
+        # Anything time-sensitive ("latest", "today's rate", "who won") is
+        # otherwise answered from the model's training cutoff. Only runs when
+        # the wording actually calls for it — this is a network round trip on
+        # the critical path — and a failure just returns None, leaving the
+        # model to answer as it did before.
+        search_started = time.perf_counter()
+        web_context = web_search.build_context(message)
+        logger.info(
+            "AI timing web_search=%.3fs hit=%s", time.perf_counter() - search_started,
+            bool(web_context),
+        )
+        if web_context:
+            retrieved_context = web_context
+            retrieved_source = 'web_search'
 
     logger.info(
         "AI timing preprocessing=%.3fs model=%s history=%d image=%s ocr_chars=%d",
@@ -3079,6 +3319,10 @@ def ai_chat_send(request):
 
     def event_stream():
         full_reply = ''
+        # How much of the sanitized reply the browser already has. Only
+        # meaningful on the hide_chatgpt_worker path below, which releases
+        # text progressively instead of all at once.
+        released_chars = 0
         had_error = False
         hide_chatgpt_worker = response_model_key == ai_chat.CHATGPT_56_MODEL_KEY
         try:
@@ -3101,14 +3345,26 @@ def ai_chat_send(request):
                 full_reply += chunk
                 if not hide_chatgpt_worker:
                     yield chunk
+                    continue
+                # ChatGPT 5.6 used to withhold the entire reply until
+                # generation finished, so its (default, most-used) mode showed
+                # nothing at all for the whole wait — the single biggest cause
+                # of the chat feeling slow. It streams now, holding back only
+                # a short tail: _chatgpt_public_reply is re-run over the whole
+                # reply each time and only the part older than the tail is
+                # released, so a worker name split across chunks ("FL" + "UX")
+                # or a sentence-spanning identity claim is still rewritten
+                # before any of it can reach the browser.
+                sanitized = _chatgpt_public_reply(full_reply)
+                safe_upto = len(sanitized) - CHATGPT_STREAM_HOLDBACK_CHARS
+                if safe_upto > released_chars:
+                    yield sanitized[released_chars:safe_upto]
+                    released_chars = safe_upto
             if hide_chatgpt_worker:
-                # Buffer this one public identity until the upstream reply is
-                # complete. That lets us catch a hidden model name even when
-                # it is split across streaming chunks (for example "FL" +
-                # "UX") before any of it reaches the browser.
                 full_reply = _chatgpt_public_reply(full_reply)
-                if full_reply:
-                    yield full_reply
+                if len(full_reply) > released_chars:
+                    yield full_reply[released_chars:]
+                    released_chars = len(full_reply)
             if generated_file_spec and full_reply.strip():
                 try:
                     generated_file = AIGeneratedFile.objects.create(
@@ -3141,8 +3397,14 @@ def ai_chat_send(request):
                 # A dropped mobile connection or upstream stream can happen
                 # after useful text has arrived. Keep that text visible
                 # instead of replacing it with a generic failure message.
+                # Only the still-withheld tail is emitted — the rest already
+                # reached the browser progressively, and re-sending the whole
+                # reply here would show it twice.
                 if hide_chatgpt_worker:
-                    yield _chatgpt_public_reply(full_reply)
+                    sanitized = _chatgpt_public_reply(full_reply)
+                    if len(sanitized) > released_chars:
+                        yield sanitized[released_chars:]
+                        released_chars = len(sanitized)
                 yield "\n\n[Response interrupted. You can retry if anything is missing.]"
             elif ai_chat._is_context_length_error(e):
                 # Retrying would just fail again identically — the fixed
@@ -3179,7 +3441,13 @@ def ai_chat_send(request):
     response['X-Conversation-Id'] = str(conversation.id)
     response['X-Model-Key'] = response_model_key
     response['X-Routed-Model-Key'] = _ai_public_routed_model_key(response_model_key, model_key)
-    response['X-Request-Category'] = request_category if not image_data else 'image'
+    # 'file_generation' is the one legitimate case where an attached image
+    # doesn't mean a vision-analysis turn — AIReport #33 attached a logo
+    # alongside an explicit "...in pdf" request, and it must still report
+    # as the real download it produced, not get folded into plain 'image'.
+    response['X-Request-Category'] = (
+        request_category if not image_data or request_category == 'file_generation' else 'image'
+    )
     # Tells the frontend to auto-play this reply and show the persona
     # follow-up chips — true for every turn once the matching trigger
     # phrase has appeared anywhere in the conversation (same scope as
@@ -3238,6 +3506,101 @@ def ai_extract_document(request):
         'text': text, 'truncated': truncated,
         'coding_text': coding_text, 'coding_truncated': coding_truncated,
     })
+
+
+def ai_convert_file(request):
+    """Convert one uploaded file into another format and return it directly.
+
+    Runs entirely on local libraries (see file_convert) — the upload is held
+    in memory for the length of the request and never stored, forwarded, or
+    sent to the AI, so this costs nothing on the chat path and adds no
+    latency to a reply.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+
+    ip = _client_ip(request)
+    cache_key = f'ai_convert_rate:{ip}'
+    count = cache.get(cache_key, 0)
+    if count >= AI_DOC_RATE_LIMIT:
+        return JsonResponse(
+            {'status': 'error', 'detail': "You're converting files too quickly — please wait a bit and try again."},
+            status=429,
+        )
+    cache.set(cache_key, count + 1, AI_CHAT_RATE_WINDOW)
+
+    upload = request.FILES.get('file')
+    target = str(request.POST.get('target', '')).strip()
+    if not upload:
+        return JsonResponse({'status': 'error', 'detail': 'No file provided.'}, status=400)
+    if upload.size > AI_DOC_MAX_UPLOAD_BYTES:
+        return JsonResponse({'status': 'error', 'detail': 'That file is too large — please use one under 8MB.'}, status=400)
+    if not target:
+        return JsonResponse({'status': 'error', 'detail': 'Choose a format to convert to.'}, status=400)
+
+    try:
+        payload, filename, content_type = file_convert.convert(upload.read(), upload.name, target)
+    except file_convert.ConvertError as exc:
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=400)
+    except Exception:
+        logger.exception("File conversion failed for %s -> %s", upload.name, target)
+        return JsonResponse(
+            {'status': 'error', 'detail': "Couldn't convert that file — please try a different one."},
+            status=400,
+        )
+
+    response = HttpResponse(payload, content_type=content_type)
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response['X-Content-Type-Options'] = 'nosniff'
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+def ai_conversation_export(request, conversation_id, file_format):
+    """Download one conversation as a real PDF or Word document."""
+    if request.method != 'GET':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    if file_format not in ('pdf', 'docx'):
+        return JsonResponse({'status': 'error', 'detail': 'Unsupported export format.'}, status=400)
+
+    conversation = AIConversation.objects.filter(
+        _ai_owner_filter(request), pk=conversation_id,
+    ).first()
+    if not conversation:
+        return JsonResponse({'status': 'error', 'detail': 'Conversation not found.'}, status=404)
+
+    lines = [f'# {conversation.title or "Vidhyora AI conversation"}', '']
+    for message in conversation.messages.order_by('created_at', 'pk'):
+        speaker = 'You' if message.role == AIMessage.ROLE_USER else 'Vidhyora AI'
+        stamp = timezone.localtime(message.created_at).strftime('%d %b %Y, %I:%M %p')
+        lines.append(f'## {speaker} — {stamp}')
+        content = (message.content or '').strip()
+        if content:
+            lines.append(content)
+        if message.image_data:
+            # The image itself isn't embedded (a generated image is a URL and
+            # an upload is a data URI); note it so the transcript doesn't look
+            # like it silently lost a turn.
+            lines.append('- [image in this message]')
+        if message.document_name:
+            lines.append(f'- [attached file: {message.document_name}]')
+        lines.append('')
+
+    document_text = '\n'.join(lines)
+    try:
+        if file_format == 'pdf':
+            payload = file_convert.text_to_pdf_bytes(document_text)
+        else:
+            payload = file_convert.text_to_docx_bytes(document_text)
+    except file_convert.ConvertError as exc:
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
+
+    stem = re.sub(r'[^A-Za-z0-9_-]+', '-', conversation.title or 'conversation').strip('-')[:60]
+    response = HttpResponse(payload, content_type=file_convert.mime_for(file_format))
+    response['Content-Disposition'] = f'attachment; filename="{stem or "conversation"}.{file_format}"'
+    response['X-Content-Type-Options'] = 'nosniff'
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 def ai_transcribe_audio(request):
@@ -3586,11 +3949,35 @@ def ai_report_submit(request):
             Q(created_at__lt=message.created_at) |
             Q(created_at=message.created_at, pk__lt=message.pk)
         )
-    user_message = preceding.order_by('-created_at', '-pk').first()
+    preceding = preceding.order_by('-created_at', '-pk')
+    user_message = preceding.first()
     user_prompt = user_message.content[:AI_CHAT_MAX_MESSAGE_CHARS].strip() if user_message else ''
     user_image = _snapshot_ai_report_image(user_message.image_data) if user_message else ''
     user_document_name = user_message.document_name if user_message else ''
     user_document_excerpt = user_message.document_text[:8000] if user_message else ''
+
+    # A turn that was only an image, only a file, or a follow-up to an
+    # earlier instruction leaves user_prompt blank, and the report then
+    # arrives with no way to tell what was actually asked — six real reports
+    # (#13, #14, #20, #22, #23, #27) came in exactly like that and could not
+    # be diagnosed at all. Fall back to the nearest earlier user turn that
+    # does have text, clearly labelled so nobody mistakes it for the
+    # reported turn itself.
+    if not user_prompt:
+        earlier = preceding.exclude(content='').first()
+        earlier_text = earlier.content[:AI_CHAT_MAX_MESSAGE_CHARS].strip() if earlier else ''
+        if user_message is None:
+            described = 'no user turn was recorded before this reply'
+        elif user_message.image_data:
+            described = 'the reported turn was an image with no text'
+        elif user_message.document_name:
+            described = f'the reported turn was a file upload ({user_message.document_name}) with no text'
+        else:
+            described = 'the reported turn had no text'
+        user_prompt = (
+            f'[{described}; earlier instruction in this chat: "{earlier_text}"]'
+            if earlier_text else f'[{described}]'
+        )[:AI_CHAT_MAX_MESSAGE_CHARS]
     reported_image = _snapshot_ai_report_image(reported_image)
 
     ip = _client_ip(request)
