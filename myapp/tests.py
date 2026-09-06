@@ -30,7 +30,7 @@ from . import (
     web_search,
 )
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
+from .models import ActiveUserSession, AIAccountMessageSettings, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_excel_bytes, _ai_generated_file_spec, _ai_pdf_bytes,
@@ -3659,12 +3659,67 @@ class AIDashboardOverviewTests(TestCase):
         self.assertContains(response, 'admin54321')
         self.assertContains(response, '🔗 Login: https://www.vidhyora.online')
         self.assertContains(response, '🌐 https://www.edutrellis.in')
-        self.assertContains(response, '📧 support@edutrellis.in 📞 Calling support: 10 AM–7 PM 💬 WhatsApp support available')
+        self.assertContains(response, '📧 support@edutrellis.in 📞 Calling Support: 10 AM–7 PM 💬 WhatsApp Support Available')
         self.assertContains(response, 'Share on WhatsApp')
 
         refreshed = self.client.get('/store/dashboard/ai/')
         self.assertNotContains(refreshed, 'Account ready to share')
         self.assertNotIn('dashboard_new_account_whatsapp', self.client.session)
+
+    def test_generated_account_message_uses_the_new_emoji_format(self):
+        response = self.client.post('/store/dashboard/users/add/', {
+            'next': 'dashboard_ai_management', 'email': 'formatted@example.com',
+            'password': 'private-pass', 'ai_access_days': '365',
+        }, follow=True)
+
+        self.assertContains(response, '✨ Your personal AI account has been successfully activated for 365 days! 🎉')
+        self.assertContains(response, 'through your dedicated account. 🚀')
+        self.assertContains(response, '🔒 This is your private account')
+        self.assertContains(response, 'Fair-use policies and platform limits may apply. ⚖️')
+        self.assertContains(response, '🌟 EduTrellis')
+        self.assertContains(response, 'Calling Support: 10 AM–7 PM')
+        self.assertContains(response, 'Edit')
+        self.assertContains(response, 'Save format')
+
+    def test_saved_message_format_is_used_for_the_next_account(self):
+        save_response = self.client.post(
+            '/store/dashboard/ai/message-template/',
+            data=json.dumps({
+                'message': 'Custom intro\nEmail: first@example.com\nPassword: first-pass\nValid: 180 days',
+                'email': 'first@example.com', 'password': 'first-pass', 'days': 180,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(save_response.status_code, 200)
+        saved = AIAccountMessageSettings.get_solo().message_template
+        self.assertEqual(
+            saved,
+            'Custom intro\nEmail: {email}\nPassword: {password}\nValid: {access_days} days',
+        )
+
+        response = self.client.post('/store/dashboard/users/add/', {
+            'next': 'dashboard_ai_management', 'email': 'next@example.com',
+            'password': 'next-pass', 'ai_access_days': '365',
+        }, follow=True)
+        self.assertContains(response, 'Custom intro')
+        self.assertContains(response, 'Email: next@example.com')
+        self.assertContains(response, 'Password: next-pass')
+        self.assertContains(response, 'Valid: 365 days')
+        self.assertNotContains(response, 'first@example.com')
+
+    def test_message_format_save_requires_dynamic_values(self):
+        response = self.client.post(
+            '/store/dashboard/ai/message-template/',
+            data=json.dumps({
+                'message': 'A message without credentials',
+                'email': 'first@example.com', 'password': 'first-pass', 'days': 180,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Keep the generated email', response.json()['detail'])
 
 
 class PWAFrontendSettingsTests(TestCase):

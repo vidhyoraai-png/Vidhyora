@@ -1126,3 +1126,46 @@ class SiteCustomization(models.Model):
     def get_solo(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class AIAccountMessageSettings(models.Model):
+    """Reusable message shown after staff create an AI premium account."""
+
+    DEFAULT_TEMPLATE = (
+        "✨ Your personal AI account has been successfully activated for {access_days} days! 🎉\n"
+        "Enjoy access to powerful AI models, image and file uploads, and other premium features "
+        "through your dedicated account. 🚀\n"
+        "🔗 Login: https://www.vidhyora.online\n"
+        "📧 Email: {email}\n"
+        "🔑 Password: {password}\n"
+        "📅 Validity: {access_days} days\n"
+        "🔒 This is your private account, and no account sharing is required. Please use the service "
+        "responsibly. Fair-use policies and platform limits may apply. ⚖️\n"
+        "🛠️ If you face any login or technical issue, please contact us—we’re always happy to help. 🤝\n"
+        "🌟 EduTrellis\n"
+        "🌐 https://www.edutrellis.in\n"
+        "📧 support@edutrellis.in 📞 Calling Support: 10 AM–7 PM 💬 WhatsApp Support Available"
+    )
+
+    message_template = models.TextField(default=DEFAULT_TEMPLATE)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'AI Account Message Settings'
+        verbose_name_plural = 'AI Account Message Settings'
+
+    def __str__(self):
+        return 'AI account message settings'
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def render_message(self, *, email, password, access_days):
+        return (
+            self.message_template
+            .replace('{email}', str(email))
+            .replace('{password}', str(password))
+            .replace('{access_days}', str(access_days))
+        )

@@ -21,6 +21,7 @@ urlpatterns = [
     path('store/dashboard/signups/<int:pk>/reset-password/', views.dashboard_signup_reset_password, name='dashboard_signup_reset_password'),
     path('store/dashboard/signups/<int:pk>/delete/', views.dashboard_signup_delete, name='dashboard_signup_delete'),
     path('store/dashboard/ai/', views.dashboard_ai_management, name='dashboard_ai_management'),
+    path('store/dashboard/ai/message-template/', views.dashboard_ai_message_template_save, name='dashboard_ai_message_template_save'),
     path('store/dashboard/ai/grant/', views.dashboard_ai_grant, name='dashboard_ai_grant'),
     path('store/dashboard/ai/<int:pk>/revoke/', views.dashboard_ai_revoke, name='dashboard_ai_revoke'),
     path('store/dashboard/ai/activity/', views.dashboard_ai_activity, name='dashboard_ai_activity'),

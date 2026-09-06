@@ -45,6 +45,7 @@ from myapp.models import (
     ContactLead, StoreProfile, Category, Order, OrderItem,
     Product, AboutUsContent, PolicyPage, PaymentSettings, Payment,
     DropboxSettings, PhoneVerification, PWASettings, FeeSettings, SiteCustomization,
+    AIAccountMessageSettings,
     AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile,
     AIUserImage, GitHubConnection, YouTubeDownloadJob,
 )
@@ -869,25 +870,13 @@ def dashboard_user_add(request):
             )
             messages.success(request, f'Created account for {email}.')
             if next_url == 'dashboard_ai_management' and access_days:
-                whatsapp_message = (
-                    f'Your personal AI account has been successfully activated for {access_days} days.\n'
-                    'Enjoy access to powerful AI models, image and file uploads, and other premium '
-                    'features through your dedicated account.\n\n'
-                    '🔗 Login: https://www.vidhyora.online\n'
-                    f'📧 Email: {email}\n'
-                    f'🔑 Password: {password}\n'
-                    f'📅 Validity: {access_days} days\n\n'
-                    'This is your private account, and no account sharing is required. Please use the '
-                    'service responsibly and note that fair-use policies and platform limits may apply.\n\n'
-                    'If you face any login or technical issue, please contact us—we’re always happy to help.\n\n'
-                    'EduTrellis\n'
-                    '🌐 https://www.edutrellis.in\n'
-                    '📧 support@edutrellis.in 📞 Calling support: 10 AM–7 PM '
-                    '💬 WhatsApp support available'
+                whatsapp_message = AIAccountMessageSettings.get_solo().render_message(
+                    email=email, password=password, access_days=access_days,
                 )
                 # Popped by the destination view so credentials only appear once.
                 request.session['dashboard_new_account_whatsapp'] = {
-                    'message': whatsapp_message, 'email': email, 'days': access_days,
+                    'message': whatsapp_message, 'email': email, 'password': password,
+                    'days': access_days,
                 }
         else:
             for errs in form.errors.values():
@@ -985,6 +974,49 @@ def dashboard_ai_management(request):
         'new_account_whatsapp': request.session.pop('dashboard_new_account_whatsapp', None),
     }
     return render(request, 'dashboard/ai_management.html', context)
+
+
+@dashboard_staff_required
+def dashboard_ai_message_template_save(request):
+    """Save edits from a generated message for all subsequently created accounts."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+
+    try:
+        payload = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'status': 'error', 'detail': 'Invalid message data.'}, status=400)
+
+    message = str(payload.get('message') or '').strip()
+    email = str(payload.get('email') or '')
+    password = str(payload.get('password') or '')
+    days = str(payload.get('days') or '')
+    if not message or len(message) > 5000:
+        return JsonResponse(
+            {'status': 'error', 'detail': 'The message must be between 1 and 5,000 characters.'},
+            status=400,
+        )
+
+    # Convert this customer's displayed values back into reusable placeholders.
+    template = message
+    if email:
+        template = template.replace(email, '{email}')
+    if password:
+        template = template.replace(password, '{password}')
+    if days:
+        template = template.replace(f'{days} days', '{access_days} days')
+
+    required_tokens = ('{email}', '{password}', '{access_days}')
+    if any(token not in template for token in required_tokens):
+        return JsonResponse({
+            'status': 'error',
+            'detail': 'Keep the generated email, password, and validity values unchanged while editing.',
+        }, status=400)
+
+    settings_obj = AIAccountMessageSettings.get_solo()
+    settings_obj.message_template = template
+    settings_obj.save(update_fields=['message_template', 'updated_at'])
+    return JsonResponse({'status': 'ok', 'message': message})
 
 
 @dashboard_staff_required

@@ -26,6 +26,13 @@
 .welcome-card h3{font-size:1.05rem;margin-bottom:.4rem}
 .welcome-card>p{font-size:.82rem;margin-bottom:1rem}
 .welcome-message{white-space:pre-wrap;background:var(--bg-alt);border:1.5px solid var(--line);border-radius:12px;padding:1rem;font-family:inherit;font-size:.82rem;line-height:1.5;color:var(--head);user-select:all}
+.welcome-editor{display:none;width:100%;min-height:330px;resize:vertical;background:var(--bg-alt);border:1.5px solid var(--red);border-radius:12px;padding:1rem;font-family:inherit;font-size:.82rem;line-height:1.5;color:var(--head)}
+.welcome-editor.open{display:block}
+.welcome-message.editing{display:none}
+.welcome-edit-note{display:none;margin:.65rem 0 0!important;color:var(--text)}
+.welcome-edit-note.open{display:block}
+.welcome-save-status{min-height:1.2rem;margin:.55rem 0 0!important;color:var(--red)}
+.welcome-save-status.success{color:#177245}
 .welcome-actions{display:flex;justify-content:flex-end;gap:.6rem;flex-wrap:wrap;margin-top:1rem}
 </style>
 {% endblock %}
@@ -96,8 +103,14 @@
     <h3 id="welcomeTitle">Account ready to share</h3>
     <p>Premium access is active for {{ new_account_whatsapp.days }} days. Copy the message or open it in WhatsApp.</p>
     <div class="welcome-message" id="welcomeMessage">{{ new_account_whatsapp.message }}</div>
+    <textarea class="welcome-editor" id="welcomeEditor" maxlength="5000" aria-label="Edit reusable account message"></textarea>
+    <p class="welcome-edit-note" id="welcomeEditNote">Edit the wording or layout, but keep the generated email, password, and validity values unchanged. Saving applies this format to future account messages.</p>
+    <p class="welcome-save-status" id="welcomeSaveStatus" role="status"></p>
     <div class="welcome-actions">
       <button type="button" class="btn btn-ghost" id="closeWelcome">Close</button>
+      <button type="button" class="btn btn-ghost" id="editWelcome"><i class="fas fa-pen"></i> Edit</button>
+      <button type="button" class="btn btn-ghost" id="cancelWelcomeEdit" hidden>Cancel</button>
+      <button type="button" class="btn btn-primary" id="saveWelcome" hidden><i class="fas fa-floppy-disk"></i> Save format</button>
       <button type="button" class="btn btn-ghost" id="copyWelcome"><i class="fas fa-copy"></i> Copy message</button>
       <button type="button" class="btn btn-primary" id="shareWelcome"><i class="fab fa-whatsapp"></i> Share on WhatsApp</button>
     </div>
@@ -203,14 +216,36 @@
   </div>
 </div>
 {% if new_account_whatsapp %}
+{{ new_account_whatsapp|json_script:"welcomeMessageData" }}
 <script>
 (function(){
   var modal = document.getElementById('welcomeModal');
   var messageBox = document.getElementById('welcomeMessage');
   var message = messageBox.textContent;
+  var accountData = JSON.parse(document.getElementById('welcomeMessageData').textContent);
+  var editor = document.getElementById('welcomeEditor');
+  var editNote = document.getElementById('welcomeEditNote');
+  var status = document.getElementById('welcomeSaveStatus');
+  var editButton = document.getElementById('editWelcome');
+  var cancelButton = document.getElementById('cancelWelcomeEdit');
+  var saveButton = document.getElementById('saveWelcome');
   var copyButton = document.getElementById('copyWelcome');
 
   function closeModal(){ modal.classList.remove('open'); }
+  function setEditing(editing){
+    messageBox.classList.toggle('editing', editing);
+    editor.classList.toggle('open', editing);
+    editNote.classList.toggle('open', editing);
+    editButton.hidden = editing;
+    cancelButton.hidden = !editing;
+    saveButton.hidden = !editing;
+    copyButton.hidden = editing;
+    document.getElementById('shareWelcome').hidden = editing;
+    if (editing) {
+      editor.value = message;
+      editor.focus();
+    }
+  }
   function selectMessage(){
     var range = document.createRange();
     range.selectNodeContents(messageBox);
@@ -225,6 +260,44 @@
   });
   document.getElementById('shareWelcome').addEventListener('click', function(){
     window.open('https://wa.me/?text=' + encodeURIComponent(message), '_blank', 'noopener');
+  });
+  editButton.addEventListener('click', function(){
+    status.textContent = '';
+    status.classList.remove('success');
+    setEditing(true);
+  });
+  cancelButton.addEventListener('click', function(){
+    status.textContent = '';
+    setEditing(false);
+  });
+  saveButton.addEventListener('click', function(){
+    var editedMessage = editor.value.trim();
+    status.textContent = '';
+    status.classList.remove('success');
+    saveButton.disabled = true;
+    fetch('{% url "dashboard_ai_message_template_save" %}', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}'},
+      body: JSON.stringify({
+        message: editedMessage,
+        email: accountData.email,
+        password: accountData.password,
+        days: accountData.days
+      })
+    }).then(function(response){
+      return response.json().then(function(data){ return {ok: response.ok, data: data}; });
+    }).then(function(result){
+      if (!result.ok) throw new Error(result.data.detail || 'Could not save the message format.');
+      message = result.data.message;
+      messageBox.textContent = message;
+      setEditing(false);
+      status.textContent = 'Format saved for future account messages.';
+      status.classList.add('success');
+    }).catch(function(error){
+      status.textContent = error.message;
+    }).finally(function(){
+      saveButton.disabled = false;
+    });
   });
   document.getElementById('closeWelcome').addEventListener('click', closeModal);
   modal.addEventListener('click', function(event){ if (event.target === modal) closeModal(); });
