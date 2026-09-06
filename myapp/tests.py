@@ -935,6 +935,8 @@ class DashboardUserDataTests(TestCase):
         self.assertEqual(response.context['total_chats'], 3)
         self.assertEqual(response.context['total_logins'], 4)
         self.assertContains(response, 'User Data')
+        self.assertContains(response, 'fas fa-address-card')
+        self.assertNotContains(response, 'fa-chart-user')
         self.assertContains(response, 'User name')
         self.assertContains(response, 'Location')
         self.assertContains(response, 'Chats done')
@@ -1058,6 +1060,110 @@ class GeneratedFileQualityTests(TestCase):
             _extract_ai_generated_file_content(reply),
             '# Title\n\nSome **real** content.',
         )
+
+    def test_single_html_instruction_requires_inline_css_and_javascript(self):
+        from myapp.views import _ai_generated_file_instruction
+
+        instruction = _ai_generated_file_instruction('index.html')
+        self.assertIn('self-contained HTML5', instruction)
+        self.assertIn('ALL CSS inside a <style>', instruction)
+        self.assertIn('ALL JavaScript inside a <script>', instruction)
+        self.assertIn('never emit separate CSS or JavaScript fences', instruction)
+        self.assertIn('smaller complete working website', instruction)
+
+    def test_separate_css_and_javascript_fences_are_merged_into_one_html_file(self):
+        reply = (
+            '```html\n<!DOCTYPE html><html><head><link rel="stylesheet" href="style.css">'
+            '</head><body><h1>EduTrellis</h1><script src="script.js"></script></body></html>\n```\n'
+            '```css\nbody { color: navy; }\n```\n'
+            '```javascript\ndocument.querySelector("h1").hidden = false;\n```'
+        )
+
+        content = _extract_ai_generated_file_content(reply, 'index.html')
+
+        self.assertTrue(content.startswith('<!DOCTYPE html>'))
+        self.assertTrue(content.rstrip().endswith('</html>'))
+        self.assertIn('<style>\nbody { color: navy; }\n</style>', content)
+        self.assertIn('<script>\ndocument.querySelector("h1").hidden = false;', content)
+        self.assertNotIn('style.css', content)
+        self.assertNotIn('script.js', content)
+
+    def test_truncated_or_local_dependency_html_is_rejected(self):
+        for reply in (
+            '```html\n<!DOCTYPE html><html><head><style>body{color:red}</style></head><body>',
+            '```html\n<!DOCTYPE html><html><head><link rel="stylesheet" href="style.css">'
+            '</head><body>Page</body></html>\n```',
+            '<!DOCTYPE html><html><head></head><body>unfinished',
+        ):
+            with self.subTest(reply=reply[:60]):
+                self.assertEqual(_extract_ai_generated_file_content(reply, 'index.html'), '')
+
+    def test_html_download_hides_raw_code_and_saves_only_clean_chat_message(self):
+        user = User.objects.create_user(
+            username='html-file-owner@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        generated_html = (
+            '```html\n<!DOCTYPE html><html><head><style>body{margin:0}</style></head>'
+            '<body><main>EduTrellis</main><script>console.log("ready")</script>'
+            '</body></html>\n```'
+        )
+        with patch('myapp.views.ai_chat.stream_chat', return_value=iter([generated_html])) as stream:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Create one complete website as index.html for download',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Your file is ready.', body)
+        self.assertIn('[Download index.html](', body)
+        self.assertNotIn('<!DOCTYPE html>', body)
+        self.assertEqual(stream.call_args.kwargs['max_tokens'], 10000)
+        generated_file = AIGeneratedFile.objects.get(user=user)
+        self.assertIn('<style>body{margin:0}</style>', generated_file.content)
+        self.assertIn('<script>console.log("ready")</script>', generated_file.content)
+        assistant = AIMessage.objects.filter(
+            conversation__user=user, role=AIMessage.ROLE_ASSISTANT,
+        ).latest('pk')
+        self.assertEqual(assistant.content, body)
+        self.assertNotIn('<!DOCTYPE html>', assistant.content)
+
+    def test_incomplete_html_is_retried_once_before_download(self):
+        user = User.objects.create_user(
+            username='html-retry@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        attempts = [
+            '```html\n<!DOCTYPE html><html><body><main>Cut off',
+            '```html\n<!DOCTYPE html><html><head><style>main{display:block}</style></head>'
+            '<body><main>Complete</main></body></html>\n```',
+        ]
+
+        with patch(
+            'myapp.views.ai_chat.stream_chat',
+            side_effect=lambda *args, **kwargs: iter([attempts.pop(0)]),
+        ) as stream:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Create a single index.html website for download',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+            body = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(stream.call_count, 2)
+        self.assertIn('Your file is ready.', body)
+        self.assertIn('<main>Complete</main>', AIGeneratedFile.objects.get(user=user).content)
+        retry_instruction = stream.call_args.kwargs['document_instruction']
+        self.assertIn('previous attempt was incomplete', retry_instruction.lower())
 
     def test_generated_pdf_contains_the_actual_text(self):
         content = '# Quarterly Report\n\nRevenue grew by **18%**.\n\n- Delhi: 42\n- Mumbai: 31'
@@ -1941,6 +2047,22 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(response.context['ai_default_model_label'], 'ChatGPT 5.6')
         self.assertNotContains(response, "localStorage.getItem('ai_model')")
         self.assertNotContains(response, "localStorage.setItem('ai_model'")
+
+    def test_premium_loading_and_search_activation_ui_is_present(self):
+        from myapp import views
+
+        response = self.client.get('/AI/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "content:'Web search on'")
+        self.assertContains(response, "inputWrap.classList.toggle('search-enabled'")
+        self.assertContains(response, 'linear-gradient(145deg,#22c993,#078b68)')
+        self.assertContains(response, 'avatar-sheen')
+        self.assertContains(response, 'Crafting your answer')
+        self.assertContains(response, 'Almost ready')
+        self.assertEqual(views.CHATGPT_STREAM_HOLDBACK_CHARS, 96)
+        self.assertEqual(web_search.SEARCH_TIMEOUT_SECONDS, 4)
+        self.assertEqual(web_search.MAX_RESULTS, 4)
 
     def test_free_users_get_quick_code_and_image_generation(self):
         user = User.objects.create_user(username='free-models@example.com', password='test-password-123')

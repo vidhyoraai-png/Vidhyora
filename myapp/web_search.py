@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 # Kept short on purpose: this runs before the model is even called, so it is
 # added latency on every searched turn. A slow search is worse than no search.
-SEARCH_TIMEOUT_SECONDS = 6
-MAX_RESULTS = 5
+SEARCH_TIMEOUT_SECONDS = 4
+MAX_RESULTS = 4
 # Enough for the model to extract a fact and cite a source, short enough that
 # five of them don't crowd out the actual conversation in the context window.
 MAX_SNIPPET_CHARS = 320

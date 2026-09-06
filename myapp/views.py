@@ -1781,6 +1781,7 @@ AI_FREE_MODEL_KEYS = frozenset({
 AI_IMAGE_MAX_DATA_URI_CHARS = 2_000_000
 AI_DOCUMENT_MODES = {'coding', 'details'}
 AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS = 6000
+AI_GENERATED_FILE_MAX_OUTPUT_TOKENS = 10000
 
 
 def _ai_document_instruction(mode, filename, truncated=False):
@@ -1905,6 +1906,20 @@ def _ai_generated_file_instruction(filename):
 
 
 def _ai_generated_file_instruction_body(filename):
+    if filename.lower().endswith(('.html', '.htm')):
+        return (
+            f"The user explicitly requested one real downloadable HTML file named {filename!r}. "
+            "Return exactly one fenced html code block containing one COMPLETE, self-contained HTML5 "
+            "document, starting with <!DOCTYPE html> and ending with </html>. Put ALL CSS inside a "
+            "<style> element in that document and ALL JavaScript inside a <script> element before "
+            "</body>. Never reference local files such as style.css, script.js, images, or other pages, "
+            "and never emit separate CSS or JavaScript fences. External HTTPS font/icon/CDN links are "
+            "allowed only when optional; the page must remain usable if they fail. Make the page "
+            "responsive and functional, with no placeholders, TODOs, omitted sections, or ellipses. "
+            "Keep the implementation concise enough to finish within the response budget: a smaller "
+            "complete working website is better than a large unfinished one. Put no explanation outside "
+            "the single fence. The application will validate it, create the file, and show the download."
+        )
     if filename.lower().endswith('.docx'):
         return (
             f"The user explicitly requested a real downloadable Microsoft Word document named {filename!r}. "
@@ -2006,7 +2021,7 @@ def _strip_fake_download_links(text):
     return cleaned.strip()
 
 
-def _extract_ai_generated_file_content(reply):
+def _extract_ai_generated_file_content(reply, filename=''):
     """Extract the fenced payload the server prompt asked for.
 
     Returns '' when the model did not actually produce document content — the
@@ -2014,9 +2029,82 @@ def _extract_ai_generated_file_content(reply):
     contents are a clarifying question or a fabricated link.
     """
     text = _strip_fake_download_links(reply)
-    fenced = re.search(r"```[^\r\n]*\r?\n([\s\S]*?)```", text)
-    if fenced:
-        return _strip_fake_download_links(fenced.group(1).rstrip('\r\n'))
+    fences = list(re.finditer(r"```([^\r\n]*)\r?\n([\s\S]*?)```", text))
+    is_html = str(filename or '').lower().endswith(('.html', '.htm'))
+    if fences and is_html:
+        html_fence = next(
+            (
+                match for match in fences
+                if re.search(r'<!doctype\s+html|<html\b', match.group(2), re.I)
+            ),
+            None,
+        )
+        if not html_fence:
+            return ''
+        content = html_fence.group(2).rstrip('\r\n')
+
+        # Recover a common model mistake: it writes a complete HTML shell that
+        # links style.css/script.js, then emits those files as later fences even
+        # though the user asked for one file. Inline those blocks deterministically.
+        css_parts = [
+            match.group(2).strip() for match in fences
+            if match is not html_fence and match.group(1).strip().lower() in ('css', 'stylesheet')
+        ]
+        js_parts = [
+            match.group(2).strip() for match in fences
+            if match is not html_fence and match.group(1).strip().lower() in ('js', 'javascript')
+        ]
+        if css_parts:
+            content = re.sub(
+                r'<link\b(?=[^>]*\brel=["\']?stylesheet["\']?)(?=[^>]*\bhref=["\'](?!https?:|//|data:)[^"\']*\.css(?:\?[^"\']*)?["\'])[^>]*>',
+                '', content, flags=re.I,
+            )
+            styles = '<style>\n' + '\n\n'.join(css_parts) + '\n</style>\n'
+            content = re.sub(r'</head\s*>', styles + '</head>', content, count=1, flags=re.I)
+        if js_parts:
+            content = re.sub(
+                r'<script\b(?=[^>]*\bsrc=["\'](?!https?:|//|data:)[^"\']*\.js(?:\?[^"\']*)?["\'])[^>]*>\s*</script\s*>',
+                '', content, flags=re.I,
+            )
+            scripts = '<script>\n' + '\n\n'.join(js_parts) + '\n</script>\n'
+            content = re.sub(r'</body\s*>', scripts + '</body>', content, count=1, flags=re.I)
+
+        # Never advertise a visibly truncated or multi-file-dependent page as
+        # a completed download. The model can be retried instead.
+        if not (
+            re.search(r'<!doctype\s+html', content, re.I)
+            and re.search(r'<html\b', content, re.I)
+            and re.search(r'</body\s*>', content, re.I)
+            and re.search(r'</html\s*>\s*$', content, re.I)
+        ):
+            return ''
+        if re.search(
+            r'<link\b[^>]*\bhref=["\'](?!https?:|//|data:)[^"\']*\.css(?:\?[^"\']*)?["\']|'
+            r'<script\b[^>]*\bsrc=["\'](?!https?:|//|data:)[^"\']*\.js(?:\?[^"\']*)?["\']',
+            content, re.I,
+        ):
+            return ''
+        return _strip_fake_download_links(content)
+    if is_html:
+        # A complete raw HTML document is still usable if the model omitted
+        # Markdown fences. An unclosed fence/document is a truncated attempt.
+        content = text.strip()
+        if not (
+            re.search(r'<!doctype\s+html', content, re.I)
+            and re.search(r'<html\b', content, re.I)
+            and re.search(r'</body\s*>', content, re.I)
+            and re.search(r'</html\s*>\s*$', content, re.I)
+        ):
+            return ''
+        if re.search(
+            r'<link\b[^>]*\bhref=["\'](?!https?:|//|data:)[^"\']*\.css(?:\?[^"\']*)?["\']|'
+            r'<script\b[^>]*\bsrc=["\'](?!https?:|//|data:)[^"\']*\.js(?:\?[^"\']*)?["\']',
+            content, re.I,
+        ):
+            return ''
+        return _strip_fake_download_links(content)
+    if fences:
+        return _strip_fake_download_links(fences[0].group(2).rstrip('\r\n'))
     if text.startswith('```') and text.endswith('```'):
         text = text[3:-3]
         text = re.sub(r'^[A-Za-z0-9_+.-]+\r?\n', '', text, count=1)
@@ -2887,7 +2975,11 @@ _CHATGPT_SANITIZE_MAX_PASSES = 4
 # (_CHATGPT_SELF_ATTRIBUTION_RE tops out around 155 characters); larger only
 # costs a slightly later first paint, while too small would let a leak
 # through, so this errs generous.
-CHATGPT_STREAM_HOLDBACK_CHARS = 240
+# stream_chat already validates the first 180 characters before yielding a
+# ChatGPT 5.6 reply. This smaller second buffer is only needed to catch a
+# provider name split across network chunks; 240 characters delayed the first
+# visible text unnecessarily on the most-used model.
+CHATGPT_STREAM_HOLDBACK_CHARS = 96
 
 
 def _chatgpt_public_reply(reply):
@@ -3737,8 +3829,29 @@ def ai_chat_send(request):
         bool(image_data), len(image_ocr_text),
     )
 
+    def model_stream(instruction=document_instruction):
+        return ai_chat.stream_chat(
+            clean_history, model_key=model_key,
+            identity_model_key=(response_model_key if response_model_key != model_key else None),
+            user_context=user_context,
+            retrieved_context=retrieved_context, retrieved_source=retrieved_source,
+            sumudrika=is_sumudrika, sumudrika_greet=is_sumudrika_greet,
+            jagu=is_jagu, jagu_greet=is_jagu_greet,
+            persona_farewell=is_persona_farewell, language=language,
+            document_instruction=instruction,
+            max_tokens=(
+                AI_GENERATED_FILE_MAX_OUTPUT_TOKENS
+                if generated_file_spec
+                else AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS
+                if document_mode == 'coding' or ai_chat.wants_long_form_output(message)
+                else None
+            ),
+            onboarding_ask=onboarding_ask,
+        )
+
     def event_stream():
         full_reply = ''
+        saved_reply = ''
         # How much of the sanitized reply the browser already has. Only
         # meaningful on the hide_chatgpt_worker path below, which releases
         # text progressively instead of all at once.
@@ -3759,23 +3872,14 @@ def ai_chat_send(request):
 
         buffered = hide_chatgpt_worker or bool(generated_file_spec)
         try:
-            for chunk in ai_chat.stream_chat(
-                clean_history, model_key=model_key,
-                identity_model_key=(response_model_key if response_model_key != model_key else None),
-                user_context=user_context,
-                retrieved_context=retrieved_context, retrieved_source=retrieved_source,
-                sumudrika=is_sumudrika, sumudrika_greet=is_sumudrika_greet,
-                jagu=is_jagu, jagu_greet=is_jagu_greet,
-                persona_farewell=is_persona_farewell, language=language,
-                document_instruction=document_instruction,
-                max_tokens=(
-                    AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS
-                    if document_mode == 'coding' or generated_file_spec or ai_chat.wants_long_form_output(message)
-                    else None
-                ),
-                onboarding_ask=onboarding_ask,
-            ):
+            for chunk in model_stream():
                 full_reply += chunk
+                # Generated files are an internal construction payload. Showing
+                # thousands of raw HTML/CSS tokens in a narrow chat bubble made
+                # the page look broken and exposed incomplete output before it
+                # could be validated. Keep it behind the progress indicator.
+                if generated_file_spec:
+                    continue
                 if not buffered:
                     yield chunk
                     continue
@@ -3793,14 +3897,31 @@ def ai_chat_send(request):
                 if safe_upto > released_chars:
                     yield sanitized[released_chars:safe_upto]
                     released_chars = safe_upto
-            if buffered:
+            if buffered and not generated_file_spec:
                 full_reply = public_text(full_reply)
                 if len(full_reply) > released_chars:
                     yield full_reply[released_chars:]
                     released_chars = len(full_reply)
-            if generated_file_spec and full_reply.strip():
+            if generated_file_spec:
                 try:
-                    file_content = _extract_ai_generated_file_content(full_reply)
+                    file_content = _extract_ai_generated_file_content(
+                        full_reply, generated_file_spec['file_name'],
+                    )
+                    if not file_content.strip() and full_reply.strip() and not (
+                        _AI_CLARIFYING_REPLY_RE.search(full_reply)
+                        or full_reply.rstrip().endswith('?')
+                    ):
+                        # A token-limited or malformed first attempt is retried
+                        # silently once with a stronger completion reminder.
+                        retry_instruction = (
+                            document_instruction
+                            + " The previous attempt was incomplete or split across files. Start again "
+                            "from the beginning and return a smaller COMPLETE file that obeys every rule."
+                        )
+                        full_reply = ''.join(model_stream(retry_instruction))
+                        file_content = _extract_ai_generated_file_content(
+                            full_reply, generated_file_spec['file_name'],
+                        )
                     # No usable content means the model asked a question back
                     # (or only produced a fabricated link). Creating a file
                     # here would hand the user a document containing their own
@@ -3817,18 +3938,33 @@ def ai_chat_send(request):
                     download_url = request.build_absolute_uri(reverse(
                         'ai_generated_file_download', args=[generated_file.token],
                     ))
-                    download_link = f"\n\n[Download {generated_file.file_name}]({download_url})"
-                    full_reply += download_link
-                    yield download_link
+                    saved_reply = (
+                        f"Your file is ready.\n\n"
+                        f"[Download {generated_file.file_name}]({download_url})"
+                    )
+                    yield saved_reply
                 except _NoGeneratedFileContent:
-                    # Not an error: the reply stands on its own, there is just
-                    # nothing to attach to it.
-                    pass
+                    cleaned_reply = public_text(full_reply).strip()
+                    if (
+                        cleaned_reply and (
+                            _AI_CLARIFYING_REPLY_RE.search(cleaned_reply)
+                            or cleaned_reply.endswith('?')
+                        )
+                    ):
+                        saved_reply = cleaned_reply
+                    else:
+                        saved_reply = (
+                            "I couldn’t finish a complete, valid file, so no broken download was created. "
+                            "Please retry with a slightly shorter website request."
+                        )
+                    yield saved_reply
                 except Exception:
                     # The model response is still useful if persistence ever
                     # fails; don't mislabel a completed answer as a stream
                     # failure merely because its download could not be saved.
                     logger.exception("Failed to save an AI-generated download")
+                    saved_reply = "I couldn’t save the downloadable file. Please try again."
+                    yield saved_reply
         except Exception as e:
             # ai_chat.stream_chat already retries transient failures on its
             # own before ever raising here — reaching this point means every
@@ -3838,7 +3974,13 @@ def ai_chat_send(request):
             # answer, so it must never be saved as one.
             logger.exception("AI chat stream failed after retries: %s", e)
             had_error = True
-            if full_reply.strip():
+            if generated_file_spec:
+                saved_reply = (
+                    "File generation was interrupted before the file was complete. "
+                    "No broken download was created; please try again."
+                )
+                yield saved_reply
+            elif full_reply.strip():
                 # A dropped mobile connection or upstream stream can happen
                 # after useful text has arrived. Keep that text visible
                 # instead of replacing it with a generic failure message.
@@ -3870,12 +4012,13 @@ def ai_chat_send(request):
             # another tab, or via the sidebar delete button) while this reply
             # was still streaming — check it still exists before trying to
             # attach a message to it, instead of letting that blow up here.
-            if full_reply.strip() and not had_error:
+            message_reply = saved_reply or full_reply
+            if message_reply.strip() and not had_error:
                 try:
                     if AIConversation.objects.filter(pk=conversation.pk).exists():
                         AIMessage.objects.create(
                             conversation=conversation, role=AIMessage.ROLE_ASSISTANT,
-                            content=full_reply, model_key=response_model_key,
+                            content=message_reply, model_key=response_model_key,
                         )
                 except Exception:
                     logger.exception("Failed to save AI assistant reply for conversation %s", conversation.pk)
