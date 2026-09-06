@@ -172,7 +172,7 @@ tbody tr:hover{background:var(--bg-alt)}
 .form-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:1.6rem;max-width:560px}
 .form-group{margin-bottom:1.2rem}
 .form-group label{display:block;font-size:.8rem;font-weight:700;color:var(--head);margin-bottom:.4rem}
-.form-group input[type=text],.form-group input[type=number],.form-group input[type=email],.form-group input[type=url],.form-group input[type=password],.form-group textarea,.form-group select{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:.65rem .9rem;font-family:inherit;font-size:.88rem;background:var(--bg-alt)}
+.form-group input[type=text],.form-group input[type=number],.form-group input[type=email],.form-group input[type=url],.form-group input[type=password],.form-group input[type=datetime-local],.form-group textarea,.form-group select{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:.65rem .9rem;font-family:inherit;font-size:.88rem;background:var(--bg-alt)}
 .form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--red)}
 .form-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 @media (max-width:620px){.form-grid-2{grid-template-columns:1fr}}
@@ -248,6 +248,7 @@ tbody tr:hover{background:var(--bg-alt)}
       <a href="{% url 'dashboard_ai_management' %}" class="{% if active == 'ai_management' %}active{% endif %}"><i class="fas fa-robot"></i> AI Management</a>
       <a href="{% url 'dashboard_ai_activity' %}" class="{% if active == 'ai_activity' %}active{% endif %}"><i class="fas fa-shield-halved"></i> AI Activity</a>
       <a href="{% url 'dashboard_ai_reports' %}" class="{% if active == 'ai_reports' %}active{% endif %}"><i class="fas fa-flag"></i> AI Reports</a>
+      <a href="{% url 'dashboard_payments' %}" class="{% if active == 'payments' %}active{% endif %}"><i class="fas fa-indian-rupee-sign"></i> Payments</a>
       <a href="{% url 'dashboard_pwa_settings' %}" class="{% if active == 'pwa_settings' %}active{% endif %}"><i class="fas fa-mobile-screen-button"></i> PWA / Install App</a>
       <a href="{% url 'dashboard_customize' %}" class="{% if active == 'customize' %}active{% endif %}"><i class="fas fa-palette"></i> Customize</a>
       <a href="{% url 'dashboard_backup' %}" class="{% if active == 'backup' %}active{% endif %}"><i class="fas fa-database"></i> Backup &amp; Restore</a>

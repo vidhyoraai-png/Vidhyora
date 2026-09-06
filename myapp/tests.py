@@ -30,7 +30,7 @@ from . import (
     web_search,
 )
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, PWASettings, SiteCustomization, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_excel_bytes, _ai_generated_file_spec, _ai_pdf_bytes,
@@ -3517,10 +3517,10 @@ class AIDashboardOverviewTests(TestCase):
         self.assertContains(response, 'AI model usage')
         self.assertContains(response, 'Location permission')
 
-    def test_sidebar_keeps_only_ai_pwa_and_backup_options(self):
+    def test_sidebar_keeps_payments_and_the_ai_pwa_backup_options(self):
         response = self.client.get('/store/dashboard/')
 
-        for label in ('Overview', 'Signups', 'AI Management', 'AI Activity', 'AI Reports', 'PWA / Install App', 'Backup &amp; Restore'):
+        for label in ('Overview', 'Signups', 'AI Management', 'AI Activity', 'AI Reports', 'Payments', 'PWA / Install App', 'Backup &amp; Restore'):
             self.assertContains(response, label)
         self.assertContains(response, 'href="/" class="dash-logo"')
         self.assertNotContains(response, 'Back to store')
@@ -3528,7 +3528,7 @@ class AIDashboardOverviewTests(TestCase):
         for removed_path in (
             '/store/dashboard/contacts/', '/store/dashboard/categories/',
             '/store/dashboard/products/', '/store/dashboard/orders/', '/store/dashboard/delivery/',
-            '/store/dashboard/payments/', '/store/dashboard/payment-settings/',
+            '/store/dashboard/payment-settings/',
             '/store/dashboard/fee-settings/', '/store/dashboard/email-settings/',
             '/store/dashboard/about/', '/store/dashboard/policies/',
         ):
@@ -3570,6 +3570,7 @@ class AIDashboardOverviewTests(TestCase):
         self.assertRedirects(response, '/store/dashboard/signups/')
         paid_profile = StoreProfile.objects.get(user__email='paid-customer@example.com')
         self.assertEqual(paid_profile.manual_amount_paid, Decimal('499.99'))
+        self.assertIsNotNone(paid_profile.manual_payment_received_at)
 
         optional_response = self.client.post('/store/dashboard/users/add/', {
             'next': 'dashboard_signups', 'name': 'Free Customer',
@@ -3579,6 +3580,55 @@ class AIDashboardOverviewTests(TestCase):
         self.assertRedirects(optional_response, '/store/dashboard/signups/')
         free_profile = StoreProfile.objects.get(user__email='free-customer@example.com')
         self.assertEqual(free_profile.manual_amount_paid, Decimal('0.00'))
+        self.assertIsNone(free_profile.manual_payment_received_at)
+
+    def test_manual_user_needs_only_email_and_defaults_name_to_admin(self):
+        response = self.client.post('/store/dashboard/users/add/', {
+            'next': 'dashboard_signups', 'email': 'email-only@example.com',
+        })
+
+        self.assertRedirects(response, '/store/dashboard/signups/')
+        user = User.objects.get(email='email-only@example.com')
+        self.assertEqual(user.first_name, 'Admin')
+        self.assertTrue(user.check_password('admin54321'))
+
+    def test_manual_payment_accepts_an_explicit_received_time(self):
+        response = self.client.post('/store/dashboard/users/add/', {
+            'next': 'dashboard_signups', 'email': 'dated-payment@example.com',
+            'amount_paid': '725.50', 'payment_received_at': '2026-08-15T14:30',
+        })
+
+        self.assertRedirects(response, '/store/dashboard/signups/')
+        profile = StoreProfile.objects.get(user__email='dated-payment@example.com')
+        local_received_at = timezone.localtime(profile.manual_payment_received_at)
+        self.assertEqual(local_received_at.strftime('%Y-%m-%dT%H:%M'), '2026-08-15T14:30')
+
+    def test_payments_page_reports_successful_and_manual_receipts_by_period(self):
+        order = Order.objects.create(user=self.customer, total=Decimal('300.00'))
+        paid = Payment.objects.create(
+            order=order, method=Payment.METHOD_RAZORPAY,
+            status=Payment.STATUS_PAID, amount=Decimal('300.00'),
+        )
+        failed = Payment.objects.create(
+            order=order, method=Payment.METHOD_RAZORPAY,
+            status=Payment.STATUS_FAILED, amount=Decimal('900.00'),
+        )
+        now = timezone.now()
+        Payment.objects.filter(pk__in=[paid.pk, failed.pk]).update(created_at=now)
+        self.customer_profile.manual_payment_received_at = now
+        self.customer_profile.save(update_fields=['manual_payment_received_at'])
+
+        response = self.client.get('/store/dashboard/payments/')
+
+        self.assertEqual(response.status_code, 200)
+        expected = Decimal('1550.50')
+        self.assertEqual(response.context['received_total'], expected)
+        self.assertEqual(response.context['received_this_month'], expected)
+        self.assertEqual(response.context['received_last_7_days'], expected)
+        self.assertEqual(response.context['received_last_30_days'], expected)
+        self.assertEqual(response.context['received_last_month'], Decimal('0'))
+        self.assertContains(response, 'Total received')
+        self.assertContains(response, 'Received manually')
 
     def test_ai_management_create_form_has_access_period_choices(self):
         response = self.client.get('/store/dashboard/ai/')
@@ -3607,6 +3657,9 @@ class AIDashboardOverviewTests(TestCase):
         self.assertContains(response, 'activated for 180 days')
         self.assertContains(response, 'whatsapp-customer@example.com')
         self.assertContains(response, 'admin54321')
+        self.assertContains(response, '🔗 Login: https://www.vidhyora.online')
+        self.assertContains(response, '🌐 https://www.edutrellis.in')
+        self.assertContains(response, '📧 support@edutrellis.in 📞 Calling support: 10 AM–7 PM 💬 WhatsApp support available')
         self.assertContains(response, 'Share on WhatsApp')
 
         refreshed = self.client.get('/store/dashboard/ai/')
@@ -3656,6 +3709,8 @@ class PWAFrontendSettingsTests(TestCase):
         self.assertContains(homepage, '/AI/manifest.json?v=')
         self.assertContains(homepage, '/AI/pwa-icon/192.png?v=')
         self.assertContains(homepage, "navigator.serviceWorker.register('/sw.js', { scope: '/' })")
+        self.assertContains(homepage, 'id="installAppMenuBtn"')
+        self.assertContains(homepage, '<i class="fas fa-mobile-screen-button"></i> Install app', html=True)
 
         manifest_response = self.client.get('/AI/manifest.json')
         manifest = manifest_response.json()
@@ -3732,6 +3787,7 @@ class PWAFrontendSettingsTests(TestCase):
         homepage = self.client.get('/')
         self.assertNotContains(homepage, 'rel="manifest"')
         self.assertNotContains(homepage, 'id="installBanner"')
+        self.assertNotContains(homepage, 'id="installAppMenuBtn"')
         self.assertNotContains(homepage, "navigator.serviceWorker.register('/sw.js'")
         self.assertContains(homepage, 'navigator.serviceWorker.getRegistrations()')
 

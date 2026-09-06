@@ -44,6 +44,7 @@
       <div class="form-group">
         <label for="{{ add_user_form.name.id_for_label }}">Full name</label>
         {{ add_user_form.name }}
+        <div class="help">{{ add_user_form.name.help_text }}</div>
         {{ add_user_form.name.errors }}
       </div>
       <div class="form-group">
@@ -70,6 +71,12 @@
       {{ add_user_form.amount_paid }}
       <div class="help">{{ add_user_form.amount_paid.help_text }}</div>
       {{ add_user_form.amount_paid.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ add_user_form.payment_received_at.id_for_label }}">{{ add_user_form.payment_received_at.label }} <span class="help">— optional</span></label>
+      {{ add_user_form.payment_received_at }}
+      <div class="help">{{ add_user_form.payment_received_at.help_text }}</div>
+      {{ add_user_form.payment_received_at.errors }}
     </div>
     <div class="access-choice-list">
       <label>{{ add_user_form.ai_access_days.label }}</label>

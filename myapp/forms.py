@@ -39,9 +39,9 @@ class AddUserForm(forms.Form):
     phone/WhatsApp, or so AI Management has an account to grant premium
     access to without the customer self-registering first."""
     name = forms.CharField(
-        max_length=120, required=True,
-        error_messages={'required': "Enter the customer's full name."},
-        widget=forms.TextInput(attrs={'placeholder': 'Full name'}),
+        max_length=120, required=False,
+        widget=forms.TextInput(attrs={'placeholder': 'Optional — defaults to Admin'}),
+        help_text='Leave blank to use Admin.',
     )
     email = forms.EmailField(
         required=True,
@@ -53,6 +53,14 @@ class AddUserForm(forms.Form):
         max_digits=12, decimal_places=2, min_value=0, required=False,
         widget=forms.NumberInput(attrs={'placeholder': 'Optional', 'step': '0.01', 'min': '0'}),
         help_text='Optional amount already paid by this customer.',
+    )
+    payment_received_at = forms.DateTimeField(
+        label='Payment received date and time', required=False,
+        input_formats=['%Y-%m-%dT%H:%M'],
+        widget=forms.DateTimeInput(
+            format='%Y-%m-%dT%H:%M', attrs={'type': 'datetime-local'},
+        ),
+        help_text='Leave blank to use the current date and time.',
     )
     password = forms.CharField(
         max_length=128, required=False,
@@ -67,10 +75,7 @@ class AddUserForm(forms.Form):
     )
 
     def clean_name(self):
-        name = self.cleaned_data['name'].strip()
-        if len(name) < 2:
-            raise forms.ValidationError("Enter the customer's full name.")
-        return name
+        return self.cleaned_data.get('name', '').strip() or 'Admin'
 
     def clean_email(self):
         email = self.cleaned_data['email'].strip().lower()

@@ -903,6 +903,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           <button type="button" class="acct-menu-item" data-account-panel="images" role="menuitem"><i class="fas fa-images"></i> My Images</button>
           <button type="button" class="acct-menu-item" id="importChatMenuBtn" role="menuitem"><i class="fas fa-file-import"></i> Import chat</button>
           <input type="file" id="importChatInput" accept="application/json,.json" hidden>
+          {% if ai_pwa_ready %}<button type="button" class="acct-menu-item" id="installAppMenuBtn" role="menuitem"><i class="fas fa-mobile-screen-button"></i> Install app</button>{% endif %}
           <button type="button" class="acct-menu-item" id="supportMenuBtn" role="menuitem"><i class="fas fa-headset"></i> Support</button>
           {% if ai_user.is_superuser %}<a class="acct-menu-item" href="{% url 'dashboard_home' %}" role="menuitem"><i class="fas fa-gauge-high"></i> Admin Panel</a>{% endif %}
           <button type="button" class="acct-menu-item acct-menu-logout" id="logoutBtn" role="menuitem"><i class="fas fa-arrow-right-from-bracket"></i> Log out</button>
@@ -1515,6 +1516,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var logoutBtn = document.getElementById('logoutBtn');
   var importChatMenuBtn = document.getElementById('importChatMenuBtn');
   var importChatInput = document.getElementById('importChatInput');
+  var installAppMenuBtn = document.getElementById('installAppMenuBtn');
   var supportMenuBtn = document.getElementById('supportMenuBtn');
   var supportModal = document.getElementById('supportModal');
   var supportModalBackdrop = document.getElementById('supportModalBackdrop');
@@ -2941,11 +2943,26 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     });
     window.addEventListener('appinstalled', function(){
       deferredPrompt = null;
+      installed = true;
       banner.hidden = true;
     });
     if (installBtn) installBtn.addEventListener('click', function(){
       if (!deferredPrompt) {
         alert('Open your browser menu and choose “Install app” or “Add to Home screen”.');
+        return;
+      }
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.finally(function(){ deferredPrompt = null; banner.hidden = true; });
+    });
+    if (installAppMenuBtn) installAppMenuBtn.addEventListener('click', function(){
+      if (accountMenuWrap) accountMenuWrap.classList.remove('open');
+      if (accountMenuBtn) accountMenuBtn.setAttribute('aria-expanded', 'false');
+      if (installed) {
+        alert('{{ ai_pwa.app_name|escapejs }} is already installed.');
+        return;
+      }
+      if (!deferredPrompt) {
+        alert('Open your browser menu and choose "Install app" or "Add to Home screen".');
         return;
       }
       deferredPrompt.prompt();

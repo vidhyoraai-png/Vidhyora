@@ -120,6 +120,7 @@
       <div class="form-group">
         <label for="{{ add_user_form.name.id_for_label }}">Full name</label>
         {{ add_user_form.name }}
+        <div class="help">{{ add_user_form.name.help_text }}</div>
         {{ add_user_form.name.errors }}
       </div>
       <div class="form-group">
@@ -147,6 +148,12 @@
       <div class="help">{{ add_user_form.amount_paid.help_text }}</div>
       {{ add_user_form.amount_paid.errors }}
     </div>
+    <div class="form-group">
+      <label for="{{ add_user_form.payment_received_at.id_for_label }}">{{ add_user_form.payment_received_at.label }} <span class="help">— optional</span></label>
+      {{ add_user_form.payment_received_at }}
+      <div class="help">{{ add_user_form.payment_received_at.help_text }}</div>
+      {{ add_user_form.payment_received_at.errors }}
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Create account</button>
     </div>
@@ -169,7 +176,7 @@
       <tr>
         <td>{{ u.first_name|default:u.username }} {{ u.last_name }}</td>
         <td>{{ u.email }}</td>
-        <td>₹{{ u.store_profile.manual_amount_paid|default:0|floatformat:2 }}</td>
+        <td>₹{{ u.store_profile.manual_amount_paid|default:0|floatformat:2 }}{% if u.store_profile.manual_payment_received_at %}<span class="sub-line">{{ u.store_profile.manual_payment_received_at|date:"d M Y, h:i A" }}</span>{% endif %}</td>
         <td>{{ u.store_profile.phone|default:"—" }}</td>
         <td>
           {% if u.store_profile.location_consent == 'granted' %}

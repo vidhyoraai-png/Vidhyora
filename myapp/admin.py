@@ -69,8 +69,18 @@ class PaymentSettingsAdmin(admin.ModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ('id', 'order', 'method', 'status', 'amount', 'created_at')
-    list_filter = ('method', 'status')
+    list_display = (
+        'id', 'order', 'customer_email', 'method', 'status', 'amount',
+        'razorpay_order_id', 'razorpay_payment_id', 'created_at',
+    )
+    list_filter = ('method', 'status', 'created_at')
+    search_fields = ('order__id', 'order__user__username', 'order__user__email', 'razorpay_order_id', 'razorpay_payment_id')
+    readonly_fields = ('created_at', 'updated_at')
+    date_hierarchy = 'created_at'
+
+    @admin.display(description='Customer email', ordering='order__user__email')
+    def customer_email(self, obj):
+        return obj.order.user.email
 
 
 @admin.register(DropboxSettings)
@@ -79,7 +89,6 @@ class DropboxSettingsAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return not DropboxSettings.objects.exists()
-    search_fields = ('order__id', 'order__user__username', 'razorpay_order_id', 'razorpay_payment_id')
 
 
 @admin.register(Review)
@@ -121,9 +130,9 @@ class EmailVerificationAdmin(admin.ModelAdmin):
 
 @admin.register(StoreProfile)
 class StoreProfileAdmin(admin.ModelAdmin):
-    list_display = ('user', 'phone', 'manual_amount_paid', 'wallet_balance', 'phone_verified', 'ai_display_name', 'ai_location', 'ai_instagram_handle')
+    list_display = ('user', 'phone', 'manual_amount_paid', 'manual_payment_received_at', 'wallet_balance', 'phone_verified', 'ai_display_name', 'ai_location', 'ai_instagram_handle')
     search_fields = ('user__username', 'user__email', 'phone', 'ai_display_name', 'ai_location', 'ai_instagram_handle')
-    list_filter = ('phone_verified', 'ai_onboarded')
+    list_filter = ('phone_verified', 'ai_onboarded', 'manual_payment_received_at')
 
 
 class AIMessageInline(admin.TabularInline):

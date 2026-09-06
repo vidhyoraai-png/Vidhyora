@@ -58,6 +58,10 @@ class StoreProfile(models.Model):
         max_digits=12, decimal_places=2, default=0,
         help_text='Amount manually recorded as paid when staff creates or edits this customer.',
     )
+    manual_payment_received_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Date and time the manually recorded payment was received.',
+    )
     email_verified = models.BooleanField(default=False)  # unused — verification moved to phone/SMS, see phone_verified
     phone_verified = models.BooleanField(default=False)
     location_consent = models.CharField(
@@ -97,6 +101,22 @@ class StoreProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.get_full_name() or self.user.username} ({self.phone})"
+
+    def save(self, *args, **kwargs):
+        # A manual receipt must always have a reportable timestamp.  Callers
+        # can supply an earlier time; otherwise the moment it is first saved
+        # as paid is used.
+        if self.manual_amount_paid > 0 and self.manual_payment_received_at is None:
+            self.manual_payment_received_at = timezone.now()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'manual_payment_received_at'}
+        elif self.manual_amount_paid <= 0:
+            self.manual_payment_received_at = None
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'manual_payment_received_at'}
+        super().save(*args, **kwargs)
 
     @property
     def is_ai_subscribed(self):

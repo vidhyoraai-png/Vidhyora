@@ -33,7 +33,7 @@ from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.conf import settings
 from django.utils import timezone
-from datetime import timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from myapp.forms import (
     AISignupForm, PhoneVerifyForm, AILoginForm, SignupEditForm,
     AIProfileEditForm, AIPasswordChangeForm, CategoryForm, OrderStatusForm,
@@ -844,10 +844,13 @@ def dashboard_user_add(request):
     if request.method == 'POST':
         form = AddUserForm(request.POST)
         if form.is_valid():
-            name = form.cleaned_data['name']
+            # Keep the fallback here as well as in AddUserForm.clean_name so
+            # an empty name can never reach the User record.
+            name = (form.cleaned_data.get('name') or '').strip() or 'Admin'
             email = form.cleaned_data['email']
             phone = form.cleaned_data['phone']
             amount_paid = form.cleaned_data['amount_paid']
+            payment_received_at = form.cleaned_data['payment_received_at']
             password = form.cleaned_data['password'] or 'admin54321'
             access_days_value = form.cleaned_data.get('ai_access_days')
             access_days = int(access_days_value) if access_days_value else 0
@@ -859,6 +862,9 @@ def dashboard_user_add(request):
             access_until = timezone.now() + timedelta(days=access_days) if access_days else None
             StoreProfile.objects.create(
                 user=user, phone=phone, manual_amount_paid=amount_paid,
+                manual_payment_received_at=(
+                    (payment_received_at or timezone.now()) if amount_paid > 0 else None
+                ),
                 ai_subscription_until=access_until,
             )
             messages.success(request, f'Created account for {email}.')
@@ -867,7 +873,7 @@ def dashboard_user_add(request):
                     f'Your personal AI account has been successfully activated for {access_days} days.\n'
                     'Enjoy access to powerful AI models, image and file uploads, and other premium '
                     'features through your dedicated account.\n\n'
-                    '🔗 Login: https://www.vidhyora.online/\n'
+                    '🔗 Login: https://www.vidhyora.online\n'
                     f'📧 Email: {email}\n'
                     f'🔑 Password: {password}\n'
                     f'📅 Validity: {access_days} days\n\n'
@@ -875,9 +881,8 @@ def dashboard_user_add(request):
                     'service responsibly and note that fair-use policies and platform limits may apply.\n\n'
                     'If you face any login or technical issue, please contact us—we’re always happy to help.\n\n'
                     'EduTrellis\n'
-                    '🌐 edutrellis.in\n'
-                    '📧 support@edutrellis.in\n'
-                    '📞 Calling support: 10 AM–7 PM\n'
+                    '🌐 https://www.edutrellis.in\n'
+                    '📧 support@edutrellis.in 📞 Calling support: 10 AM–7 PM '
                     '💬 WhatsApp support available'
                 )
                 # Popped by the destination view so credentials only appear once.
@@ -1638,9 +1643,66 @@ def dashboard_payments(request):
         )
     if status:
         payments = payments.filter(status=status)
+
+    # Revenue cards count money actually received: successful order payments
+    # plus amounts staff recorded directly while creating customer accounts.
+    # Pending/failed/refunded payment attempts remain visible in the table but
+    # are deliberately excluded from received totals.
+    now = timezone.now()
+    local_today = timezone.localdate()
+    this_month_start = timezone.make_aware(
+        datetime.combine(local_today.replace(day=1), datetime.min.time())
+    )
+    if local_today.month == 1:
+        last_month_date = local_today.replace(year=local_today.year - 1, month=12, day=1)
+    else:
+        last_month_date = local_today.replace(month=local_today.month - 1, day=1)
+    last_month_start = timezone.make_aware(
+        datetime.combine(last_month_date, datetime.min.time())
+    )
+    last_7_start = timezone.make_aware(
+        datetime.combine(local_today - timedelta(days=6), datetime.min.time())
+    )
+    last_30_start = timezone.make_aware(
+        datetime.combine(local_today - timedelta(days=29), datetime.min.time())
+    )
+
+    paid_orders = Payment.objects.filter(status=Payment.STATUS_PAID)
+    manual_receipts = StoreProfile.objects.filter(
+        manual_amount_paid__gt=0, manual_payment_received_at__isnull=False,
+    )
+
+    def received_total(start=None, end=None):
+        order_qs = paid_orders
+        manual_qs = manual_receipts
+        if start:
+            order_qs = order_qs.filter(created_at__gte=start)
+            manual_qs = manual_qs.filter(manual_payment_received_at__gte=start)
+        if end:
+            order_qs = order_qs.filter(created_at__lt=end)
+            manual_qs = manual_qs.filter(manual_payment_received_at__lt=end)
+        order_amount = order_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        manual_amount = manual_qs.aggregate(total=Sum('manual_amount_paid'))['total'] or Decimal('0')
+        return order_amount + manual_amount
+
+    manual_rows = manual_receipts.select_related('user')
+    if q:
+        manual_rows = manual_rows.filter(
+            Q(user__username__icontains=q) | Q(user__email__icontains=q) |
+            Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q)
+        )
+    if status and status != Payment.STATUS_PAID:
+        manual_rows = manual_rows.none()
+
     return render(request, 'dashboard/payments.html', {
         'active': 'payments', 'payments': payments, 'q': q, 'status': status,
         'status_choices': Payment.STATUS_CHOICES,
+        'manual_receipts': manual_rows.order_by('-manual_payment_received_at'),
+        'received_total': received_total(),
+        'received_last_month': received_total(last_month_start, this_month_start),
+        'received_this_month': received_total(this_month_start, now),
+        'received_last_7_days': received_total(last_7_start, now),
+        'received_last_30_days': received_total(last_30_start, now),
     })
 
 

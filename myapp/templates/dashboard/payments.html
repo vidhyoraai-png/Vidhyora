@@ -3,9 +3,17 @@
 {% block page_title %}Payments{% endblock %}
 
 {% block content %}
+<div class="stat-grid">
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-wallet"></i></div><div><div class="stat-num">₹{{ received_total|floatformat:2 }}</div><div class="stat-lbl">Total received</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar-minus"></i></div><div><div class="stat-num">₹{{ received_last_month|floatformat:2 }}</div><div class="stat-lbl">Last month</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar-days"></i></div><div><div class="stat-num">₹{{ received_this_month|floatformat:2 }}</div><div class="stat-lbl">This month</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar-week"></i></div><div><div class="stat-num">₹{{ received_last_7_days|floatformat:2 }}</div><div class="stat-lbl">Last 7 days</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-calendar"></i></div><div><div class="stat-num">₹{{ received_last_30_days|floatformat:2 }}</div><div class="stat-lbl">Last 30 days</div></div></div>
+</div>
+
 <div class="panel">
   <div class="panel-head">
-    <h3>{{ payments|length }} payment{{ payments|length|pluralize }}</h3>
+    <h3>{{ payments|length }} order payment attempt{{ payments|length|pluralize }}</h3>
     <div class="row-actions">
       <div class="filter-tabs">
         <a href="?q={{ q }}" class="{% if not status %}on{% endif %}">All</a>
@@ -22,7 +30,7 @@
   </div>
   <div class="table-scroll">
   <table>
-    <thead><tr><th>Order</th><th>Customer</th><th>Method</th><th>Amount</th><th>Razorpay ID</th><th>Status</th><th>Date</th></tr></thead>
+    <thead><tr><th>Order</th><th>Customer</th><th>Method</th><th>Amount</th><th>Razorpay order ID</th><th>Razorpay payment ID</th><th>Status</th><th>Date</th></tr></thead>
     <tbody>
       {% for pay in payments %}
       <tr>
@@ -30,12 +38,35 @@
         <td>{{ pay.order.user.first_name|default:pay.order.user.username }}<span class="sub-line">{{ pay.order.user.email }}</span></td>
         <td>{{ pay.get_method_display }}</td>
         <td>₹{{ pay.amount|floatformat:0 }}</td>
-        <td><span class="sub-line">{{ pay.razorpay_payment_id|default:pay.razorpay_order_id|default:"—" }}</span></td>
+        <td><span class="sub-line">{{ pay.razorpay_order_id|default:"—" }}</span></td>
+        <td><span class="sub-line">{{ pay.razorpay_payment_id|default:"—" }}</span></td>
         <td><span class="badge pay-{{ pay.status }}">{{ pay.get_status_display }}</span></td>
         <td>{{ pay.created_at|date:"d M Y, h:i A" }}</td>
       </tr>
       {% empty %}
-      <tr><td colspan="7" class="empty-row">No payments match your search</td></tr>
+      <tr><td colspan="8" class="empty-row">No payments match your search</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>{{ manual_receipts|length }} manually recorded receipt{{ manual_receipts|length|pluralize }}</h3></div>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Customer</th><th>Email</th><th>Amount received</th><th>Status</th><th>Received date</th></tr></thead>
+    <tbody>
+      {% for receipt in manual_receipts %}
+      <tr>
+        <td>{{ receipt.user.get_full_name|default:receipt.user.username }}</td>
+        <td>{{ receipt.user.email }}</td>
+        <td>₹{{ receipt.manual_amount_paid|floatformat:2 }}</td>
+        <td><span class="badge pay-paid">Received manually</span></td>
+        <td>{{ receipt.manual_payment_received_at|date:"d M Y, h:i A" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="empty-row">No manually recorded receipts match your search</td></tr>
       {% endfor %}
     </tbody>
   </table>
