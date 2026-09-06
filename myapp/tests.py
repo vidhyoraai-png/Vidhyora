@@ -2280,6 +2280,21 @@ class AIResponseReliabilityTests(TestCase):
         ):
             self.assertEqual(_chatgpt_public_reply(factual), factual)
 
+    def test_ai_home_link_is_normalized_to_one_site_root_url(self):
+        from myapp.views import _chatgpt_public_reply
+
+        root = 'http://127.0.0.1:8000'
+        reply = (
+            f'[{root}/AI/]({root}/AI/)\n'
+            f'[{root}]({root})'
+        )
+        cleaned = _chatgpt_public_reply(reply)
+
+        self.assertNotIn(f'{root}/AI/', cleaned)
+        self.assertEqual(cleaned.count(f'[{root}]({root})'), 1)
+        download = f'[Download file]({root}/AI/api/files/token/download/)'
+        self.assertEqual(_chatgpt_public_reply(download), download)
+
     def test_chatgpt_streams_progressively_without_duplicating_text(self):
         """ChatGPT 5.6 used to withhold the whole reply until generation
         finished — nothing rendered for the entire wait. It now releases text

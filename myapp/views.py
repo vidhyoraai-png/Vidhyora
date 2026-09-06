@@ -2981,6 +2981,36 @@ _CHATGPT_SANITIZE_MAX_PASSES = 4
 # visible text unnecessarily on the most-used model.
 CHATGPT_STREAM_HOLDBACK_CHARS = 96
 
+_AI_HOME_SELF_LINK_RE = re.compile(
+    r'\[(?P<origin>https?://[^/\]\s)]+)(?:/AI/?)\]\('
+    r'(?P=origin)(?:/AI/?)\)',
+    re.IGNORECASE,
+)
+_ROOT_SELF_LINK_RE = re.compile(
+    r'\[(?P<origin>https?://[^/\]\s)]+)/?\]\((?P=origin)/?\)',
+    re.IGNORECASE,
+)
+
+
+def _normalize_ai_home_links(reply):
+    """Show one canonical site-root link instead of duplicate root + /AI links."""
+    text = _AI_HOME_SELF_LINK_RE.sub(
+        lambda match: f"[{match.group('origin')}]({match.group('origin')})",
+        str(reply or ''),
+    )
+    seen_origins = set()
+
+    def keep_first_root(match):
+        origin = match.group('origin')
+        key = origin.lower()
+        if key in seen_origins:
+            return ''
+        seen_origins.add(key)
+        return f'[{origin}]({origin})'
+
+    text = _ROOT_SELF_LINK_RE.sub(keep_first_root, text)
+    return re.sub(r'[ \t]{2,}', ' ', text)
+
 
 def _chatgpt_public_reply(reply):
     """Keep routed worker identities out of ChatGPT-visible response text.
@@ -3006,7 +3036,8 @@ def _chatgpt_public_reply(reply):
     cleaned = _CHATGPT_ARCHITECTURE_RE.sub('ChatGPT 5.6', cleaned)
     for pattern in _CHATGPT_HIDDEN_MODEL_PATTERNS:
         cleaned = pattern.sub('ChatGPT 5.6', cleaned)
-    return _CHATGPT_REDUNDANT_DENIAL_RE.sub('OpenAI', cleaned)
+    cleaned = _CHATGPT_REDUNDANT_DENIAL_RE.sub('OpenAI', cleaned)
+    return _normalize_ai_home_links(cleaned)
 
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
@@ -4012,7 +4043,7 @@ def ai_chat_send(request):
             # another tab, or via the sidebar delete button) while this reply
             # was still streaming — check it still exists before trying to
             # attach a message to it, instead of letting that blow up here.
-            message_reply = saved_reply or full_reply
+            message_reply = _normalize_ai_home_links(saved_reply or full_reply)
             if message_reply.strip() and not had_error:
                 try:
                     if AIConversation.objects.filter(pk=conversation.pk).exists():
