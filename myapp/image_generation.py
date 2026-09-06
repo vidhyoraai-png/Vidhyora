@@ -79,6 +79,10 @@ _SIZED_RATIO_RE = re.compile(
     r"\b(?:size|ratio|aspect|resolution|dimensions?)\b\D{0,10}(\d{1,2})\s*[.:/x]\s*(\d{1,2})\b",
     re.IGNORECASE,
 )
+_RATIO_SIZED_RE = re.compile(
+    r"\b(\d{1,2})\s*[.:/x]\s*(\d{1,2})\s*(?:size|ratio|aspect|resolution|dimensions?)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,7 @@ def _safe_error(response):
         detail = ""
     if status_code == 422 and "expected: example_id" in detail:
         return ImageGenerationError(
-            "Image generation works, but uploading a photo to edit is currently under maintenance and will be back soon. Try describing a new image to generate instead.",
+            "The image service could not edit that upload. Try uploading it again as a smaller PNG or JPEG image.",
             status_code=400,
         )
     if status_code == 429:
@@ -162,6 +166,10 @@ def resolve_dimensions(prompt):
     # A ratio introduced by an explicit size word is taken at face value; a
     # bare one has to look like a real aspect ratio first (see the allowlist).
     for found in _SIZED_RATIO_RE.finditer(text):
+        size = _size_for_ratio(int(found.group(1)), int(found.group(2)))
+        if size:
+            return size
+    for found in _RATIO_SIZED_RE.finditer(text):
         size = _size_for_ratio(int(found.group(1)), int(found.group(2)))
         if size:
             return size
@@ -256,6 +264,27 @@ def _decode_artifact(payload):
         extension = "webp"
     else:
         raise ImageGenerationError("NVIDIA returned an unsupported image format. Please try again.")
+    # A matching file signature alone is not proof of a usable image: a
+    # truncated payload used to be stored and returned as a broken image.
+    # Fully decode it before persisting, and reject the all-white/all-black
+    # placeholder frames seen in report #51 rather than presenting them as a
+    # successful generation.
+    try:
+        with Image.open(io.BytesIO(content)) as opened:
+            opened.load()
+            sample = opened.convert("RGB")
+            sample.thumbnail((64, 64), Image.Resampling.BILINEAR)
+            extrema = sample.getextrema()
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ImageGenerationError(
+            "The image service returned a damaged image. Please try again."
+        ) from exc
+    nearly_white = all(low >= 250 and high >= 250 for low, high in extrema)
+    nearly_black = all(low <= 5 and high <= 5 for low, high in extrema)
+    if nearly_white or nearly_black:
+        raise ImageGenerationError(
+            "The image service returned a blank image. Please try again."
+        )
     return GeneratedImage(content=content, extension=extension)
 
 

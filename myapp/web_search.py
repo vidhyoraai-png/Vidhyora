@@ -22,6 +22,8 @@ import hashlib
 import logging
 import re
 
+import requests
+from django.conf import settings
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -149,24 +151,46 @@ def search(query, max_results=MAX_RESULTS):
     if cached is not None:
         return cached
 
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        logger.warning('Web search unavailable: ddgs is not installed')
-        return []
-
-    try:
-        raw = DDGS(timeout=SEARCH_TIMEOUT_SECONDS).text(query, max_results=max_results)
-    except Exception as exc:
-        # Rate limits and upstream HTML changes are both normal here.
-        logger.warning('Web search failed for %r: %s', query[:80], exc)
-        return []
+    tavily_key = getattr(settings, 'TAVILY_API_KEY', '').strip()
+    if tavily_key:
+        try:
+            response = requests.post(
+                'https://api.tavily.com/search',
+                json={
+                    'api_key': tavily_key,
+                    'query': query,
+                    'search_depth': 'basic',
+                    'max_results': max_results,
+                    'include_answer': False,
+                    'include_raw_content': False,
+                },
+                timeout=SEARCH_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            raw = response.json().get('results', [])
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning('Tavily search failed for %r: %s', query[:80], exc)
+            return []
+    else:
+        # Keep local/test environments usable when no Tavily key is supplied.
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            logger.warning('Web search unavailable: no Tavily key and ddgs is not installed')
+            return []
+        try:
+            raw = DDGS(timeout=SEARCH_TIMEOUT_SECONDS).text(query, max_results=max_results)
+        except Exception as exc:
+            logger.warning('Web search failed for %r: %s', query[:80], exc)
+            return []
 
     results = []
     for item in raw or []:
         title = (item.get('title') or '').strip()
-        url = (item.get('href') or '').strip()
-        snippet = ' '.join((item.get('body') or '').split())[:MAX_SNIPPET_CHARS]
+        url = (item.get('url') or item.get('href') or '').strip()
+        snippet = ' '.join(
+            (item.get('content') or item.get('body') or '').split()
+        )[:MAX_SNIPPET_CHARS]
         if title and url:
             results.append({'title': title, 'url': url, 'snippet': snippet})
 

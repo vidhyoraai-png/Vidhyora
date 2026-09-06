@@ -1,0 +1,48 @@
+{% extends "dashboard/base.html" %}
+{% block title %}User Data{% endblock %}
+{% block page_title %}User Data{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_users }}</div><div class="stat-lbl">Customers</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-comments"></i></div><div><div class="stat-num">{{ total_chats }}</div><div class="stat-lbl">Chats created</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-right-to-bracket"></i></div><div><div class="stat-num">{{ total_logins }}</div><div class="stat-lbl">Recorded logins</div></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ users|length }} user{{ users|length|pluralize }}</h3>
+    <form class="panel-search" method="get">
+      <i class="fas fa-magnifying-glass"></i>
+      <input type="search" name="q" value="{{ q }}" placeholder="Search name or location…">
+    </form>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>User name</th><th>Location</th><th>Chats done</th><th>Times logged in</th></tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td><strong>{{ u.get_full_name|default:u.username }}</strong></td>
+          <td>
+            {% if u.store_profile.ai_location %}
+              {{ u.store_profile.ai_location }}
+            {% elif u.store_profile.location_latitude != None and u.store_profile.location_longitude != None %}
+              {{ u.store_profile.location_latitude|floatformat:4 }}, {{ u.store_profile.location_longitude|floatformat:4 }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>{{ u.chat_count }}</td>
+          <td>{{ u.store_profile.login_count|default:0 }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" class="empty-row">No users match your search</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

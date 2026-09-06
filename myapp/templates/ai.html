@@ -13,18 +13,18 @@
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="EduTrellis">
-<meta property="og:title" content="Vidhyora AI — Free AI Chat Assistant">
-<meta property="og:description" content="Chat with Vidhyora AI for product help, quick answers and learning support — free, right from your browser.">
-<meta property="og:url" content="https://www.edutrellis.in{{ request.path }}">
-<meta property="og:image" content="https://www.edutrellis.in{% static 'img/og-cover.jpg' %}">
+<meta property="og:title" content="{{ SITE_SOCIAL_PREVIEW_TITLE }}">
+<meta property="og:description" content="{{ SITE_SOCIAL_PREVIEW_DESCRIPTION }}">
+<meta property="og:url" content="{{ request.build_absolute_uri }}">
+<meta property="og:image" content="{{ SITE_SOCIAL_PREVIEW_IMAGE_URL }}">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:locale" content="en_IN">
 
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Vidhyora AI — Free AI Chat Assistant">
-<meta name="twitter:description" content="Chat with Vidhyora AI for product help, quick answers and learning support — free, right from your browser.">
-<meta name="twitter:image" content="https://www.edutrellis.in{% static 'img/og-cover.jpg' %}">
+<meta name="twitter:title" content="{{ SITE_SOCIAL_PREVIEW_TITLE }}">
+<meta name="twitter:description" content="{{ SITE_SOCIAL_PREVIEW_DESCRIPTION }}">
+<meta name="twitter:image" content="{{ SITE_SOCIAL_PREVIEW_IMAGE_URL }}">
 <script>
 // Apply saved appearance choices before first paint to prevent a flash of
 // the default theme while the rest of the page loads.
@@ -191,6 +191,14 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 .acct-menu-item:hover{background:var(--bg-alt);color:var(--red)}
 .acct-menu-item:hover i{color:var(--red)}
 .acct-menu-logout{border-top:1px solid var(--line);border-radius:0 0 9px 9px;margin-top:.3rem;padding-top:.7rem}
+.support-modal{z-index:52}
+.support-modal-backdrop{z-index:51}
+.support-contact-list{display:flex;flex-direction:column;gap:.7rem;margin:.9rem 0 .25rem}
+.support-contact-action{display:flex;align-items:center;gap:.75rem;padding:.8rem;border:1px solid var(--line);border-radius:11px;background:var(--bg-alt);color:var(--head);text-decoration:none;transition:border-color .15s,background .15s}
+.support-contact-action:hover{border-color:var(--red);background:var(--tint)}
+.support-contact-action>i{width:26px;text-align:center;font-size:1.25rem;color:var(--red)}
+.support-contact-action strong{display:block;font-size:.82rem}
+.support-contact-action span{display:block;font-size:.74rem;color:var(--text);margin-top:.1rem}
 
 /* ---- signed-in account modal ---- */
 .account-modal-backdrop{position:fixed;inset:0;background:rgba(10,13,19,.62);z-index:60}
@@ -550,7 +558,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 .input-wrap.disabled{opacity:.6}
 #chatInput{flex:1 1 0;min-width:0;width:0;border:none;background:none;resize:none;font-family:inherit;font-size:.92rem;color:var(--head);max-height:140px;line-height:1.5;padding:.4rem 0;transition:height .12s ease}
 #chatInput:focus{outline:none}
-.input-wrap>.model-picker-wrap,.input-wrap>.github-wrap,.input-wrap>.mic-btn,.input-wrap>#sendBtn{flex:0 0 auto}
+.input-wrap>.model-picker-wrap,.input-wrap>.github-wrap,.input-wrap>.mic-btn,.input-wrap>.search-btn,.input-wrap>#sendBtn{flex:0 0 auto}
 #sendBtn{border:none;cursor:pointer;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .2s,transform .1s}
 #sendBtn:hover:not(:disabled){transform:scale(1.06)}
 #sendBtn:disabled{opacity:.45;cursor:default}
@@ -563,6 +571,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 .mic-btn:disabled{opacity:.4;cursor:default}
 .mic-btn.listening{color:#fff;background:var(--red);animation:micPulse 1.4s infinite}
 @keyframes micPulse{0%,100%{box-shadow:0 0 0 0 rgba(var(--accent-rgb),.4)}50%{box-shadow:0 0 0 7px rgba(var(--accent-rgb),0)}}
+.search-btn{border:none;cursor:pointer;background:none;color:#9aa3b0;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.9rem;transition:color .15s,background .15s,box-shadow .15s}
+.search-btn:hover:not(:disabled){color:var(--red);background:var(--surface)}
+.search-btn:disabled{opacity:.4;cursor:default}
+.search-btn.active{color:#fff;background:var(--dark);box-shadow:0 0 0 2px rgba(var(--accent-rgb),.14)}
 
 /* ---- model picker (dropdown, lives in the composer bar itself) ---- */
 .model-picker-wrap{position:relative;flex-shrink:0;align-self:center}
@@ -808,7 +820,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
      composer, so the dropdown must grow rightward to stay on-screen */
   .model-dropdown{position:fixed;top:50%;left:12px;right:12px;bottom:auto;transform:translateY(-50%);width:auto;min-width:0;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overscroll-behavior:contain;z-index:47}
   .input-wrap{gap:.3rem}
-  .mic-btn,.github-btn{width:30px;height:30px;font-size:.85rem}
+  .mic-btn,.github-btn,.search-btn{width:30px;height:30px;font-size:.85rem}
   /* a lower cap than desktop's 140px — on a short phone screen, letting the
      composer grow that tall ate too much of the visible chat area and felt
      like the bar was taking over the screen as you typed */
@@ -878,6 +890,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           <button type="button" class="acct-menu-item" data-account-panel="images" role="menuitem"><i class="fas fa-images"></i> My Images</button>
           <button type="button" class="acct-menu-item" id="importChatMenuBtn" role="menuitem"><i class="fas fa-file-import"></i> Import chat</button>
           <input type="file" id="importChatInput" accept="application/json,.json" hidden>
+          <button type="button" class="acct-menu-item" id="supportMenuBtn" role="menuitem"><i class="fas fa-headset"></i> Support</button>
           {% if ai_user.is_superuser %}<a class="acct-menu-item" href="{% url 'dashboard_home' %}" role="menuitem"><i class="fas fa-gauge-high"></i> Admin Panel</a>{% endif %}
           <button type="button" class="acct-menu-item acct-menu-logout" id="logoutBtn" role="menuitem"><i class="fas fa-arrow-right-from-bracket"></i> Log out</button>
         </div>
@@ -931,22 +944,24 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       </div>
     </div>
     <div class="feature-modal-item">
-      <i class="fab fa-youtube feature-modal-icon"></i>
+      <i class="fas fa-wand-magic-sparkles feature-modal-icon"></i>
       <div>
-        <span class="feature-modal-item-label">Download from YouTube</span>
-        <span class="feature-modal-item-desc">Paste a YouTube link in chat and I'll offer video or MP3 download options.</span>
+        <span class="feature-modal-item-label">Unlimited images</span>
+        <span class="feature-modal-item-desc">Create as many images as you need — describe a wallpaper, story, poster, or any custom shape.</span>
       </div>
     </div>
     <div class="feature-modal-item">
-      <i class="fas fa-wand-magic-sparkles feature-modal-icon"></i>
+      <i class="fas fa-image feature-modal-icon"></i>
       <div>
-        <span class="feature-modal-item-label">Generate images</span>
-        <!-- Promised "upload one and tell Vidhyora AI what to change" until
-             now, but editing an uploaded photo is unavailable upstream, so
-             this panel was selling a feature that returns an error. Says what
-             actually works instead, including the sizes users kept asking for
-             (AIReports #45, #47, #48). -->
-        <span class="feature-modal-item-desc">Describe any image and I'll create it — say "wallpaper", "story", "poster" or "4:5" and you'll get that exact shape.</span>
+        <span class="feature-modal-item-label">Upload images</span>
+        <span class="feature-modal-item-desc">Upload photos or screenshots and ask AI to analyse, explain, or answer questions about them.</span>
+      </div>
+    </div>
+    <div class="feature-modal-item">
+      <i class="fas fa-file-arrow-up feature-modal-icon"></i>
+      <div>
+        <span class="feature-modal-item-label">Upload files</span>
+        <span class="feature-modal-item-desc">Upload PDFs, documents, spreadsheets, code, and other supported files for help or analysis.</span>
       </div>
     </div>
     <div class="feature-modal-item">
@@ -959,6 +974,25 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   </div>
   <button type="button" class="feature-modal-btn" id="featureModalGotIt">Got it</button>
 </div>
+
+{% if ai_user %}
+<div class="feature-modal-backdrop support-modal-backdrop" id="supportModalBackdrop" hidden></div>
+<section class="feature-modal support-modal" id="supportModal" hidden role="dialog" aria-modal="true" aria-labelledby="supportModalTitle">
+  <button type="button" class="feature-modal-close" id="supportModalClose" aria-label="Close support"><i class="fas fa-xmark"></i></button>
+  <p class="feature-modal-title" id="supportModalTitle">Contact support</p>
+  <p class="feature-modal-item-desc">Choose how you would like to contact the EduTrellis support team.</p>
+  <div class="support-contact-list">
+    <a class="support-contact-action" href="https://wa.me/919695953183?text=Hello%2C%20I%20need%20help%20with%20Vidhyora%20AI." target="_blank" rel="noopener noreferrer">
+      <i class="fab fa-whatsapp"></i>
+      <div><strong>WhatsApp support</strong><span>9695953183</span></div>
+    </a>
+    <a class="support-contact-action" href="mailto:support@edutrellis.in">
+      <i class="fas fa-envelope"></i>
+      <div><strong>Email support</strong><span>support@edutrellis.in</span></div>
+    </a>
+  </div>
+</section>
+{% endif %}
 
 {% if ai_user %}
 <div class="account-modal-backdrop" id="accountModalBackdrop" hidden></div>
@@ -1273,6 +1307,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           </div>
         </div>
         {% endif %}
+        <button type="button" id="webSearchBtn" class="search-btn" aria-label="Enable web search" aria-pressed="false" title="Search the web for this message"><i class="fas fa-globe"></i></button>
         <button type="button" id="attachBtn" class="mic-btn" aria-label="Attach a file" title="Attach an image, document, spreadsheet, presentation, HTML, or audio"><i class="fas fa-paperclip"></i></button>
         <input type="file" id="imageInput" accept="image/*,audio/*,.pdf,.docx,.csv,.txt,.xlsx,.xlsm,.pptx,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.c,.cpp,.h,.hpp,.cs,.php,.rb,.go,.rs,.swift,.kt,.kts,.sql,.json,.xml,.yaml,.yml,.md,.vue,.svelte,.sh,.ps1,.toml,.ini,.mp3,.wav,.m4a,.webm,.ogg" hidden>
         <button type="button" id="cameraBtn" class="mic-btn" aria-label="Take a photo" title="Take a photo"><i class="fas fa-camera"></i></button>
@@ -1312,6 +1347,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var state = {
     currentConversationId: null,
     githubMode: false,
+    webSearch: false,
     conversations: JSON.parse(document.getElementById('boot-conversations').textContent || '[]'),
     notes: JSON.parse(document.getElementById('boot-notes').textContent || '[]'),
     streaming: false,
@@ -1426,6 +1462,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var inputWrap = document.getElementById('inputWrap');
   var sendBtn = document.getElementById('sendBtn');
   var micBtn = document.getElementById('micBtn');
+  var webSearchBtn = document.getElementById('webSearchBtn');
   var modelPickerBtn = document.getElementById('modelPickerBtn');
   var modelPickerLabel = document.getElementById('modelPickerLabel');
   var modelDropdown = document.getElementById('modelDropdown');
@@ -1465,6 +1502,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var logoutBtn = document.getElementById('logoutBtn');
   var importChatMenuBtn = document.getElementById('importChatMenuBtn');
   var importChatInput = document.getElementById('importChatInput');
+  var supportMenuBtn = document.getElementById('supportMenuBtn');
+  var supportModal = document.getElementById('supportModal');
+  var supportModalBackdrop = document.getElementById('supportModalBackdrop');
+  var supportModalClose = document.getElementById('supportModalClose');
   var accountMenuWrap = document.getElementById('accountMenuWrap');
   var accountMenuBtn = document.getElementById('accountMenuBtn');
   var accountModal = document.getElementById('accountModal');
@@ -2175,6 +2216,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     if (micBtn) micBtn.disabled = on || locked;
     if (attachBtn) attachBtn.disabled = on || locked;
     if (cameraBtn) cameraBtn.disabled = on || locked;
+    if (webSearchBtn) webSearchBtn.disabled = on || locked;
     if (modelPickerBtn) modelPickerBtn.disabled = on || locked;
     applyGithubAvailability();
   }
@@ -2618,7 +2660,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       if (!opt || state.streaming || state.gated) return;
       if (opt.getAttribute('data-locked') === '1') {
         closeDropdown();
-        showAiToast('Free users can use Quick and Code. Request premium access for this model.', true);
+        showAiToast('Free users can use Quick, Code, and image generation. Request premium access for this model.', true);
         return;
       }
       applyModelSelection(opt.getAttribute('data-model'), true);
@@ -2847,24 +2889,13 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     if (!modal || !backdrop) return;
     var STORAGE_KEY = 'ai_features_intro_seen';
     if (localStorage.getItem(STORAGE_KEY) === '1') return;
-    function dismiss(){
+    function dismiss(event){
+      // Do not let this click reach the model-intro document handler. The
+      // model popup is intentionally waiting underneath this first-time modal.
+      if (event) event.stopPropagation();
       modal.hidden = true;
       backdrop.hidden = true;
       localStorage.setItem(STORAGE_KEY, '1');
-
-      // The model introduction opens slightly earlier than this modal. It
-      // must not remain behind the backdrop and reappear after this dialog
-      // closes. Also close the real dropdown in case it was already open.
-      var modelIntro = document.getElementById('modelIntroPopup');
-      var modelDropdown = document.getElementById('modelDropdown');
-      var modelButton = document.getElementById('modelPickerBtn');
-      if (modelIntro) modelIntro.hidden = true;
-      if (modelDropdown) modelDropdown.hidden = true;
-      if (modelButton) {
-        modelButton.classList.remove('open');
-        modelButton.setAttribute('aria-expanded', 'false');
-      }
-      localStorage.setItem('ai_model_intro_seen', '1');
     }
     setTimeout(function(){ modal.hidden = false; backdrop.hidden = false; }, 2000);
     if (closeBtn) closeBtn.addEventListener('click', dismiss);
@@ -2888,6 +2919,13 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var deferredPrompt = null;
     var dismissedKey = 'ai_install_dismissed_{{ ai_pwa_version }}';
     var dismissed = localStorage.getItem(dismissedKey) === '1';
+    var installed = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (!dismissed && !installed) {
+      // Some browsers delay or never expose beforeinstallprompt. Keep the
+      // homepage install feature visible and provide manual instructions when
+      // the native prompt is unavailable.
+      setTimeout(function(){ banner.hidden = false; }, 1500);
+    }
     window.addEventListener('beforeinstallprompt', function(e){
       e.preventDefault();
       deferredPrompt = e;
@@ -2898,7 +2936,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       banner.hidden = true;
     });
     if (installBtn) installBtn.addEventListener('click', function(){
-      if (!deferredPrompt) return;
+      if (!deferredPrompt) {
+        alert('Open your browser menu and choose “Install app” or “Add to Home screen”.');
+        return;
+      }
       deferredPrompt.prompt();
       deferredPrompt.userChoice.finally(function(){ deferredPrompt = null; banner.hidden = true; });
     });
@@ -3711,6 +3752,37 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     if (accountMenuBtn) accountMenuBtn.focus();
   }
 
+  if (webSearchBtn) {
+    webSearchBtn.addEventListener('click', function(){
+      if (webSearchBtn.disabled) return;
+      state.webSearch = !state.webSearch;
+      webSearchBtn.classList.toggle('active', state.webSearch);
+      webSearchBtn.setAttribute('aria-pressed', state.webSearch ? 'true' : 'false');
+      webSearchBtn.setAttribute(
+        'aria-label', state.webSearch ? 'Disable web search' : 'Enable web search'
+      );
+      webSearchBtn.title = state.webSearch
+        ? 'Web search enabled'
+        : 'Search the web for this message';
+    });
+  }
+
+  function openSupportModal(){
+    if (!supportModal || !supportModalBackdrop) return;
+    supportModal.hidden = false;
+    supportModalBackdrop.hidden = false;
+    if (accountMenuWrap) accountMenuWrap.classList.remove('open');
+    if (accountMenuBtn) accountMenuBtn.setAttribute('aria-expanded', 'false');
+    if (supportModalClose) supportModalClose.focus();
+  }
+
+  function closeSupportModal(){
+    if (!supportModal || !supportModalBackdrop) return;
+    supportModal.hidden = true;
+    supportModalBackdrop.hidden = true;
+    if (accountMenuBtn) accountMenuBtn.focus();
+  }
+
   if (accountMenuBtn) {
     accountMenuBtn.addEventListener('click', function(){
       var isOpen = accountMenuWrap.classList.toggle('open');
@@ -3730,6 +3802,9 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   }
   if (accountModalClose) accountModalClose.addEventListener('click', closeAccountModal);
   if (accountModalBackdrop) accountModalBackdrop.addEventListener('click', closeAccountModal);
+  if (supportMenuBtn) supportMenuBtn.addEventListener('click', openSupportModal);
+  if (supportModalClose) supportModalClose.addEventListener('click', closeSupportModal);
+  if (supportModalBackdrop) supportModalBackdrop.addEventListener('click', closeSupportModal);
   document.addEventListener('click', function(event){
     if (accountMenuWrap && !accountMenuWrap.contains(event.target)) {
       accountMenuWrap.classList.remove('open');
@@ -3738,6 +3813,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   });
   document.addEventListener('keydown', function(event){
     if (event.key === 'Escape' && accountModal && !accountModal.hidden) closeAccountModal();
+    if (event.key === 'Escape' && supportModal && !supportModal.hidden) closeSupportModal();
   });
 
   if (accountAvatarInput) {
@@ -4281,6 +4357,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         document_mode: documentToSend ? documentToSend.mode : undefined,
         document_truncated: documentTruncatedToSend,
         language: currentLanguage,
+        web_search: state.webSearch,
       })
     }).then(function(resp){
       // A FLUX request can create/save the conversation before NVIDIA later

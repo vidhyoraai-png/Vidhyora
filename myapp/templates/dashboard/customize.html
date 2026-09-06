@@ -5,7 +5,7 @@
 
 {% block content %}
 <p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.4rem">
-  Site-wide branding controls. Upload a favicon and it replaces the browser-tab icon everywhere — the AI chat, the store, policy pages, even the dashboard itself.
+  Site-wide branding controls for the browser icon and the preview people see when your homepage link is shared on WhatsApp or social media.
 </p>
 
 {% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
@@ -22,6 +22,34 @@
     {{ form.favicon }}
     <div class="help">Square, ideally 512×512px or smaller (PNG or ICO).</div>
     {{ form.favicon.errors }}
+  </div>
+
+  <div style="border-top:1px solid var(--line);margin:1.4rem 0"></div>
+  <h3 style="font-size:1rem;margin-bottom:1rem">WhatsApp &amp; social link preview</h3>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_title.id_for_label }}">Preview heading</label>
+    {{ form.social_preview_title }}
+    <div class="help">The bold heading displayed with a shared homepage link.</div>
+    {{ form.social_preview_title.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_description.id_for_label }}">Preview description</label>
+    {{ form.social_preview_description }}
+    <div class="help">Keep this concise so WhatsApp does not truncate the important part.</div>
+    {{ form.social_preview_description.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_image.id_for_label }}">Preview image</label>
+    <div class="current-thumb">
+      <img src="{% if settings_obj and settings_obj.social_preview_image %}{{ settings_obj.social_preview_image.url }}{% else %}{% static 'img/og-cover.jpg' %}{% endif %}" alt="Current social preview image" style="width:180px;height:95px;object-fit:cover">
+      <span class="help">{% if settings_obj and settings_obj.social_preview_image %}Current preview — upload a new image to replace it.{% else %}Using the default preview image.{% endif %}</span>
+    </div>
+    {{ form.social_preview_image }}
+    <div class="help">1200×630px is recommended for a large, clear WhatsApp preview.</div>
+    {{ form.social_preview_image.errors }}
   </div>
 
   <div class="form-actions">

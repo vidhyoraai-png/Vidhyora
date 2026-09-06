@@ -30,7 +30,7 @@ from . import (
     web_search,
 )
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, PWASettings, StoreProfile
+from .models import ActiveUserSession, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, PWASettings, SiteCustomization, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
     _ai_excel_bytes, _ai_generated_file_spec, _ai_pdf_bytes,
@@ -196,7 +196,9 @@ class SingleDeviceLoginTests(TestCase):
 
 
 class NVIDIAImageGenerationTests(TestCase):
-    PNG_BYTES = b'\x89PNG\r\n\x1a\nmock-image'
+    PNG_BYTES = base64.b64decode(
+        b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    )
 
     @override_settings(
         NVIDIA_FLUX_API_KEY='test-flux-key',
@@ -260,6 +262,32 @@ class NVIDIAImageGenerationTests(TestCase):
 
         self.assertIn('NVIDIA_FLUX_API_KEY', str(raised.exception))
         post.assert_not_called()
+
+    def test_damaged_image_payload_is_rejected_before_it_can_be_saved(self):
+        payload = {
+            'artifacts': [{
+                'base64': base64.b64encode(b'\x89PNG\r\n\x1a\nnot-a-real-image').decode(),
+            }],
+        }
+
+        with self.assertRaises(image_generation.ImageGenerationError) as raised:
+            image_generation._decode_artifact(payload)
+
+        self.assertIn('damaged image', str(raised.exception).lower())
+
+    def test_blank_image_payload_is_reported_as_a_failure(self):
+        blank = io.BytesIO()
+        Image.new('RGB', (16, 16), 'white').save(blank, format='PNG')
+        payload = {
+            'artifacts': [{
+                'base64': base64.b64encode(blank.getvalue()).decode(),
+            }],
+        }
+
+        with self.assertRaises(image_generation.ImageGenerationError) as raised:
+            image_generation._decode_artifact(payload)
+
+        self.assertIn('blank image', str(raised.exception).lower())
 
     def setUp(self):
         cache.clear()
@@ -387,6 +415,195 @@ class NVIDIAImageGenerationTests(TestCase):
         for hidden_name in ('NVIDIA', 'FLUX', 'Nemotron', 'Black Forest'):
             self.assertNotIn(hidden_name.lower(), detail.lower())
 
+    def test_twenty_successful_images_is_the_daily_limit(self):
+        for index in range(20):
+            AIUserImage.objects.create(
+                user=self.user,
+                url=f'/media/ai_generated/already-{index}.png',
+            )
+
+        with patch('myapp.views._ai_flux_response') as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Generate one more image',
+                    'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()['status'], 'rate_limited')
+        self.assertEqual(response.json()['limit'], 20)
+        self.assertIn('tomorrow', response.json()['detail'].lower())
+        flux_response.assert_not_called()
+
+    def test_image_follow_up_reuses_the_previous_image(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Image edits')
+        source = 'data:image/png;base64,' + base64.b64encode(self.PNG_BYTES).decode()
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_ASSISTANT,
+            content='',
+            image_data=source,
+            model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+        )
+
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'conversation_id': conversation.pk,
+                    'message': '8k',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        args = flux_response.call_args.args
+        self.assertEqual(args[0].pk, conversation.pk)
+        self.assertEqual(args[1], '8k')
+        self.assertEqual(args[2], source)
+
+    def test_show_image_follow_up_redisplays_the_real_previous_image(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Show result')
+        image_url = '/media/ai_generated/previous-result.png'
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_ASSISTANT,
+            content='',
+            image_data=image_url,
+            model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+        )
+
+        response = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({
+                'conversation_id': conversation.pk,
+                'message': 'Show the image',
+                'model': ai_chat.CHATGPT_56_MODEL_KEY,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['X-Request-Category'], 'image_recall')
+        self.assertEqual(response['X-Generated-Image-Url'], image_url)
+        self.assertEqual(
+            conversation.messages.filter(
+                role=AIMessage.ROLE_ASSISTANT, image_data=image_url,
+            ).count(),
+            2,
+        )
+
+    @patch('myapp.views.image_ocr.extract_data_uri', return_value='')
+    @patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Reusable image prompt']))
+    @patch('myapp.views._ai_flux_response')
+    def test_prompt_for_an_attached_image_routes_to_vision_not_generation(
+        self, flux_response, stream_chat, ocr,
+    ):
+        source = 'data:image/png;base64,' + base64.b64encode(self.PNG_BYTES).decode()
+        response = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({
+                'message': 'Generate a prompt to recreate this image',
+                'image': source,
+                'model': ai_chat.CHATGPT_56_MODEL_KEY,
+            }),
+            content_type='application/json',
+        )
+        reply = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(reply, 'Reusable image prompt')
+        self.assertEqual(response['X-Request-Category'], 'image')
+        self.assertEqual(stream_chat.call_args.kwargs['model_key'], 'vision')
+        flux_response.assert_not_called()
+
+    def test_natural_scene_description_routes_to_image_generation(self):
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'a girl sitting in a park',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(flux_response.call_args.args[1], 'a girl sitting in a park')
+        self.assertEqual(flux_response.call_args.args[2], '')
+
+    def test_reply_to_image_questions_combines_original_request_and_details(self):
+        conversation = AIConversation.objects.create(user=self.user, title='Instagram image')
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_USER,
+            content='Made image fir instagram',
+        )
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_ASSISTANT,
+            content=(
+                "I can help you create an image for Instagram! To make something that "
+                "fits your feed perfectly, I'll need a few details. What's the image "
+                "about? What style, colors, text, or reference images do you want? "
+                "Once I have those details, I'll generate a custom image."
+            ),
+        )
+
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'conversation_id': conversation.pk,
+                    'message': 'blue and gold colours with Happy Janmashtami text',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        combined = flux_response.call_args.args[1]
+        self.assertIn('Made image fir instagram', combined)
+        self.assertIn(
+            'Additional image details: blue and gold colours with Happy Janmashtami text',
+            combined,
+        )
+
+    @patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Okay.']))
+    @patch('myapp.views._ai_flux_response')
+    def test_cancelling_image_questions_stays_in_chat(self, flux_response, stream_chat):
+        conversation = AIConversation.objects.create(user=self.user, title='Cancelled image')
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_USER,
+            content='Create an image for Instagram',
+        )
+        AIMessage.objects.create(
+            conversation=conversation,
+            role=AIMessage.ROLE_ASSISTANT,
+            content='What is the image about? Please share the subject and style details.',
+        )
+
+        response = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({
+                'conversation_id': conversation.pk,
+                'message': 'no thanks',
+                'model': ai_chat.CHATGPT_56_MODEL_KEY,
+            }),
+            content_type='application/json',
+        )
+        reply = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(reply, 'Okay.')
+        flux_response.assert_not_called()
+        stream_chat.assert_called_once()
+
 
 class ImageAspectRatioFromPromptTests(TestCase):
     """Reports #45, #47 and #48: every image came back a 1024x1024 square.
@@ -419,6 +636,13 @@ class ImageAspectRatioFromPromptTests(TestCase):
                 'Create image good morning size 9.12 with motivational msg'
             ),
             (896, 1152),
+        )
+
+    def test_ratio_before_the_size_word_is_also_understood(self):
+        # Report #53 used the natural shorthand "9.11 size".
+        self.assertEqual(
+            image_generation.resolve_dimensions('9.11 size'),
+            (896, 1120),
         )
 
     def test_instagram_post_becomes_a_feed_shaped_portrait(self):
@@ -644,6 +868,145 @@ class DashboardSignupFilterTests(TestCase):
         self.assertEqual([u.username for u in response.context['users']], ['located-user'])
 
 
+class DashboardSignupPasswordResetTests(TestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user('reset-staff', password='staff-password', is_staff=True)
+        self.customer = User.objects.create_user('reset-customer', password='old-password')
+        self.client.force_login(self.staff)
+
+    def test_staff_can_generate_a_new_customer_password(self):
+        response = self.client.post(f'/store/dashboard/signups/{self.customer.pk}/reset-password/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['status'], 'ok')
+        self.assertGreaterEqual(len(payload['password']), 16)
+        self.assertEqual(response['Cache-Control'], 'no-store')
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password(payload['password']))
+        self.assertFalse(self.customer.check_password('old-password'))
+
+    def test_get_does_not_reset_the_password(self):
+        response = self.client.get(f'/store/dashboard/signups/{self.customer.pk}/reset-password/')
+
+        self.assertEqual(response.status_code, 405)
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password('old-password'))
+
+    def test_staff_account_password_cannot_be_reset_from_signups(self):
+        other_staff = User.objects.create_user('other-staff', password='unchanged', is_staff=True)
+        response = self.client.post(f'/store/dashboard/signups/{other_staff.pk}/reset-password/')
+
+        self.assertEqual(response.status_code, 403)
+        other_staff.refresh_from_db()
+        self.assertTrue(other_staff.check_password('unchanged'))
+
+    def test_non_staff_cannot_reset_a_password(self):
+        self.client.force_login(self.customer)
+        victim = User.objects.create_user('reset-victim', password='unchanged')
+        response = self.client.post(f'/store/dashboard/signups/{victim.pk}/reset-password/')
+
+        self.assertEqual(response.status_code, 302)
+        victim.refresh_from_db()
+        self.assertTrue(victim.check_password('unchanged'))
+
+
+class DashboardUserDataTests(TestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='user-data-staff', password='staff-password', is_staff=True,
+        )
+        self.customer = User.objects.create_user(
+            username='customer-account', first_name='Anita', last_name='Sharma',
+            email='anita@example.com', password='customer-password',
+        )
+        StoreProfile.objects.create(
+            user=self.customer, ai_location='Lucknow, Uttar Pradesh', login_count=4,
+        )
+        for index in range(3):
+            AIConversation.objects.create(user=self.customer, title=f'Chat {index}')
+        self.client.force_login(self.staff)
+
+    def test_user_data_page_shows_only_requested_customer_fields(self):
+        response = self.client.get('/store/dashboard/user-data/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['total_users'], 1)
+        self.assertEqual(response.context['total_chats'], 3)
+        self.assertEqual(response.context['total_logins'], 4)
+        self.assertContains(response, 'User Data')
+        self.assertContains(response, 'User name')
+        self.assertContains(response, 'Location')
+        self.assertContains(response, 'Chats done')
+        self.assertContains(response, 'Times logged in')
+        self.assertContains(response, 'Anita Sharma')
+        self.assertContains(response, 'Lucknow, Uttar Pradesh')
+        self.assertNotContains(response, 'anita@example.com')
+        row = response.context['users'].get(pk=self.customer.pk)
+        self.assertEqual(row.chat_count, 3)
+        self.assertEqual(row.store_profile.login_count, 4)
+
+    def test_user_data_search_matches_location(self):
+        other = User.objects.create_user(
+            username='other-customer', first_name='Other', password='password',
+        )
+        StoreProfile.objects.create(user=other, ai_location='Delhi')
+
+        response = self.client.get('/store/dashboard/user-data/?q=Lucknow')
+
+        self.assertEqual(list(response.context['users']), [self.customer])
+
+    def test_user_data_page_is_staff_only(self):
+        self.client.force_login(self.customer)
+
+        response = self.client.get('/store/dashboard/user-data/')
+
+        self.assertRedirects(response, '/AI/', fetch_redirect_response=False)
+
+    def test_successful_logins_are_counted_but_failed_attempts_are_not(self):
+        profile = self.customer.store_profile
+        profile.login_count = 0
+        profile.save(update_fields=['login_count'])
+        client = self.client_class()
+
+        failed = client.post(
+            '/AI/api/login/',
+            data=json.dumps({
+                'identifier': self.customer.email,
+                'password': 'wrong-password',
+            }),
+            content_type='application/json',
+        )
+        profile.refresh_from_db()
+        self.assertEqual(failed.status_code, 400)
+        self.assertEqual(profile.login_count, 0)
+
+        first = client.post(
+            '/AI/api/login/',
+            data=json.dumps({
+                'identifier': self.customer.email,
+                'password': 'customer-password',
+            }),
+            content_type='application/json',
+        )
+        profile.refresh_from_db()
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(profile.login_count, 1)
+
+        client.post('/AI/api/logout/')
+        second = client.post(
+            '/AI/api/login/',
+            data=json.dumps({
+                'identifier': self.customer.email,
+                'password': 'customer-password',
+            }),
+            content_type='application/json',
+        )
+        profile.refresh_from_db()
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(profile.login_count, 2)
+
+
 class GeneratedFileQualityTests(TestCase):
     """The 'create a pdf/doc for me' failures seen in real use.
 
@@ -767,6 +1130,48 @@ class ReportDrivenRoutingFixTests(TestCase):
         ):
             with self.subTest(prompt=prompt):
                 self.assertTrue(ai_chat.is_image_generation_request(prompt))
+
+    def test_reported_and_natural_phrases_route_to_image_generation(self):
+        for prompt in (
+            'Made image fir instagram',
+            'Made krushna image',
+            'girl sitting in a park',
+            'a woman walking near a lake',
+            'Krishna image',
+            'Instagram post for my shop',
+            'sunset over mountains',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(
+                    ai_chat.is_image_generation_request(prompt)
+                    or ai_chat.is_natural_image_prompt(prompt)
+                )
+
+    def test_text_questions_are_not_mistaken_for_natural_image_prompts(self):
+        for prompt in (
+            'describe this image',
+            'tell me about a girl sitting in a park',
+            'write a story about a girl in a park',
+            'image quality is poor',
+            'how to make an image',
+            'what is Instagram',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(ai_chat.is_natural_image_prompt(prompt))
+
+    def test_image_clarification_and_cancellation_are_detected(self):
+        clarification = (
+            "I can help you create an image for Instagram. What's the image about? "
+            "Tell me the style, colors, text, or reference images you want. Once I "
+            "have those details, I'll generate a custom image."
+        )
+        self.assertTrue(ai_chat.is_image_details_question(clarification))
+        self.assertFalse(
+            ai_chat.is_image_details_question('Here is an explanation of image compression.')
+        )
+        for reply in ('no thanks', 'cancel', 'not now', 'never mind'):
+            with self.subTest(reply=reply):
+                self.assertTrue(ai_chat.is_image_flow_cancel(reply))
 
     def test_analysis_requests_are_not_mistaken_for_edits(self):
         # These arrive with an image attached too. Treating them as edits would
@@ -1448,7 +1853,13 @@ class AIResponseReliabilityTests(TestCase):
             'Cat ka image bna ke do',
             'create design of Nashik360 logo',
         ]:
-            self.assertTrue(ai_chat.is_image_generation_request(prompt), prompt)
+                self.assertTrue(ai_chat.is_image_generation_request(prompt), prompt)
+
+    def test_rushed_capability_question_is_not_drawn_as_an_image(self):
+        prompt = 'Hey char GPT can use generate images'
+
+        self.assertTrue(ai_chat.is_image_generation_request(prompt))
+        self.assertTrue(ai_chat.is_image_capability_question(prompt))
 
         # AIReport #31, #34 — informal noun/verb abbreviations.
         self.assertTrue(ai_chat.is_image_generation_request('plz gen img'))
@@ -1492,6 +1903,24 @@ class AIResponseReliabilityTests(TestCase):
         # none of dikhao/daalo/lagao/jodo/nikaal were recognised before.
         self.assertTrue(ai_chat.is_image_edit_instruction('Is ladki ko cafe me dikhao'))
 
+        # Report #63: a typo in a normal nighttime edit must not fall through
+        # to a text model and trigger an unrelated safety refusal.
+        self.assertTrue(ai_chat.is_image_edit_instruction('mack at night'))
+        self.assertTrue(ai_chat.is_image_edit_instruction('please chnage'))
+
+        # Reports #52/#62: short follow-ups after an image must keep using the
+        # image editor rather than letting a text model promise an edit.
+        for prompt in ('8k', 'upscale this', 'more poses', 'another pose'):
+            self.assertTrue(ai_chat.is_image_edit_instruction(prompt), prompt)
+        self.assertTrue(ai_chat.is_image_edit_instruction('9.11 size'))
+
+        self.assertTrue(
+            ai_chat.is_image_prompt_writing_request(
+                'Generate a prompt to recreate this image'
+            )
+        )
+        self.assertTrue(ai_chat.is_show_previous_image_request('Show the image'))
+
         # Must not misfire on ordinary chat/analysis text.
         for prompt in [
             'what is in this image', 'describe this photo', 'is this a cat or a dog',
@@ -1513,7 +1942,7 @@ class AIResponseReliabilityTests(TestCase):
         self.assertNotContains(response, "localStorage.getItem('ai_model')")
         self.assertNotContains(response, "localStorage.setItem('ai_model'")
 
-    def test_free_users_only_get_quick_and_code(self):
+    def test_free_users_get_quick_code_and_image_generation(self):
         user = User.objects.create_user(username='free-models@example.com', password='test-password-123')
         StoreProfile.objects.create(user=user)
         self.client.force_login(user)
@@ -1527,8 +1956,8 @@ class AIResponseReliabilityTests(TestCase):
         self.assertTrue(access[ai_chat.CHATGPT_56_MODEL_KEY])
         self.assertTrue(access['ultra'])
         self.assertTrue(access['reasoning'])
-        self.assertTrue(access[ai_chat.FLUX_KLEIN_4B_MODEL_KEY])
-        self.assertContains(page, 'Free users can use Quick and Code.')
+        self.assertFalse(access[ai_chat.FLUX_KLEIN_4B_MODEL_KEY])
+        self.assertContains(page, 'Free users can use Quick, Code, and image generation.')
 
         blocked = self.client.post(
             '/AI/api/send/',
@@ -1539,7 +1968,7 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(blocked.json()['status'], 'subscription_required')
         self.assertEqual(AIConversation.objects.filter(user=user).count(), 0)
 
-    def test_free_quick_is_allowed_but_locked_automatic_image_routing_is_not(self):
+    def test_free_quick_and_automatic_image_routing_are_allowed(self):
         user = User.objects.create_user(username='free-quick@example.com', password='test-password-123')
         StoreProfile.objects.create(user=user)
         self.client.force_login(user)
@@ -1553,13 +1982,71 @@ class AIResponseReliabilityTests(TestCase):
             self.assertEqual(allowed.status_code, 200)
             self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Quick reply')
 
-        blocked_image = self.client.post(
-            '/AI/api/send/',
-            data=json.dumps({'message': 'Generate an image of a mountain', 'model': 'quick'}),
-            content_type='application/json',
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            allowed_image = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': 'Generate an image of a mountain', 'model': 'quick'}),
+                content_type='application/json',
+            )
+
+        self.assertEqual(allowed_image.status_code, 200)
+        flux_response.assert_called_once()
+
+    def test_image_routing_is_not_blocked_by_a_stale_premium_selection(self):
+        user = User.objects.create_user(username='free-image-route@example.com', password='test-password-123')
+        StoreProfile.objects.create(user=user)
+        self.client.force_login(user)
+
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'Generate an image of a mountain',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        flux_response.assert_called_once()
+
+    def test_guest_can_select_image_generation(self):
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'A calm lake at sunrise',
+                    'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                }),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        flux_response.assert_called_once()
+
+    def test_image_generation_has_no_separate_hourly_lockout(self):
+        user = User.objects.create_user(
+            username='unlimited-images@example.com', password='test-password-123', is_staff=True,
         )
-        self.assertEqual(blocked_image.status_code, 403)
-        self.assertEqual(blocked_image.json()['status'], 'subscription_required')
+        self.client.force_login(user)
+
+        with patch(
+            'myapp.views._ai_flux_response', side_effect=lambda *args, **kwargs: HttpResponse(),
+        ) as flux_response:
+            responses = [
+                self.client.post(
+                    '/AI/api/send/',
+                    data=json.dumps({
+                        'message': f'Generate image number {index}',
+                        'model': ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+                    }),
+                    content_type='application/json',
+                )
+                for index in range(11)
+            ]
+
+        self.assertTrue(all(response.status_code == 200 for response in responses))
+        self.assertEqual(flux_response.call_count, 11)
 
     def test_premium_user_keeps_all_models(self):
         user = User.objects.create_user(username='premium-models@example.com', password='test-password-123')
@@ -1934,25 +2421,59 @@ class AIResponseReliabilityTests(TestCase):
         answers from its own knowledge, as it did before search existed."""
         cache.clear()
         self.addCleanup(cache.clear)
-        # ddgs.DDGS is a lazy proxy that forwards to ddgs.ddgs.DDGS; patching
-        # the proxy leaves the real class (and so the real network call) in
-        # place, so the implementation class is the target here.
-        with patch('ddgs.ddgs.DDGS.text', side_effect=RuntimeError('rate limited')):
+        with patch(
+            'myapp.web_search.requests.post',
+            side_effect=web_search.requests.RequestException('rate limited'),
+        ):
             self.assertEqual(web_search.search('current gold rate'), [])
             self.assertIsNone(web_search.build_context('current gold rate'))
 
     def test_web_results_are_passed_to_the_model_as_grounding(self):
         cache.clear()
         self.addCleanup(cache.clear)
-        fake = [{'title': 'Gold Rate Today', 'href': 'https://example.com/gold',
-                 'body': 'Gold is 71,000 per 10g today.'}]
-        with patch('ddgs.ddgs.DDGS.text', return_value=fake):
+        response = Mock()
+        response.json.return_value = {'results': [{
+            'title': 'Gold Rate Today',
+            'url': 'https://example.com/gold',
+            'content': 'Gold is 71,000 per 10g today.',
+        }]}
+        with patch('myapp.web_search.requests.post', return_value=response) as post:
             context = web_search.build_context('current gold rate in india')
+        request_body = post.call_args.kwargs['json']
+        self.assertEqual(request_body['query'], 'current gold rate in india')
+        self.assertTrue(request_body['api_key'])
         self.assertIn('Gold Rate Today', context)
         self.assertIn('https://example.com/gold', context)
         self.assertIn('71,000', context)
         # The model must be told not to invent beyond what was actually found.
         self.assertIn('never invent a result', context.lower())
+
+    def test_search_toggle_forces_search_for_a_timeless_question(self):
+        user = User.objects.create_user(
+            username='forced-search@example.com', password='test-password-123', is_staff=True,
+        )
+        self.client.force_login(user)
+        context = 'LIVE WEB RESULTS\nhttps://example.com/recursion'
+        with (
+            patch('myapp.views.web_search.build_context', return_value=context) as build_context,
+            patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Grounded answer'])) as stream,
+        ):
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({
+                    'message': 'explain recursion',
+                    'model': ai_chat.CHATGPT_56_MODEL_KEY,
+                    'web_search': True,
+                }),
+                content_type='application/json',
+            )
+            reply = b''.join(response.streaming_content).decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(reply, 'Grounded answer')
+        build_context.assert_called_once_with('explain recursion')
+        self.assertEqual(stream.call_args.kwargs['retrieved_context'], context)
+        self.assertEqual(stream.call_args.kwargs['retrieved_source'], 'web_search')
 
     def test_spreadsheet_and_presentation_requests_produce_real_office_files(self):
         for message, expected in (
@@ -2451,6 +2972,16 @@ class AIAccountProfileTests(TestCase):
         self.assertNotContains(response, 'Private other chat')
         self.assertEqual(response['Cache-Control'], 'private, no-store')
 
+    def test_account_menu_has_support_popup_with_whatsapp_and_email(self):
+        response = self.client.get('/')
+
+        self.assertContains(response, 'id="supportMenuBtn"')
+        self.assertContains(response, 'Contact support')
+        self.assertContains(response, '9695953183')
+        self.assertContains(response, 'https://wa.me/919695953183')
+        self.assertContains(response, 'mailto:support@edutrellis.in')
+        self.assertContains(response, "supportMenuBtn.addEventListener('click', openSupportModal)")
+
     def test_report_submit_snapshots_the_preceding_user_question(self):
         conversation = AIConversation.objects.create(user=self.user, title='Chat')
         AIMessage.objects.create(conversation=conversation, role=AIMessage.ROLE_USER, content='What is 2+2?')
@@ -2912,6 +3443,39 @@ class AIDashboardOverviewTests(TestCase):
         free_profile = StoreProfile.objects.get(user__email='free-customer@example.com')
         self.assertEqual(free_profile.manual_amount_paid, Decimal('0.00'))
 
+    def test_ai_management_create_form_has_access_period_choices(self):
+        response = self.client.get('/store/dashboard/ai/')
+
+        self.assertContains(response, 'Give AI premium access for')
+        self.assertContains(response, '1 month')
+        self.assertContains(response, '6 months')
+        self.assertContains(response, '1 year')
+        self.assertContains(response, 'Leave blank to use admin54321.')
+
+    def test_ai_management_creation_grants_access_and_builds_one_time_message(self):
+        before = timezone.now()
+        response = self.client.post('/store/dashboard/users/add/', {
+            'next': 'dashboard_ai_management', 'name': 'WhatsApp Customer',
+            'email': 'whatsapp-customer@example.com', 'phone': '9444444444',
+            'password': '', 'amount_paid': '', 'ai_access_days': '180',
+        }, follow=True)
+
+        self.assertRedirects(response, '/store/dashboard/ai/')
+        created = User.objects.get(email='whatsapp-customer@example.com')
+        self.assertTrue(created.check_password('admin54321'))
+        profile = created.store_profile
+        self.assertGreaterEqual(profile.ai_subscription_until, before + timedelta(days=180))
+        self.assertLess(profile.ai_subscription_until, timezone.now() + timedelta(days=180, minutes=1))
+        self.assertContains(response, 'Account ready to share')
+        self.assertContains(response, 'activated for 180 days')
+        self.assertContains(response, 'whatsapp-customer@example.com')
+        self.assertContains(response, 'admin54321')
+        self.assertContains(response, 'Share on WhatsApp')
+
+        refreshed = self.client.get('/store/dashboard/ai/')
+        self.assertNotContains(refreshed, 'Account ready to share')
+        self.assertNotIn('dashboard_new_account_whatsapp', self.client.session)
+
 
 class PWAFrontendSettingsTests(TestCase):
     def setUp(self):
@@ -2979,6 +3543,44 @@ class PWAFrontendSettingsTests(TestCase):
                 rendered = Image.open(io.BytesIO(response.content))
                 self.assertEqual(rendered.size, (size, size))
 
+    def test_enabled_pwa_uses_default_icons_and_shows_install_ui_without_upload(self):
+        pwa = PWASettings.get_solo()
+        pwa.is_enabled = True
+        pwa.app_name = 'Vidhyora Install Test'
+        pwa.save()
+
+        homepage = self.client.get('/')
+        self.assertContains(homepage, 'Install Vidhyora Install Test as an app')
+        self.assertContains(homepage, "setTimeout(function(){ banner.hidden = false; }, 1500)")
+        self.assertContains(homepage, 'Install app')
+
+        manifest = self.client.get('/AI/manifest.json').json()
+        self.assertIn('/static/ai-icon-192.png', manifest['icons'][0]['src'])
+        self.assertIn('/static/ai-icon-512.png', manifest['icons'][1]['src'])
+
+    def test_admin_can_customize_homepage_whatsapp_preview(self):
+        preview_bytes = io.BytesIO()
+        Image.new('RGB', (1200, 630), (4, 120, 87)).save(preview_bytes, format='JPEG')
+        upload = SimpleUploadedFile(
+            'whatsapp-preview.jpg', preview_bytes.getvalue(), content_type='image/jpeg',
+        )
+
+        saved = self.client.post('/store/dashboard/customize/', {
+            'social_preview_title': 'Custom Vidhyora Preview',
+            'social_preview_description': 'A custom description for shared links.',
+            'social_preview_image': upload,
+        })
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(saved.context['saved'])
+        customization = SiteCustomization.get_solo()
+        self.assertEqual(customization.social_preview_title, 'Custom Vidhyora Preview')
+
+        homepage = self.client.get('/', secure=True, HTTP_HOST='vidhyora.online')
+        self.assertContains(homepage, '<meta property="og:title" content="Custom Vidhyora Preview">', html=True)
+        self.assertContains(homepage, '<meta property="og:description" content="A custom description for shared links.">', html=True)
+        self.assertContains(homepage, '<meta property="og:url" content="https://vidhyora.online/">', html=True)
+        self.assertContains(homepage, 'https://vidhyora.online/media/branding/social/whatsapp-preview')
+
     def test_disabling_pwa_removes_manifest_banner_and_registration(self):
         self._save_enabled_settings()
         disabled = self.client.post('/store/dashboard/pwa-settings/', {
@@ -3018,7 +3620,16 @@ class DashboardBackupDeletionTests(TestCase):
     def test_pages_survive_an_old_backup_before_customization_migration(self, get_solo):
         context = site_customization_context(RequestFactory().get('/store/'))
 
-        self.assertEqual(context, {'SITE_FAVICON_URL': None})
+        self.assertIsNone(context['SITE_FAVICON_URL'])
+        self.assertEqual(
+            context['SITE_SOCIAL_PREVIEW_TITLE'],
+            'Vidhyora AI — Free AI Chat Assistant',
+        )
+        self.assertIn('Chat with Vidhyora AI', context['SITE_SOCIAL_PREVIEW_DESCRIPTION'])
+        self.assertEqual(
+            context['SITE_SOCIAL_PREVIEW_IMAGE_URL'],
+            'http://testserver/static/img/og-cover.jpg',
+        )
 
     @patch('myapp.views.call_command')
     @patch('myapp.views.dropbox_backup.restore_backup')
@@ -3112,16 +3723,15 @@ class RemovedPublicSurfaceTests(TestCase):
         self.client.force_login(staff)
         self.assertEqual(self.client.get('/store/dashboard/').status_code, 200)
 
-    def test_mobile_feature_intro_lists_images_and_models_and_closes_model_stack(self):
+    def test_mobile_feature_intro_lists_current_features_without_closing_model_intro(self):
         response = self.client.get('/AI/')
-        # Deliberately "Generate images", not "Generate and edit images":
-        # editing an uploaded photo is unavailable upstream, so advertising it
-        # here sent users straight into an error (AIReports #37, #44, #46).
-        self.assertContains(response, 'Generate images')
-        self.assertNotContains(response, 'Generate and edit images')
+        self.assertNotContains(response, 'Download from YouTube')
+        self.assertContains(response, 'Unlimited images')
+        self.assertContains(response, 'Upload images')
+        self.assertContains(response, 'Upload files')
         self.assertContains(response, 'Access multiple AI models')
-        self.assertContains(response, "localStorage.setItem('ai_model_intro_seen', '1')")
-        self.assertContains(response, 'if (modelDropdown) modelDropdown.hidden = true')
+        self.assertContains(response, 'if (event) event.stopPropagation()')
+        self.assertNotContains(response, 'if (modelIntro) modelIntro.hidden = true')
         self.assertContains(response, 'max-height:calc(100dvh - 24px)')
 
     def test_homepage_shows_no_starter_questions_or_model_hint(self):

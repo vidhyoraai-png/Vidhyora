@@ -172,6 +172,9 @@ NVIDIA_API_KEY = 'nvapi-KUqw-oj05S7KpJ4W8MoAfygvRl-4l_t63stRfapTII0QubZO8G6Tbl4z
 NVIDIA_FLUX_API_KEY = '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'
 NVIDIA_FLUX_EDIT_API_KEY = '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'
 
+# Tavily powers optional live web search from the AI chat composer.
+TAVILY_API_KEY = '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'
+
 # ── Dropbox archive for AI-generated images ──────────────────────────────────
 # Every image the AI generates is mirrored to /vidhyora/<user email>/ in this
 # Dropbox account (myapp/dropbox_images.py), because local media storage is

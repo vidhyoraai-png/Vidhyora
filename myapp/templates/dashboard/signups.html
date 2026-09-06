@@ -36,6 +36,16 @@
 .location-status.declined{background:#fff3e2;color:#a45b00}
 .location-status.unknown{background:#eef1f5;color:#697386}
 .location-coords{display:block;margin-top:.3rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.63rem;color:var(--text);white-space:nowrap}
+.reset-password-btn{display:inline-flex;align-items:center;gap:.3rem;border:0;background:none;color:#7d8795;cursor:pointer;font-family:inherit;font-size:.74rem;font-weight:700;white-space:nowrap;transition:color .2s;padding:0}
+.reset-password-btn:hover{color:var(--red)}
+.password-result{display:none;position:fixed;inset:0;z-index:200;background:rgba(7,23,19,.58);padding:1rem;align-items:center;justify-content:center}
+.password-result.open{display:flex}
+.password-result-card{width:min(440px,100%);background:#fff;border-radius:16px;padding:1.35rem;box-shadow:var(--shadow-md)}
+.password-result-card h3{font-size:1rem;margin-bottom:.45rem}
+.password-result-card p{font-size:.8rem;line-height:1.45;margin-bottom:1rem}
+.generated-password{display:flex;gap:.55rem;align-items:center}
+.generated-password code{flex:1;min-width:0;padding:.75rem .85rem;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-alt);color:var(--head);font-size:.9rem;overflow-wrap:anywhere;user-select:all}
+.password-result-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:1rem}
 @media(max-width:800px){.signup-insights{grid-template-columns:1fr}}
 @media(max-width:560px){.signup-chart{gap:.3rem;padding-left:.7rem;padding-right:.7rem}.signup-chart-track{width:75%}.signup-chart-label{font-size:.6rem;transform:rotate(-35deg);margin-top:.2rem}.payment-insight-body{gap:.8rem}.payment-donut{width:112px;height:112px}.payment-donut:after{width:70px;height:70px}}
 </style>
@@ -182,6 +192,7 @@
           <div class="row-actions">
             <a class="edit-btn" href="{% url 'dashboard_signup_edit' u.pk %}" title="Edit"><i class="fas fa-pen"></i></a>
             {% if not u.is_staff and not u.is_superuser %}
+            <button type="button" class="reset-password-btn" data-url="{% url 'dashboard_signup_reset_password' u.pk %}" data-user="{{ u.email|default:u.username }}" title="Reset password for {{ u.email|default:u.username }}"><i class="fas fa-key"></i> Reset password</button>
             <form method="post" action="{% url 'dashboard_signup_delete' u.pk %}" onsubmit="return confirm('Permanently delete this customer? This also deletes all their orders, reviews and cart. This cannot be undone.')">
               {% csrf_token %}
               <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
@@ -198,8 +209,73 @@
   </div>
 </div>
 
+<div class="password-result" id="passwordResult" role="dialog" aria-modal="true" aria-labelledby="passwordResultTitle">
+  <div class="password-result-card">
+    <h3 id="passwordResultTitle">New password generated</h3>
+    <p>Copy this password now and send it securely. It will not be shown again.</p>
+    <div class="generated-password">
+      <code id="generatedPassword"></code>
+      <button type="button" class="btn btn-primary" id="copyGeneratedPassword"><i class="fas fa-copy"></i> Copy</button>
+    </div>
+    <div class="password-result-actions">
+      <button type="button" class="btn btn-ghost" id="closePasswordResult">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
+  var modal = document.getElementById('passwordResult');
+  var passwordText = document.getElementById('generatedPassword');
+  var copyButton = document.getElementById('copyGeneratedPassword');
+
+  function closePasswordResult(){
+    modal.classList.remove('open');
+    passwordText.textContent = '';
+    copyButton.innerHTML = '<i class="fas fa-copy"></i> Copy';
+  }
+
+  document.querySelectorAll('.reset-password-btn').forEach(function(button){
+    button.addEventListener('click', function(){
+      var account = button.getAttribute('data-user');
+      if (!confirm('Generate a new password for ' + account + '? Their current password will stop working immediately.')) return;
+
+      button.disabled = true;
+      fetch(button.getAttribute('data-url'), {
+        method: 'POST',
+        headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
+        credentials: 'same-origin'
+      })
+        .then(function(response){
+          return response.json().then(function(data){
+            if (!response.ok) throw new Error(data.detail || 'Could not reset the password.');
+            return data;
+          });
+        })
+        .then(function(data){
+          passwordText.textContent = data.password;
+          modal.classList.add('open');
+          document.getElementById('closePasswordResult').focus();
+        })
+        .catch(function(error){ alert(error.message); })
+        .finally(function(){ button.disabled = false; });
+    });
+  });
+
+  copyButton.addEventListener('click', function(){
+    navigator.clipboard.writeText(passwordText.textContent).then(function(){
+      copyButton.innerHTML = '<i class="fas fa-check"></i> Copied';
+    }).catch(function(){
+      var range = document.createRange();
+      range.selectNodeContents(passwordText);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    });
+  });
+  document.getElementById('closePasswordResult').addEventListener('click', closePasswordResult);
+  modal.addEventListener('click', function(event){ if (event.target === modal) closePasswordResult(); });
+  document.addEventListener('keydown', function(event){ if (event.key === 'Escape' && modal.classList.contains('open')) closePasswordResult(); });
+
   // Sequential, rate-limited (~1 req/sec) against OpenStreetMap's free public
   // Nominatim reverse-geocoder — same service/throttle as dashboard/delivery.html's
   // forward geocoding, no API key involved. Coordinates stay as the visible

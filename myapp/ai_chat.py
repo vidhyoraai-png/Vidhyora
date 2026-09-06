@@ -398,8 +398,8 @@ CHATGPT_56_SYSTEM_SUFFIX = (
     "at all here, since that reveals backend routing this persona never "
     "exposes (same as never naming Vidhyora/NVIDIA/Nemotron elsewhere in "
     "this prompt) — just answer as if generation is something you "
-    "yourself do. Do mention that uploading a photo to edit it is "
-    "currently under maintenance and will be back soon. Video or animation "
+    "yourself do. Photo uploads and image editing are available too: tell "
+    "the user to upload a photo and describe the change they want. Video or animation "
     "generation is a separate, different capability that this application "
     "does not support at all — if asked to create/generate/make a video, "
     "animation, motion graphic, or clip, say plainly that video generation "
@@ -727,7 +727,12 @@ _IMAGE_CAPABILITY_QUESTION_RE = re.compile(
     rf"^\s*(?:hi|hey|hello)?[,!\s]*(?:can|could|do|does|are)\s+you\b"
     rf"(?:\s+(?:also|even|please))?\s+(?:{_IMAGE_GEN_VERB})\b"
     rf"(?:\s+(?:or|and)\s+(?:{_IMAGE_GEN_VERB}))?\s+(?:{_IMAGE_GEN_NOUN})s?"
-    r"\s*[?.!]*\s*$",
+    r"\s*[?.!]*\s*$|"
+    # Report #8: "Hey char GPT can use generate images" is a rushed
+    # capability question, not a request to draw those words as an image.
+    r"^\s*(?:hi|hey|hello)?[,!\s]*(?:chat|char)\s*gpt\s+"
+    r"(?:can|could)\s+(?:you\s+|use\s+)?(?:generate|create|make|edit)\s+"
+    r"(?:images?|photos?|pictures?)\s*[?.!]*\s*$",
     re.IGNORECASE,
 )
 
@@ -738,6 +743,35 @@ def is_image_generation_request(text):
 
 def is_image_capability_question(text):
     return bool(_IMAGE_CAPABILITY_QUESTION_RE.match(text or ''))
+
+
+# "Generate a prompt to recreate this image" asks for text describing an
+# attached image, not for a new image. Without this distinction report #51
+# was routed to FLUX and returned an unrelated/blank visual instead of the
+# requested reusable prompt.
+_IMAGE_PROMPT_WRITING_RE = re.compile(
+    r"\b(?:generate|create|write|make|give(?:\s+me)?)\b[\s\S]{0,35}\bprompt\b"
+    r"[\s\S]{0,60}\b(?:image|photo|picture|recreate|replicate)\b|"
+    r"\bprompt\b[\s\S]{0,45}\b(?:recreate|replicate|for)\b[\s\S]{0,30}"
+    r"\b(?:image|photo|picture)\b",
+    re.IGNORECASE,
+)
+
+
+def is_image_prompt_writing_request(text):
+    return bool(_IMAGE_PROMPT_WRITING_RE.search(text or ''))
+
+
+_SHOW_PREVIOUS_IMAGE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:show|display|send)\s+(?:me\s+)?"
+    r"(?:(?:the|that|this|last|previous|generated)\s+)?"
+    r"(?:image|photo|picture|result)(?:\s+again)?\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_show_previous_image_request(text):
+    return bool(_SHOW_PREVIOUS_IMAGE_RE.match(text or ''))
 
 
 # When an image is already attached, the attachment itself supplies the
@@ -757,7 +791,8 @@ def is_image_capability_question(text):
 _IMAGE_EDIT_ONLY_VERB = (
     r"remove|delete|erase|replace|crop|resize|blur|sharpen|brighten|darken|"
     r"whiten|desaturate|colorize|colourize|straighten|rotate|flip|redact|"
-    r"blackout|change|update|turn(?:\s+(?:this|it|that))?\s+in\s*to|"
+    r"upscale|enhance|retouch|restore|"
+    r"blackout|change|chnage|update|turn(?:\s+(?:this|it|that))?\s+in\s*to|"
     r"hatao|hataye|hata do|badlo|badal do|"
     r"dikhao|dikha do|dikhaiye|dikhana|"
     r"daalo|dalo|daal do|dal do|jodo|jod do|lagao|laga do|"
@@ -777,7 +812,16 @@ _IMAGE_EDIT_ONLY_RE = re.compile(
     # "use" alone is too generic to add there (it would misfire on "use this
     # data"/"use this method"), so it's only recognised when immediately
     # followed by one of the known image-shaped nouns.
-    rf"\b(?:{_IMAGE_EDIT_ONLY_VERB})\b|\buse\s+(?:this|that|the)\s+(?:{_IMAGE_GEN_NOUN})\b",
+    rf"\b(?:{_IMAGE_EDIT_ONLY_VERB})\b|"
+    rf"\buse\s+(?:this|that|the)\s+(?:{_IMAGE_GEN_NOUN})\b|"
+    r"\b(?:make|mack)\s+(?:(?:this|it)\s+)?(?:at\s+)?"
+    r"(?:night|nighttime|day|daytime|sunset|sunrise|evening|morning)\b|"
+    # Very short continuation prompts only have edit meaning because this
+    # matcher is consulted with an attached/prior image. Keep this branch
+    # anchored so normal sentences containing "8k" or "poses" cannot route.
+    r"^\s*(?:(?:make\s+)?(?:this|it)\s+)?(?:4k|8k|uhd|hd|higher\s+resolution|"
+    r"more\s+poses?|another\s+pose|different\s+poses?|more\s+variations?|"
+    r"\d{1,2}\s*[.:/x]\s*\d{1,2}\s*(?:size|ratio|aspect)?)\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
 
@@ -811,6 +855,86 @@ def is_probable_image_prompt(text):
     if '?' in text:
         return False
     return len(_IMAGE_STYLE_CUE_RE.findall(text)) >= 2
+
+
+# People often describe the desired result directly instead of using a command:
+# "girl sitting in a park", "Krishna image", or "Instagram post for my shop".
+# These deliberately narrow shapes cover that natural wording without turning
+# ordinary requests such as "describe this image" or "write a story about a
+# girl" into paid image-generation calls.
+_NATURAL_IMAGE_OUTPUT = (
+    r"image|photo|picture|poster|logo|wallpaper|banner|thumbnail|flyer|"
+    r"invitation|card|illustration|artwork|instagram post|insta post|"
+    r"social media post|social post"
+)
+_NATURAL_IMAGE_SUBJECT = (
+    r"girl|boy|woman|man|lady|couple|family|child|kid|person|people|"
+    r"krishna|krushna|ganesha|god|goddess|cat|dog|bird|animal|car|bike|"
+    r"robot|product|flower|tree|house|building|sunset|sunrise|mountains?"
+)
+_NATURAL_IMAGE_SCENE = (
+    r"sitting|standing|walking|running|playing|flying|dancing|smiling|"
+    r"posing|wearing|holding|riding|sleeping|working|cooking|reading|"
+    r"in|at|near|under|over|beside|inside|outside|with|on"
+)
+_NATURAL_IMAGE_RE = re.compile(
+    rf"^\s*(?:an?\s+|the\s+)?(?:[\w-]+\s+){{0,5}}(?:{_NATURAL_IMAGE_SUBJECT})\b"
+    rf"[\s\S]{{0,100}}\b(?:{_NATURAL_IMAGE_SCENE})\b[\s\S]{{0,100}}$|"
+    rf"^\s*(?:an?\s+|the\s+)?(?:{_NATURAL_IMAGE_OUTPUT})\b\s+"
+    rf"(?:of|for|with)\b[\s\S]+$|"
+    rf"^\s*[\s\S]{{1,100}}\b(?:{_NATURAL_IMAGE_OUTPUT})\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+_NATURAL_IMAGE_TEXT_REQUEST_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:tell|explain|describe|analyse|analyze|identify|"
+    r"read|summari[sz]e|write|translate|review|check|fix)\b|"
+    r"^\s*(?:what|why|how|who|where|when|can|could|do|does|is|are)\b|"
+    r"\b(?:story|essay|article)\s+(?:about|on)\b",
+    re.IGNORECASE,
+)
+
+
+def is_natural_image_prompt(text):
+    """Return True for a concise, direct visual description without a verb."""
+    text = (text or '').strip()
+    if not text or '?' in text or len(text.split()) > 30:
+        return False
+    if _NATURAL_IMAGE_TEXT_REQUEST_RE.search(text):
+        return False
+    if is_image_capability_question(text) or is_image_prompt_writing_request(text):
+        return False
+    return bool(_NATURAL_IMAGE_RE.match(text))
+
+
+_IMAGE_FLOW_CANCEL_RE = re.compile(
+    r"^\s*(?:no(?:\s+thanks?)?|cancel|stop|never\s*mind|nevermind|"
+    r"not\s+now|later|leave\s+it)\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_image_flow_cancel(text):
+    return bool(_IMAGE_FLOW_CANCEL_RE.match(text or ''))
+
+
+_IMAGE_DETAILS_QUESTION_RE = re.compile(
+    r"(?:what(?:'s| is)\s+(?:the\s+)?(?:image|picture|poster|design)\s+about)|"
+    r"(?:(?:share|provide|tell\s+me|need|send)\b[\s\S]{0,140}"
+    r"\b(?:details?|subject|style|vibe|colou?rs?|text|reference\s+images?)\b)|"
+    r"(?:describe[\s\S]{0,60}\b(?:image|picture|poster|design)\b"
+    r"[\s\S]{0,60}\b(?:want|like|need)\b)|"
+    r"(?:once\s+i\s+have\s+(?:those|the)\s+(?:details?|answers?)"
+    r"[\s\S]{0,80}\bgenerate)",
+    re.IGNORECASE,
+)
+
+
+def is_image_details_question(text):
+    """Detect an assistant turn that is waiting for image prompt details."""
+    text = text or ''
+    if not re.search(r"\b(?:image|picture|poster|design|generate)\b", text, re.I):
+        return False
+    return bool(_IMAGE_DETAILS_QUESTION_RE.search(text))
 
 
 # An explicit ask for a long/thorough answer — "Complete reference from
@@ -1574,9 +1698,9 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 "to. Always lead with an affirmative ('Yes, I can generate "
                 "images'), never open with 'No' or 'I can't', and never "
                 "mention FLUX, the model picker, or switching modes — just "
-                "let them describe what they want. Do mention that "
-                "uploading a photo to edit it is currently under "
-                "maintenance and will be back soon. Do not claim you "
+                "let them describe what they want. Photo uploads and image "
+                "editing are available too; let the user upload a photo and "
+                "describe the change they want. Do not claim you "
                 "started, completed, attached, generated, or edited "
                 "anything in this text response, and never output a fake "
                 "image markdown tag or attachment link."
@@ -1590,8 +1714,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 "with an affirmative ('Yes, I can generate images'), never open "
                 "with 'No' or 'I can't'. Tell the user that generating a new "
                 "image from a prompt works (select FLUX.2 Klein 4B in the model "
-                "picker), but uploading a photo to edit it is currently under "
-                "maintenance by the Vidhyora team and will be back soon. "
+                "picker), and photo uploads can be edited by describing the change. "
                 "Do not claim you started, completed, attached, generated, "
                 "or edited anything in this text response, and never output a fake "
                 "image markdown tag or attachment link."

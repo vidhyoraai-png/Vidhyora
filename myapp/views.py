@@ -84,12 +84,24 @@ def site_customization_context(request):
     fetch SiteCustomization itself."""
     try:
         obj = SiteCustomization.get_solo()
-        return {'SITE_FAVICON_URL': obj.favicon.url if obj.favicon else None}
+        return {
+            'SITE_FAVICON_URL': obj.favicon.url if obj.favicon else None,
+            'SITE_SOCIAL_PREVIEW_TITLE': obj.social_preview_title,
+            'SITE_SOCIAL_PREVIEW_DESCRIPTION': obj.social_preview_description,
+            'SITE_SOCIAL_PREVIEW_IMAGE_URL': request.build_absolute_uri(
+                obj.social_preview_image.url if obj.social_preview_image else static_url('img/og-cover.jpg')
+            ),
+        }
     except (OperationalError, ProgrammingError):
         # A restored backup can predate the SiteCustomization migration.
         # Keep every page renderable until the post-restore migration step
         # below upgrades that older schema.
-        return {'SITE_FAVICON_URL': None}
+        return {
+            'SITE_FAVICON_URL': None,
+            'SITE_SOCIAL_PREVIEW_TITLE': 'Vidhyora AI — Free AI Chat Assistant',
+            'SITE_SOCIAL_PREVIEW_DESCRIPTION': 'Chat with Vidhyora AI for product help, quick answers and learning support — free, right from your browser.',
+            'SITE_SOCIAL_PREVIEW_IMAGE_URL': request.build_absolute_uri(static_url('img/og-cover.jpg')),
+        }
 
 
 def pwa_service_worker(request):
@@ -785,6 +797,43 @@ def dashboard_signups(request):
 
 
 @dashboard_staff_required
+def dashboard_user_data(request):
+    """Minimal customer usage table requested for the staff dashboard."""
+    q = request.GET.get('q', '').strip()
+    customers = User.objects.filter(
+        is_staff=False, is_superuser=False,
+    )
+    total_users = customers.count()
+    total_chats = AIConversation.objects.filter(
+        user__is_staff=False, user__is_superuser=False,
+    ).count()
+    total_logins = StoreProfile.objects.filter(
+        user__is_staff=False, user__is_superuser=False,
+    ).aggregate(total=Sum('login_count'))['total'] or 0
+
+    users = customers.select_related('store_profile').annotate(
+        chat_count=Count('ai_conversations', distinct=True),
+    ).order_by('-date_joined', '-pk')
+    if q:
+        users = users.filter(
+            Q(username__icontains=q)
+            | Q(first_name__icontains=q)
+            | Q(last_name__icontains=q)
+            | Q(store_profile__ai_display_name__icontains=q)
+            | Q(store_profile__ai_location__icontains=q)
+        )
+
+    return render(request, 'dashboard/user_data.html', {
+        'active': 'user_data',
+        'users': users,
+        'q': q,
+        'total_users': total_users,
+        'total_chats': total_chats,
+        'total_logins': total_logins,
+    })
+
+
+@dashboard_staff_required
 def dashboard_user_add(request):
     """Manually create a customer account from the dashboard — used by both
     the Signups page and AI Management (so staff can create someone to
@@ -799,17 +848,42 @@ def dashboard_user_add(request):
             email = form.cleaned_data['email']
             phone = form.cleaned_data['phone']
             amount_paid = form.cleaned_data['amount_paid']
-            password = form.cleaned_data['password'] or secrets.token_urlsafe(9)
+            password = form.cleaned_data['password'] or 'admin54321'
+            access_days_value = form.cleaned_data.get('ai_access_days')
+            access_days = int(access_days_value) if access_days_value else 0
             first_name, _, last_name = name.partition(' ')
             user = User.objects.create_user(
                 username=email, email=email, password=password,
                 first_name=first_name, last_name=last_name,
             )
-            StoreProfile.objects.create(user=user, phone=phone, manual_amount_paid=amount_paid)
-            if form.cleaned_data['password']:
-                messages.success(request, f'Created account for {email}.')
-            else:
-                messages.success(request, f'Created account for {email} — temporary password: {password}')
+            access_until = timezone.now() + timedelta(days=access_days) if access_days else None
+            StoreProfile.objects.create(
+                user=user, phone=phone, manual_amount_paid=amount_paid,
+                ai_subscription_until=access_until,
+            )
+            messages.success(request, f'Created account for {email}.')
+            if next_url == 'dashboard_ai_management' and access_days:
+                whatsapp_message = (
+                    f'Your personal AI account has been successfully activated for {access_days} days.\n'
+                    'Enjoy access to powerful AI models, image and file uploads, and other premium '
+                    'features through your dedicated account.\n\n'
+                    '🔗 Login: https://www.vidhyora.online/\n'
+                    f'📧 Email: {email}\n'
+                    f'🔑 Password: {password}\n'
+                    f'📅 Validity: {access_days} days\n\n'
+                    'This is your private account, and no account sharing is required. Please use the '
+                    'service responsibly and note that fair-use policies and platform limits may apply.\n\n'
+                    'If you face any login or technical issue, please contact us—we’re always happy to help.\n\n'
+                    'EduTrellis\n'
+                    '🌐 edutrellis.in\n'
+                    '📧 support@edutrellis.in\n'
+                    '📞 Calling support: 10 AM–7 PM\n'
+                    '💬 WhatsApp support available'
+                )
+                # Popped by the destination view so credentials only appear once.
+                request.session['dashboard_new_account_whatsapp'] = {
+                    'message': whatsapp_message, 'email': email, 'days': access_days,
+                }
         else:
             for errs in form.errors.values():
                 for error in errs:
@@ -836,6 +910,30 @@ def dashboard_signup_edit(request, pk):
         profile.save(update_fields=['phone', 'wallet_balance', 'manual_amount_paid'])
         return redirect('dashboard_signups')
     return render(request, 'dashboard/signup_form.html', {'active': 'signups', 'form': form, 'edited_user': edited_user})
+
+
+@dashboard_staff_required
+def dashboard_signup_reset_password(request, pk):
+    """Replace a customer's password and reveal the generated value once."""
+    if request.method != 'POST':
+        return JsonResponse(
+            {'status': 'error', 'detail': 'Invalid request method.'}, status=405,
+        )
+
+    target = get_object_or_404(User, pk=pk)
+    # Dashboard staff must not be able to take over another privileged account.
+    if target.is_staff or target.is_superuser:
+        return JsonResponse(
+            {'status': 'error', 'detail': "Staff and admin passwords can't be reset here."},
+            status=403,
+        )
+
+    password = secrets.token_urlsafe(12)
+    target.set_password(password)
+    target.save(update_fields=['password'])
+    response = JsonResponse({'status': 'ok', 'password': password})
+    response['Cache-Control'] = 'no-store'
+    return response
 
 
 @dashboard_staff_required
@@ -879,6 +977,7 @@ def dashboard_ai_management(request):
         'now': now,
         'grant_form': GrantAISubscriptionForm(),
         'add_user_form': AddUserForm(),
+        'new_account_whatsapp': request.session.pop('dashboard_new_account_whatsapp', None),
     }
     return render(request, 'dashboard/ai_management.html', context)
 
@@ -1659,6 +1758,7 @@ AI_CHAT_RATE_LIMIT = 30           # messages
 AI_CHAT_RATE_WINDOW = 10 * 60     # per 10 minutes, per IP
 AI_CHAT_MAX_MESSAGE_CHARS = 16000
 AI_CHAT_MAX_HISTORY = 20          # last 10 user+assistant turns — outer cap on how many rows are even fetched
+AI_IMAGE_DAILY_LIMIT = 20         # successfully generated images, per account/session and local day
 # A per-message-count cap alone doesn't bound size: an attached document can
 # replay up to 15,000 chars on every later turn, so a handful of document
 # turns can approach the model's real context window even within 20
@@ -1671,7 +1771,9 @@ AI_CONVERSATION_TITLE_CHARS = 60
 AI_CURRENT_CONVERSATION_SESSION_KEY = 'ai_current_conversation_id'
 AI_GUEST_MESSAGE_LIMIT = 6        # free messages before a guest must log in/sign up
 AI_FREE_MESSAGE_LIMIT = 20        # free messages for a logged-in, non-staff, unsubscribed account before Vidhyora AI requires the paid plan
-AI_FREE_MODEL_KEYS = frozenset({'quick', 'code'})
+AI_FREE_MODEL_KEYS = frozenset({
+    'quick', 'code', ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+})
 # ~1.5MB of raw image data as a base64 data: URI (~2M chars) — well under
 # Django's default 2.5MB DATA_UPLOAD_MAX_MEMORY_SIZE for the whole request
 # body, so an oversized image gets our own clean error instead of Django's
@@ -1679,9 +1781,6 @@ AI_FREE_MODEL_KEYS = frozenset({'quick', 'code'})
 AI_IMAGE_MAX_DATA_URI_CHARS = 2_000_000
 AI_DOCUMENT_MODES = {'coding', 'details'}
 AI_DOCUMENT_CODE_MAX_OUTPUT_TOKENS = 6000
-AI_IMAGE_GEN_HOURLY_LIMIT = 10       # FLUX generate/edit calls
-AI_IMAGE_GEN_HOURLY_WINDOW = 60 * 60      # per 1 hour, per user (or per IP for guests)
-AI_IMAGE_GEN_LOCKOUT_SECONDS = 6 * 60 * 60  # going over the hourly limit locks image generation out entirely for this long — harsher than the general chat limiter, which just makes you wait out the same window, since FLUX calls are the most expensive thing this endpoint does
 
 
 def _ai_document_instruction(mode, filename, truncated=False):
@@ -2699,35 +2798,6 @@ def _ai_pending_note_edit_response(request, conversation, message):
     return None
 
 
-def _ai_image_gen_gate(user, ip):
-    """Rate-gates FLUX image generation/editing: AI_IMAGE_GEN_HOURLY_LIMIT
-    calls per rolling AI_IMAGE_GEN_HOURLY_WINDOW, keyed by user id when
-    logged in, else IP (same key shape as the general chat limiter above).
-    Counted at attempt time, before generation runs, same reasoning as the
-    general limiter — otherwise a blocked user could keep retrying for
-    free. Going over the hourly limit locks image generation out entirely
-    for AI_IMAGE_GEN_LOCKOUT_SECONDS rather than just making them wait out
-    the same window. Returns a user-facing detail string when blocked,
-    else None."""
-    key = f'user:{user.id}' if user.is_authenticated else f'ip:{ip}'
-    lockout_key = f'ai_image_lockout:{key}'
-    now = time.time()
-    lockout_until = cache.get(lockout_key)
-    if lockout_until and now < lockout_until:
-        return f"Image generation limit reached. Please try again in {_format_wait_time(lockout_until - now)}."
-
-    count_key = f'ai_image_gen_count:{key}'
-    window = cache.get(count_key)
-    if not window or now >= window['reset_at']:
-        window = {'count': 0, 'reset_at': now + AI_IMAGE_GEN_HOURLY_WINDOW}
-    window['count'] += 1
-    if window['count'] > AI_IMAGE_GEN_HOURLY_LIMIT:
-        cache.set(lockout_key, now + AI_IMAGE_GEN_LOCKOUT_SECONDS, AI_IMAGE_GEN_LOCKOUT_SECONDS)
-        return f"Image generation limit reached. Please try again in {_format_wait_time(AI_IMAGE_GEN_LOCKOUT_SECONDS)}."
-    cache.set(count_key, window, AI_IMAGE_GEN_HOURLY_WINDOW)
-    return None
-
-
 def _chatgpt_image_error_detail(error):
     """Hide internal image providers/workers behind the ChatGPT identity."""
     detail = str(error).strip()
@@ -2970,6 +3040,124 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     return response
 
 
+def _ai_image_daily_count(request):
+    """Count images successfully saved today for this account/session."""
+    images = AIUserImage.objects.filter(created_at__date=timezone.localdate())
+    if request.user.is_authenticated:
+        return images.filter(user=request.user).count()
+    return images.filter(
+        user__isnull=True,
+        session_key=request.session.session_key or '',
+    ).count()
+
+
+def _ai_previous_image_for_edit(request, conversation_id, message):
+    """Return the latest usable image when a follow-up clearly asks to edit it."""
+    if not conversation_id or not ai_chat.is_image_edit_instruction(message):
+        return ''
+    try:
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return ''
+    conversation = AIConversation.objects.filter(
+        _ai_owner_filter(request), pk=conversation_id,
+    ).first()
+    if not conversation:
+        return ''
+    previous = conversation.messages.exclude(image_data='').order_by(
+        '-created_at', '-pk',
+    ).values_list('image_data', flat=True).first()
+    snapshotted = _snapshot_ai_report_image(previous or '')
+    return snapshotted if snapshotted.startswith('data:image/') else ''
+
+
+def _ai_previous_generated_image(request, conversation_id, message):
+    """Find an earlier generated image for an explicit show/display follow-up."""
+    if not conversation_id or not ai_chat.is_show_previous_image_request(message):
+        return ''
+    try:
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return ''
+    conversation = AIConversation.objects.filter(
+        _ai_owner_filter(request), pk=conversation_id,
+    ).first()
+    if not conversation:
+        return ''
+    return conversation.messages.filter(
+        role=AIMessage.ROLE_ASSISTANT,
+    ).exclude(image_data='').order_by(
+        '-created_at', '-pk',
+    ).values_list('image_data', flat=True).first() or ''
+
+
+def _ai_pending_image_prompt(request, conversation_id, message):
+    """Combine a clarification answer with the image request that prompted it."""
+    if (
+        not conversation_id or not message
+        or ai_chat.is_image_flow_cancel(message)
+    ):
+        return ''
+    try:
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return ''
+    conversation = AIConversation.objects.filter(
+        _ai_owner_filter(request), pk=conversation_id,
+    ).first()
+    if not conversation:
+        return ''
+
+    latest = conversation.messages.order_by('-created_at', '-pk').first()
+    if (
+        not latest or latest.role != AIMessage.ROLE_ASSISTANT
+        or not ai_chat.is_image_details_question(latest.content)
+    ):
+        return ''
+    earlier = conversation.messages.filter(
+        Q(created_at__lt=latest.created_at)
+        | Q(created_at=latest.created_at, pk__lt=latest.pk),
+        role=AIMessage.ROLE_USER,
+    ).order_by('-created_at', '-pk').first()
+    if not earlier:
+        return ''
+    base_prompt = (earlier.content or '').strip()
+    if (
+        not base_prompt
+        or ai_chat.is_image_capability_question(base_prompt)
+        or ai_chat.is_image_prompt_writing_request(base_prompt)
+        or not (
+            ai_chat.is_image_generation_request(base_prompt)
+            or ai_chat.is_natural_image_prompt(base_prompt)
+            or ai_chat.is_probable_image_prompt(base_prompt)
+        )
+    ):
+        return ''
+    return (
+        f'{base_prompt}\nAdditional image details: {message}'
+    )[:AI_CHAT_MAX_MESSAGE_CHARS]
+
+
+def _ai_recalled_image_response(conversation, image_value, display_model_key):
+    """Re-display an existing image without generating or billing another one."""
+    assistant_message = AIMessage.objects.create(
+        conversation=conversation,
+        role=AIMessage.ROLE_ASSISTANT,
+        content='',
+        image_data=image_value,
+        model_key=display_model_key,
+    )
+    response = HttpResponse('', content_type='text/plain; charset=utf-8')
+    response['Cache-Control'] = 'private, no-store'
+    response['X-Conversation-Id'] = str(conversation.pk)
+    response['X-Model-Key'] = display_model_key
+    response['X-Routed-Model-Key'] = display_model_key
+    response['X-Request-Category'] = 'image_recall'
+    response['X-Generated-Image-Url'] = image_value
+    response['X-Message-Id'] = str(assistant_message.pk)
+    return response
+
+
 
 def ai_chat_send(request):
     request_started = time.perf_counter()
@@ -3060,6 +3248,27 @@ def ai_chat_send(request):
     requested_language = payload.get('language')
     language = requested_language if requested_language in ai_chat.LANGUAGES else ai_chat.DEFAULT_LANGUAGE
 
+    pending_image_prompt = ''
+    if not image_data and message:
+        pending_image_prompt = _ai_pending_image_prompt(
+            request, payload.get('conversation_id'), message,
+        )
+    image_generation_prompt = pending_image_prompt or message
+
+    # Short follow-ups such as "8k", "upscale this", or "more poses" refer
+    # to the latest image in the open conversation. Keep this separate from
+    # image_data so stored history still reflects what was actually attached
+    # on the current turn.
+    previous_display_image = _ai_previous_generated_image(
+        request, payload.get('conversation_id'), message,
+    ) if message else ''
+    previous_edit_image = ''
+    if not image_data and message:
+        previous_edit_image = _ai_previous_image_for_edit(
+            request, payload.get('conversation_id'), message,
+        )
+    source_image_data = image_data or previous_edit_image
+
     # ChatGPT 5.6 is a stable user-facing selection backed by the existing
     # task-specific workers. Keep its public identity while routing the actual
     # turn to Vision, Code, or Quick.
@@ -3086,10 +3295,12 @@ def ai_chat_send(request):
     # same regex but isn't an actual subject to draw, so it's excluded here
     # and answered conversationally instead — otherwise FLUX would try to
     # render the question text itself as an image.
+    image_prompt_writing = bool(message) and ai_chat.is_image_prompt_writing_request(message)
     is_image_request = bool(message) and (
         (
             ai_chat.is_image_generation_request(message)
             and not ai_chat.is_image_capability_question(message)
+            and not image_prompt_writing
         )
         # A raw Midjourney/DALL-E-style scene description (no generate/create
         # verb at all, e.g. "A realistic brown dog..., soft lighting, 4k.")
@@ -3097,6 +3308,12 @@ def ai_chat_send(request):
         # more photography/art style cues and no question mark is a strong
         # enough signal to route it the same way.
         or (not image_data and ai_chat.is_probable_image_prompt(message))
+        # Direct visual descriptions are also common real requests: "girl
+        # sitting in a park", "Krishna image", "Instagram post for my shop".
+        or (not image_data and ai_chat.is_natural_image_prompt(message))
+        # If the previous assistant turn explicitly asked for image details,
+        # this reply completes that request instead of starting a text chat.
+        or bool(pending_image_prompt)
     )
     generated_file_spec = (
         # Deliberately not gated on "no attached image" — AIReport #33
@@ -3109,22 +3326,26 @@ def ai_chat_send(request):
         if message and not document_text and not is_image_request
         else None
     )
-    if generated_file_spec:
+    if previous_display_image:
+        model_key = 'quick'
+        request_category = 'image_recall'
+    elif generated_file_spec:
         document_instruction = _ai_generated_file_instruction(generated_file_spec['file_name'])
-
-    if generated_file_spec:
         # A real server-created download must behave the same from every
         # picker choice (including FLUX, which cannot produce text files).
         model_key = 'code'
         request_category = 'file_generation'
+    elif image_prompt_writing:
+        model_key = 'vision' if image_data else 'quick'
+        request_category = 'image' if image_data else 'writing'
     elif selected_model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY:
-        if image_data or (message and not ai_chat.is_image_capability_question(message)) or not message:
+        if source_image_data or (message and not ai_chat.is_image_capability_question(message)) or not message:
             # Once the user deliberately selects FLUX, descriptive prompts
             # such as "a robot in a futuristic classroom" are valid even
             # without an explicit generate/draw verb. Attachments are edits;
             # a bare capability question still falls back to normal chat.
             model_key = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
-            request_category = 'image_edit' if image_data else 'image_generation'
+            request_category = 'image_edit' if source_image_data else 'image_generation'
         else:
             # FLUX can only generate/edit images — it has no chat capability
             # at all, so a plain message typed while it happens to be
@@ -3155,6 +3376,9 @@ def ai_chat_send(request):
             # below never actually evaluated this variable on this branch.
             # Setting it explicitly avoids relying on that short-circuit.
             request_category = 'image'
+    elif previous_edit_image:
+        model_key = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        request_category = 'image_edit'
     elif document_mode == 'coding':
         # "Start coding" is an explicit mode choice, so use the code-tuned
         # route even if the general model picker was previously on Light/etc.
@@ -3172,13 +3396,22 @@ def ai_chat_send(request):
     if response_model_key is None:
         response_model_key = model_key
 
-    if not full_model_access and (
+    # Image generation/editing is available on every plan. Keep the existing
+    # premium gate for text/reasoning models, including requests that merely
+    # selected one of them, but never let that picker state block a turn that
+    # was actually routed to the image model.
+    if (
+        not full_model_access
+        and model_key != ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        and request_category != 'image_recall'
+        and (
         selected_model_key not in AI_FREE_MODEL_KEYS or model_key not in AI_FREE_MODEL_KEYS
+        )
     ):
         return JsonResponse({
             'status': 'subscription_required',
             'detail': (
-                'The free plan includes Vidhyora Quick, Light, and Code. '
+                'The free plan includes Vidhyora Quick, Code, and image generation. '
                 'Premium access is required for this model or capability.'
             ),
         }, status=403)
@@ -3207,6 +3440,19 @@ def ai_chat_send(request):
         gate = _ai_profile_gate(request.user, ip)
         if gate:
             return JsonResponse(gate, status=403)
+
+    if (
+        model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        and _ai_image_daily_count(request) >= AI_IMAGE_DAILY_LIMIT
+    ):
+        return JsonResponse({
+            'status': 'rate_limited',
+            'detail': (
+                f'Daily image limit reached. You can generate up to '
+                f'{AI_IMAGE_DAILY_LIMIT} images per day. Try again tomorrow.'
+            ),
+            'limit': AI_IMAGE_DAILY_LIMIT,
+        }, status=429)
 
     owner_filter = _ai_owner_filter(request)
     conversation_id = payload.get('conversation_id')
@@ -3240,6 +3486,11 @@ def ai_chat_send(request):
     conversation.updated_at = timezone.now()
     conversation.save(update_fields=['updated_at'])
     request.session[AI_CURRENT_CONVERSATION_SESSION_KEY] = conversation.id
+
+    if previous_display_image:
+        return _ai_recalled_image_response(
+            conversation, previous_display_image, response_model_key,
+        )
 
     # My Notes: 'show my notes' / 'delete note about X' / 'edit note about X
     # to Y' / 'take this note' — handled entirely here, no AI model call, so
@@ -3279,21 +3530,13 @@ def ai_chat_send(request):
         ).update(ai_free_messages_used=F('ai_free_messages_used') + 1)
 
     if model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY:
-        image_gate_detail = _ai_image_gen_gate(request.user, ip)
-        if image_gate_detail:
-            response = JsonResponse({'status': 'rate_limited', 'detail': image_gate_detail}, status=429)
-            response['X-Conversation-Id'] = str(conversation.id)
-            response['X-Model-Key'] = response_model_key
-            response['X-Routed-Model-Key'] = _ai_public_routed_model_key(
-                response_model_key, ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
-            )
-            return response
         # request.user is already loaded by the auth middleware, so reading the
         # email here is free — resolving it inside the upload thread would cost
         # an extra query and a database connection per image.
         owner_email = request.user.email if request.user.is_authenticated else ''
         return _ai_flux_response(
-            conversation, message, image_data, response_model_key, owner_email=owner_email,
+            conversation, image_generation_prompt, source_image_data, response_model_key,
+            owner_email=owner_email,
         )
 
     # First-time-in-AI-chat onboarding: ask a genuinely new user (once) for
@@ -3455,7 +3698,21 @@ def ai_chat_send(request):
         str(item.get('content') or '') for item in recent[-5:]
         if isinstance(item.get('content'), str)
     )
-    if message and company_knowledge.is_company_query(recent_company_text):
+    web_search_enabled = payload.get('web_search') is True
+    if (
+        web_search_enabled and message and not image_data and not document_text
+        and not generated_file_spec
+    ):
+        search_started = time.perf_counter()
+        web_context = web_search.build_context(message)
+        logger.info(
+            "AI timing web_search=%.3fs hit=%s forced=True",
+            time.perf_counter() - search_started, bool(web_context),
+        )
+        if web_context:
+            retrieved_context = web_context
+            retrieved_source = 'web_search'
+    elif message and company_knowledge.is_company_query(recent_company_text):
         retrieved_context = company_knowledge.PUBLIC_SITE_CONTEXT
         retrieved_source = 'company_site'
     elif message and not image_data and web_search.needs_search(message):

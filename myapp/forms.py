@@ -57,8 +57,13 @@ class AddUserForm(forms.Form):
     password = forms.CharField(
         max_length=128, required=False,
         error_messages={'min_length': 'Password must be at least 6 characters.'},
-        widget=forms.TextInput(attrs={'placeholder': 'Leave blank to auto-generate'}),
-        help_text='Leave blank to auto-generate a random password.',
+        widget=forms.TextInput(attrs={'placeholder': 'Default: admin54321'}),
+        help_text='Leave blank to use admin54321.',
+    )
+    ai_access_days = forms.ChoiceField(
+        label='Give AI premium access for', required=False, initial='365',
+        choices=(('30', '1 month'), ('180', '6 months'), ('365', '1 year')),
+        widget=forms.RadioSelect,
     )
 
     def clean_name(self):
@@ -380,7 +385,13 @@ class PWASettingsForm(forms.ModelForm):
 class SiteCustomizationForm(forms.ModelForm):
     class Meta:
         model = SiteCustomization
-        fields = ['favicon']
+        fields = [
+            'favicon', 'social_preview_title', 'social_preview_description',
+            'social_preview_image',
+        ]
+        widgets = {
+            'social_preview_description': forms.Textarea(attrs={'rows': 3}),
+        }
 
 
 class FeeSettingsForm(forms.ModelForm):

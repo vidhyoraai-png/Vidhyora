@@ -76,6 +76,10 @@ class StoreProfile(models.Model):
     # rather than being modeled as a permanent subscription here.
     ai_subscription_until = models.DateTimeField(null=True, blank=True, help_text="Vidhyora AI access is unlimited until this time. Blank/past = free tier.")
     ai_free_messages_used = models.PositiveIntegerField(default=0, help_text="Free-tier Vidhyora AI messages sent so far (resets on each new subscription purchase).")
+    login_count = models.PositiveIntegerField(
+        default=0,
+        help_text='Number of successful account logins recorded by Vidhyora.',
+    )
 
     # First-time AI chat onboarding — asked once, on this account's first
     # real AI reply, then captured from whatever they say next (see
@@ -665,7 +669,7 @@ class PWASettings(models.Model):
     store dashboard. When enabled (and an icon is set), the storefront
     exposes a manifest + service worker and shows an 'Install App' button
     to shoppers on supporting browsers."""
-    is_enabled        = models.BooleanField(default=False, help_text="Show the 'Install App' option on the storefront. Needs an icon set below to actually work.")
+    is_enabled        = models.BooleanField(default=False, help_text="Show the 'Install App' option on the homepage. Uses the default Vidhyora icon when no custom icon is uploaded.")
     app_name          = models.CharField(max_length=100, default='EduTrellis Store', help_text='Full name shown during install and on the splash screen.')
     short_name        = models.CharField(max_length=40, default='EduTrellis', help_text='Short name shown under the home-screen icon.')
     description       = models.CharField(max_length=200, blank=True, default="Shop gadgets from EduTrellis — audio, wearables, charging and more.")
@@ -688,7 +692,10 @@ class PWASettings(models.Model):
 
     @property
     def ready(self):
-        return bool(self.is_enabled and self.icon)
+        # ai_manifest already supplies bundled 192px/512px fallback icons.
+        # Requiring a custom upload here prevented an otherwise valid PWA
+        # from ever reaching the homepage.
+        return bool(self.is_enabled)
 
 
 class FeeSettings(models.Model):
@@ -1067,12 +1074,25 @@ class AIReport(models.Model):
 
 class SiteCustomization(models.Model):
     """Singleton branding configuration, managed from the store dashboard's
-    Customize page — currently just the favicon shown in the browser tab
-    across every page (AI chat, store, policy pages, 404, dashboard). See
+    Customize page — the favicon plus the title, description, and image used
+    when a homepage link is shared on WhatsApp/social platforms. See
     myapp.views.site_customization_context, registered as a global template
     context processor in edutrellis/settings.py, for how SITE_FAVICON_URL
     reaches every template without each view needing to fetch this itself."""
     favicon    = models.ImageField(upload_to='branding/', blank=True, null=True, help_text='Browser-tab icon. Square, ideally 512×512px or smaller (PNG/ICO). Leave blank to use the default EduTrellis favicon.')
+    social_preview_title = models.CharField(
+        max_length=120, default='Vidhyora AI — Free AI Chat Assistant',
+        help_text='Heading shown in WhatsApp and social link previews.',
+    )
+    social_preview_description = models.CharField(
+        max_length=300,
+        default='Chat with Vidhyora AI for product help, quick answers and learning support — free, right from your browser.',
+        help_text='Short description shown below the preview heading.',
+    )
+    social_preview_image = models.ImageField(
+        upload_to='branding/social/', blank=True, null=True,
+        help_text='Large preview image. 1200×630px is recommended. Leave blank to use the default cover.',
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

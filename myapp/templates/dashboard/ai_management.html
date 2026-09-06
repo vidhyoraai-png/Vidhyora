@@ -14,6 +14,19 @@
 .grant-form .form-group.days{min-width:140px;flex:none}
 .grant-form .form-actions{margin-top:0}
 .panel-note{padding:0 1.4rem 1.1rem;font-size:.8rem;color:var(--text)}
+.access-choice-list{margin-bottom:1.2rem}
+.access-choice-list>label{display:block;font-size:.8rem;font-weight:700;color:var(--head);margin-bottom:.55rem}
+.access-choice-list #{{ add_user_form.ai_access_days.auto_id }}{display:flex;gap:.65rem;flex-wrap:wrap;list-style:none}
+.access-choice-list #{{ add_user_form.ai_access_days.auto_id }} li{margin:0}
+.access-choice-list #{{ add_user_form.ai_access_days.auto_id }} label{display:flex;align-items:center;gap:.4rem;padding:.65rem .85rem;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-alt);font-size:.82rem;font-weight:700;color:var(--head);cursor:pointer}
+.access-choice-list input{accent-color:var(--red)}
+.welcome-modal{display:none;position:fixed;inset:0;z-index:200;background:rgba(7,23,19,.58);padding:1rem;align-items:center;justify-content:center}
+.welcome-modal.open{display:flex}
+.welcome-card{width:min(650px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:1.4rem;box-shadow:var(--shadow-md)}
+.welcome-card h3{font-size:1.05rem;margin-bottom:.4rem}
+.welcome-card>p{font-size:.82rem;margin-bottom:1rem}
+.welcome-message{white-space:pre-wrap;background:var(--bg-alt);border:1.5px solid var(--line);border-radius:12px;padding:1rem;font-family:inherit;font-size:.82rem;line-height:1.5;color:var(--head);user-select:all}
+.welcome-actions{display:flex;justify-content:flex-end;gap:.6rem;flex-wrap:wrap;margin-top:1rem}
 </style>
 {% endblock %}
 
@@ -58,12 +71,32 @@
       <div class="help">{{ add_user_form.amount_paid.help_text }}</div>
       {{ add_user_form.amount_paid.errors }}
     </div>
+    <div class="access-choice-list">
+      <label>{{ add_user_form.ai_access_days.label }}</label>
+      {{ add_user_form.ai_access_days }}
+      {{ add_user_form.ai_access_days.errors }}
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Create account</button>
     </div>
   </form>
-  <p class="panel-note">New accounts land here with no AI premium yet — use the grant form below to give them access right after creating them.</p>
+  <p class="panel-note">The selected premium period starts immediately when the account is created.</p>
 </details>
+
+{% if new_account_whatsapp %}
+<div class="welcome-modal open" id="welcomeModal" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle">
+  <div class="welcome-card">
+    <h3 id="welcomeTitle">Account ready to share</h3>
+    <p>Premium access is active for {{ new_account_whatsapp.days }} days. Copy the message or open it in WhatsApp.</p>
+    <div class="welcome-message" id="welcomeMessage">{{ new_account_whatsapp.message }}</div>
+    <div class="welcome-actions">
+      <button type="button" class="btn btn-ghost" id="closeWelcome">Close</button>
+      <button type="button" class="btn btn-ghost" id="copyWelcome"><i class="fas fa-copy"></i> Copy message</button>
+      <button type="button" class="btn btn-primary" id="shareWelcome"><i class="fab fa-whatsapp"></i> Share on WhatsApp</button>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <div class="stat-grid">
   <div class="stat-card">
@@ -162,4 +195,34 @@
   </table>
   </div>
 </div>
+{% if new_account_whatsapp %}
+<script>
+(function(){
+  var modal = document.getElementById('welcomeModal');
+  var messageBox = document.getElementById('welcomeMessage');
+  var message = messageBox.textContent;
+  var copyButton = document.getElementById('copyWelcome');
+
+  function closeModal(){ modal.classList.remove('open'); }
+  function selectMessage(){
+    var range = document.createRange();
+    range.selectNodeContents(messageBox);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+  }
+
+  copyButton.addEventListener('click', function(){
+    navigator.clipboard.writeText(message).then(function(){
+      copyButton.innerHTML = '<i class="fas fa-check"></i> Copied';
+    }).catch(selectMessage);
+  });
+  document.getElementById('shareWelcome').addEventListener('click', function(){
+    window.open('https://wa.me/?text=' + encodeURIComponent(message), '_blank', 'noopener');
+  });
+  document.getElementById('closeWelcome').addEventListener('click', closeModal);
+  modal.addEventListener('click', function(event){ if (event.target === modal) closeModal(); });
+  document.addEventListener('keydown', function(event){ if (event.key === 'Escape') closeModal(); });
+})();
+</script>
+{% endif %}
 {% endblock %}
