@@ -440,6 +440,7 @@ main.wallpaper-on{background:transparent}
 .msg-avatar[data-m="reasoning"]{--m-hi:#818cf8;--m-a:#4f46e5;--m-b:#2e2789;--m-glow:rgba(79,70,229,.45)}
 .msg-avatar[data-m="vision"]{--m-hi:#4dd9ee;--m-a:#06b6d4;--m-b:#0b6480;--m-glow:rgba(6,182,212,.45)}
 .msg-avatar[data-m="flux-klein-4b"]{--m-hi:#f9a8d4;--m-a:#ec4899;--m-b:#8f13a0;--m-glow:rgba(236,72,153,.45)}
+.msg-avatar[data-m="gemma-4-31b-it"]{--m-hi:#a8c7fa;--m-a:#4285f4;--m-b:#a142f4;--m-glow:rgba(66,133,244,.45)}
 
 /* ChatGPT 5.6 is the flagship, so its tile gets one extra touch the others
    don't: a faint ring of its own colour sitting just outside the edge. */
@@ -2019,6 +2020,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   // Inline SVG rather than icon-font glyphs or image files: no extra request,
   // no flash of a missing icon, and they inherit the avatar's own colours.
   var MODEL_GLYPHS = {
+    'gemma-4-31b-it': '<svg viewBox="0 0 24 24" fill="white"><path d="M12 2C13.5 8.5 15.5 10.5 22 12C15.5 13.5 13.5 15.5 12 22C10.5 15.5 8.5 13.5 2 12C8.5 10.5 10.5 8.5 12 2Z"/></svg>',
     // Compact neural-orbit mark: three precise paths plus a luminous core.
     // It stays crisp at toolbar size while the glass tile supplies depth.
     'chatgpt56':
@@ -4327,8 +4329,13 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var assistantMessageId = null;
     // FLUX uses an attachment for editing. Other selected models still
     // auto-route an attached image to Vision for image understanding.
-    var statusKey = currentModel === 'flux-klein-4b'
-      ? currentModel
+    var imageCreation = currentModel === 'flux-klein-4b' ||
+      (!/\b(?:how|can you|are you able|write a prompt)\b/i.test(text) && (
+        /\b(?:generate|create|draw|design|make)\b.{0,70}\b(?:image|picture|photo|logo|poster|wallpaper|illustration|banner)\b/i.test(text) ||
+        (imageToSend && /\b(?:change|edit|replace|remove|redesign|convert|add|rename)\b/i.test(text))
+      ));
+    var statusKey = imageCreation
+      ? 'flux-klein-4b'
       : (imageToSend ? 'vision' : (STATUS_PHRASES[currentModel] ? currentModel : 'default'));
     var bubble = renderRow('assistant', '', {
       typing: true, statusKey: statusKey, modelKey: currentModel,

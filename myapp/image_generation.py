@@ -107,8 +107,8 @@ def _safe_error(response):
         detail = ""
     if status_code == 422 and "expected: example_id" in detail:
         return ImageGenerationError(
-            "The image service could not edit that upload. Try uploading it again as a smaller PNG or JPEG image.",
-            status_code=400,
+            "Uploaded-image editing is unavailable on the connected image service. Please contact support to enable it.",
+            status_code=503,
         )
     if status_code == 429:
         return ImageGenerationError(
@@ -213,7 +213,7 @@ def _normalize_source_image(data_uri):
         with Image.open(io.BytesIO(raw)) as opened:
             image = ImageOps.exif_transpose(opened)
             image.load()
-    except (ValueError, binascii.Error, UnidentifiedImageError, OSError) as exc:
+    except (ValueError, binascii.Error, UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise ImageGenerationError(
             "The attached image could not be decoded. Try uploading it again as PNG or JPEG.",
             status_code=400,
@@ -288,7 +288,31 @@ def _decode_artifact(payload):
     return GeneratedImage(content=content, extension=extension)
 
 
-def generate_image(prompt, source_image=None):
+def _generate_qwen_edit(prompt, source_image):
+    if not source_image:
+        raise ImageGenerationError('Attach an image and describe the changes you want.', status_code=400)
+    url = getattr(settings, 'QWEN_IMAGE_EDIT_API_URL', '').strip()
+    if not url:
+        raise ImageGenerationError('Qwen Image Edit is not connected yet. An image-editing server must be configured before uploads can be edited.')
+    key = getattr(settings, 'QWEN_IMAGE_EDIT_ENDPOINT_KEY', '').strip()
+    try:
+        response = requests.post(
+            url,
+            headers={'Accept': 'application/json', **({'Authorization': f'Bearer {key}'} if key else {})},
+            json={'prompt': prompt, 'image': _normalize_source_image(source_image), 'seed': 0},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise ImageGenerationError('Could not reach the image-editing server. Please try again.') from exc
+    if response.status_code != 200:
+        raise ImageGenerationError('The image-editing server could not complete this edit. Please try again later.')
+    try:
+        return _decode_artifact(response.json())
+    except ValueError as exc:
+        raise ImageGenerationError('The image-editing server returned an invalid response.') from exc
+
+
+def generate_image(prompt, source_image=None, *, model_key=None):
     """Generate an image, or edit ``source_image`` when one is supplied.
 
     ``source_image`` is the browser-provided PNG/JPEG data URI. It is decoded
@@ -303,10 +327,22 @@ def generate_image(prompt, source_image=None):
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ImageGenerationError("That image prompt is too long.", status_code=400)
 
+    if model_key == 'qwen-image-edit':
+        return _generate_qwen_edit(prompt, source_image)
+
     editing = bool(source_image)
-    key = _api_key(editing=editing)
-    if not key:
-        setting_name = "NVIDIA_FLUX_EDIT_API_KEY" if editing else "NVIDIA_FLUX_API_KEY"
+    kontext = model_key == 'flux-kontext-dev'
+    if kontext and not editing:
+        raise ImageGenerationError('Attach an image and describe the changes you want.', status_code=400)
+    edit_url = getattr(settings, 'FLUX_EDIT_API_URL', '').strip() if editing else ''
+    # A private deployment has its own optional credential. Never forward the
+    # hosted NVIDIA credential to a separately configured server.
+    key = getattr(settings, 'FLUX_EDIT_API_KEY', '').strip() if edit_url else _api_key(editing=editing)
+    if kontext:
+        edit_url = ''
+        key = getattr(settings, 'NVIDIA_FLUX_KONTEXT_API_KEY', '').strip()
+    if not key and not edit_url:
+        setting_name = 'NVIDIA_FLUX_KONTEXT_API_KEY' if kontext else ("NVIDIA_FLUX_EDIT_API_KEY" if editing else "NVIDIA_FLUX_API_KEY")
         raise ImageGenerationError(
             f"Image generation is not configured yet. Set {setting_name} on the server.",
         )
@@ -324,12 +360,19 @@ def generate_image(prompt, source_image=None):
         # FLUX.2 supports multiple references; NVIDIA's current hosted
         # request template therefore expects an array even for one image.
         body["image"] = [_normalize_source_image(source_image)]
+    if kontext:
+        body['image'] = body['image'][0]
+        body['steps'] = 30
+        body.pop('width')
+        body.pop('height')
+        body['aspect_ratio'] = 'match_input_image'
 
     try:
         response = requests.post(
-            FLUX_API_URL,
+            ('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-kontext-dev'
+             if kontext else edit_url or FLUX_API_URL),
             headers={
-                "Authorization": f"Bearer {key}",
+                **({"Authorization": f"Bearer {key}"} if key else {}),
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },

@@ -32,7 +32,8 @@ from . import (
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
 from .models import ActiveUserSession, AIAccountMessageSettings, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
 from .views import (
-    AI_CURRENT_CONVERSATION_SESSION_KEY, _ai_document_instruction,
+    AI_CURRENT_CONVERSATION_SESSION_KEY, AI_FREE_MESSAGE_LIMIT,
+    _ai_document_instruction,
     _ai_excel_bytes, _ai_generated_file_spec, _ai_pdf_bytes,
     _ai_powerpoint_bytes, _ai_word_document_bytes,
     _extract_ai_generated_file_content, _strip_fake_download_links,
@@ -2090,6 +2091,21 @@ class AIResponseReliabilityTests(TestCase):
         self.assertEqual(blocked.json()['status'], 'subscription_required')
         self.assertEqual(AIConversation.objects.filter(user=user).count(), 0)
 
+    def test_expired_login_with_stale_premium_selection_asks_for_login(self):
+        """A stale signed-in page must not accuse a premium user of being free."""
+        response = self.client.post(
+            '/AI/api/send/',
+            data=json.dumps({
+                'message': 'Continue my conversation',
+                'model': ai_chat.CHATGPT_56_MODEL_KEY,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()['status'], 'login_required')
+        self.assertNotIn('Premium Access', response.json()['detail'])
+
     def test_free_quick_and_automatic_image_routing_are_allowed(self):
         user = User.objects.create_user(username='free-quick@example.com', password='test-password-123')
         StoreProfile.objects.create(user=user)
@@ -2189,6 +2205,45 @@ class AIResponseReliabilityTests(TestCase):
             )
             self.assertEqual(allowed.status_code, 200)
             self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Premium reply')
+
+    def test_superuser_without_staff_flag_has_full_ai_access_everywhere(self):
+        """Backend admin access must not depend on two independent flags.
+
+        AI Management describes both staff and superuser accounts as full
+        accounts.  A superuser created or edited with is_staff=False used to
+        see premium models on neither the page nor the send API and could hit
+        the misleading "Request Premium Access" card.
+        """
+        user = User.objects.create_user(
+            username='superuser-only@example.com',
+            password='test-password-123',
+            is_superuser=True,
+            is_staff=False,
+        )
+        StoreProfile.objects.create(
+            user=user,
+            ai_free_messages_used=AI_FREE_MESSAGE_LIMIT,
+        )
+        self.client.force_login(user)
+
+        page = self.client.get('/AI/')
+        self.assertTrue(page.context['ai_full_model_access'])
+        self.assertTrue(page.context['ai_is_staff'])
+        self.assertFalse(any(item['locked'] for item in page.context['ai_models']))
+
+        account = self.client.get('/AI/api/account/').json()['subscription']
+        self.assertTrue(account['active'])
+        self.assertTrue(account['is_staff'])
+        self.assertEqual(account['plan_name'], 'Staff access')
+
+        with patch('myapp.views.ai_chat.stream_chat', return_value=iter(['Admin reply'])):
+            allowed = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': 'Use the premium model', 'model': 'ultra'}),
+                content_type='application/json',
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(b''.join(allowed.streaming_content).decode(), 'Admin reply')
 
     def test_chatgpt_routes_general_code_and_image_turns(self):
         user = User.objects.create_user(

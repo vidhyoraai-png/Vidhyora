@@ -118,7 +118,9 @@ def _user_payload(user):
         'name': user.get_full_name().strip() or user.username,
         'email': user.email,
         'phone': profile.phone if profile else '',
-        'is_staff': user.is_staff,
+        # A superuser is an administrator even if the independently editable
+        # is_staff checkbox was accidentally cleared in the backend.
+        'is_staff': bool(user.is_staff or user.is_superuser),
         'is_superuser': user.is_superuser,
         'avatar_url': profile.avatar.url if (profile and profile.avatar) else None,
         'wallet_balance': float(profile.wallet_balance) if profile else 0.0,
@@ -512,7 +514,11 @@ def ai_account_details(request):
         return JsonResponse({'status': 'error', 'detail': 'You need to be logged in.'}, status=401)
 
     profile, _ = StoreProfile.objects.get_or_create(user=request.user)
-    is_staff = request.user.is_staff
+    # Django normally creates superusers with is_staff=True, but the two
+    # flags can be edited independently in the backend.  AI Management lists
+    # either flag as a full admin account, so the customer-facing entitlement
+    # API must honour either one as well.
+    is_staff = _ai_has_admin_access(request.user)
     is_subscribed = profile.is_ai_subscribed
     if is_staff:
         plan_name = 'Staff access'
@@ -596,8 +602,10 @@ def custom_404(request, exception=None):
 
 
 def _dashboard_guard(request):
-    """Only authenticated staff can use the custom dashboard."""
-    return request.user.is_authenticated and request.user.is_staff
+    """Only authenticated staff/admin users can use the custom dashboard."""
+    return request.user.is_authenticated and (
+        request.user.is_staff or request.user.is_superuser
+    )
 
 
 def dashboard_staff_required(view_func):
@@ -1867,6 +1875,7 @@ AI_GUEST_MESSAGE_LIMIT = 6        # free messages before a guest must log in/sig
 AI_FREE_MESSAGE_LIMIT = 20        # free messages for a logged-in, non-staff, unsubscribed account before Vidhyora AI requires the paid plan
 AI_FREE_MODEL_KEYS = frozenset({
     'quick', 'code', ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
+    'flux-kontext-dev', 'qwen-image-edit',
 })
 # ~1.5MB of raw image data as a base64 data: URI (~2M chars) — well under
 # Django's default 2.5MB DATA_UPLOAD_MAX_MEMORY_SIZE for the whole request
@@ -2483,7 +2492,7 @@ def ai_page(request):
         request.session[AI_CURRENT_CONVERSATION_SESSION_KEY] = resume_conversation_id
     model_labels = {key: cfg['label'] for key, cfg in ai_chat.MODELS.items()}
 
-    ai_is_staff = bool(request.user.is_authenticated and request.user.is_staff)
+    ai_is_staff = _ai_has_admin_access(request.user)
     ai_subscribed = False
     ai_free_used = 0
     if request.user.is_authenticated and not ai_is_staff:
@@ -2555,10 +2564,22 @@ def _format_wait_time(seconds):
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
+def _ai_has_admin_access(user):
+    """Whether an authenticated user has backend-managed unlimited access.
+
+    Keep this in one place so a superuser whose ``is_staff`` flag was not
+    also selected cannot be shown as a full admin in AI Management and then
+    be treated as a free customer by the chat endpoints.
+    """
+    return bool(
+        user.is_authenticated and (user.is_staff or user.is_superuser)
+    )
+
+
 def _ai_has_full_model_access(user):
     if not user.is_authenticated:
         return False
-    if user.is_staff:
+    if _ai_has_admin_access(user):
         return True
     profile, _ = StoreProfile.objects.get_or_create(user=user)
     return profile.is_ai_subscribed
@@ -2584,7 +2605,10 @@ def _ip_free_messages_used(ip):
         return 0
     return AIMessage.objects.filter(
         role=AIMessage.ROLE_USER, conversation__ip_address=ip,
-    ).exclude(conversation__user__is_staff=True).count()
+    ).exclude(
+        Q(conversation__user__is_staff=True)
+        | Q(conversation__user__is_superuser=True)
+    ).count()
 
 
 def _ai_profile_gate(user, ip=None):
@@ -2595,7 +2619,7 @@ def _ai_profile_gate(user, ip=None):
     which is what gives every staff account (including admin@gmail.com)
     unlimited messages and every model with no separate per-account
     allowlist to maintain."""
-    if user.is_staff:
+    if _ai_has_admin_access(user):
         return None
     profile, _ = StoreProfile.objects.get_or_create(user=user)
     if profile.is_ai_subscribed:
@@ -2980,9 +3004,10 @@ def _ai_pending_note_edit_response(request, conversation, message):
     return None
 
 
-def _chatgpt_image_error_detail(error):
+def _chatgpt_image_error_detail(error, model_key=ai_chat.CHATGPT_56_MODEL_KEY):
     """Hide internal image providers/workers behind the ChatGPT identity."""
     detail = str(error).strip()
+    label = ai_chat.MODELS[model_key]['label']
     lower_detail = detail.lower()
     if 'content filter' in lower_detail or 'content_filtered' in lower_detail:
         return 'That image request was blocked by the safety filter. Try a different prompt or image.'
@@ -2991,8 +3016,8 @@ def _chatgpt_image_error_detail(error):
     if any(term in lower_detail for term in (
         'nvidia', 'flux', 'nemotron', 'black-forest', 'black forest', 'api_key',
     )):
-        return 'ChatGPT 5.6 could not generate that image. Try a different prompt or image.'
-    return detail or 'ChatGPT 5.6 could not generate that image. Please try again.'
+        return f'{label} could not generate that image. Please try again later.'
+    return detail or f'{label} could not generate that image. Please try again.'
 
 
 _CHATGPT_HIDDEN_MODEL_PATTERNS = (
@@ -3136,8 +3161,8 @@ def _chatgpt_public_reply(reply):
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
     """Never expose ChatGPT's private worker selection to the browser."""
-    if response_model_key == ai_chat.CHATGPT_56_MODEL_KEY:
-        return ai_chat.CHATGPT_56_MODEL_KEY
+    if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit'):
+        return response_model_key
     return routed_model_key
 
 
@@ -3174,15 +3199,18 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     """Run a FLUX generation/editing turn and persist the real image URL."""
     display_model_key = response_model_key or ai_chat.FLUX_KLEIN_4B_MODEL_KEY
     try:
-        generated = image_generation.generate_image(prompt, source_image or None)
+        if display_model_key in ('flux-kontext-dev', 'qwen-image-edit'):
+            generated = image_generation.generate_image(prompt, source_image or None, model_key=display_model_key)
+        else:
+            generated = image_generation.generate_image(prompt, source_image or None)
         dated_folder = timezone.now().strftime('%Y/%m/%d')
         filename = f"ai_generated/{dated_folder}/{secrets.token_hex(16)}.{generated.extension}"
         stored_name = default_storage.save(filename, ContentFile(generated.content))
         generated_url = default_storage.url(stored_name)
     except image_generation.ImageGenerationError as exc:
         detail = (
-            _chatgpt_image_error_detail(exc)
-            if display_model_key == ai_chat.CHATGPT_56_MODEL_KEY
+            _chatgpt_image_error_detail(exc, display_model_key)
+            if display_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b')
             else str(exc)
         )
         response = JsonResponse(
@@ -3398,7 +3426,7 @@ def ai_chat_send(request):
     # rate limiter below since a blocked spammer shouldn't even get to
     # accrue against it. Staff are never checked, so a mistaken block can
     # never accidentally lock out someone who can undo it.
-    if not (request.user.is_authenticated and request.user.is_staff):
+    if not _ai_has_admin_access(request.user):
         block_filter = Q(ip_address=ip) if ip and ip != 'unknown' else Q(pk__isnull=True)
         if request.user.is_authenticated:
             block_filter |= Q(user=request.user)
@@ -3498,7 +3526,7 @@ def ai_chat_send(request):
         else default_model_key
     )
     chatgpt_mode = selected_model_key == ai_chat.CHATGPT_56_MODEL_KEY
-    response_model_key = ai_chat.CHATGPT_56_MODEL_KEY if chatgpt_mode else None
+    response_model_key = selected_model_key if selected_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit') else None
 
     # Gated on ai_chat.is_image_generation_request rather than just "FLUX is
     # selected" — that regex is what decides whether a message genuinely
@@ -3555,7 +3583,7 @@ def ai_chat_send(request):
     elif image_prompt_writing:
         model_key = 'vision' if image_data else 'quick'
         request_category = 'image' if image_data else 'writing'
-    elif selected_model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY:
+    elif selected_model_key in (ai_chat.FLUX_KLEIN_4B_MODEL_KEY, 'flux-kontext-dev', 'qwen-image-edit'):
         if source_image_data or (message and not ai_chat.is_image_capability_question(message)) or not message:
             # Once the user deliberately selects FLUX, descriptive prompts
             # such as "a robot in a futuristic classroom" are valid even
@@ -3587,7 +3615,7 @@ def ai_chat_send(request):
             model_key = ai_chat.FLUX_KLEIN_4B_MODEL_KEY
             request_category = 'image_edit'
         else:
-            model_key = 'vision'
+            model_key = selected_model_key if ai_chat.MODELS[selected_model_key].get('vision') else 'vision'
             # Previously left unset here — harmless only because the old
             # 'image' if image_data else request_category' response header
             # below never actually evaluated this variable on this branch.
@@ -3625,6 +3653,18 @@ def ai_chat_send(request):
         selected_model_key not in AI_FREE_MODEL_KEYS or model_key not in AI_FREE_MODEL_KEYS
         )
     ):
+        # A once-authenticated tab can become anonymous between messages
+        # when its session expires or the same account logs in on another
+        # device.  The browser still displays the cached account name/model,
+        # so calling this a subscription failure produces a false "Request
+        # Premium Access" card even for a backend-granted premium/admin
+        # account.  Ask it to log in again instead; the client already keeps
+        # the pending message and resumes it after authentication.
+        if not request.user.is_authenticated:
+            return JsonResponse({
+                'status': 'login_required',
+                'detail': 'Your login session ended. Log in again to continue with this model.',
+            }, status=403)
         return JsonResponse({
             'status': 'subscription_required',
             'detail': (
@@ -3738,7 +3778,7 @@ def ai_chat_send(request):
 
     if not request.user.is_authenticated:
         request.session['ai_guest_msg_count'] = request.session.get('ai_guest_msg_count', 0) + 1
-    elif not request.user.is_staff:
+    elif not _ai_has_admin_access(request.user):
         # Only counts against the free-tier cap while unsubscribed — a
         # subscribed account's messages shouldn't erode the free allotment
         # that's waiting for them once the subscription lapses.
@@ -3763,7 +3803,7 @@ def ai_chat_send(request):
     # staff (site admins/developers, not real customers) and guests (there's
     # no account to save it against).
     onboarding_ask = False
-    if request.user.is_authenticated and not request.user.is_staff:
+    if request.user.is_authenticated and not _ai_has_admin_access(request.user):
         onboarding_profile, _ = StoreProfile.objects.get_or_create(user=request.user)
         if onboarding_profile.ai_onboarding_pending:
             fields = ai_chat.extract_onboarding_fields(message) if message else {}
@@ -4130,7 +4170,7 @@ def ai_chat_send(request):
             else:
                 yield _ai_chat_failure_reply(
                     e, response_model_key,
-                    is_staff=bool(request.user.is_authenticated and request.user.is_staff),
+                    is_staff=_ai_has_admin_access(request.user),
                 )
         finally:
             # The conversation can have been deleted (by this same user, in

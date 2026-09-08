@@ -16,6 +16,33 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+_gemma_key_file = BASE_DIR / '.secrets' / 'nvidia_gemma_api_key'
+NVIDIA_GEMMA_API_KEY = os.environ.get('NVIDIA_GEMMA_API_KEY', '').strip()
+if not NVIDIA_GEMMA_API_KEY and _gemma_key_file.is_file():
+    NVIDIA_GEMMA_API_KEY = _gemma_key_file.read_text(encoding='utf-8').strip()
+
+# Full FLUX NIM inference URL accepting uploaded images (not the preview API).
+FLUX_EDIT_API_URL = os.environ.get('FLUX_EDIT_API_URL', '').strip()
+FLUX_EDIT_API_KEY = os.environ.get('FLUX_EDIT_API_KEY', '').strip()
+
+QWEN_IMAGE_EDIT_API_URL = os.environ.get('QWEN_IMAGE_EDIT_API_URL', '').strip()
+QWEN_IMAGE_EDIT_ENDPOINT_KEY = os.environ.get('QWEN_IMAGE_EDIT_ENDPOINT_KEY', '').strip()
+_qwen_image_key_file = BASE_DIR / '.secrets' / 'nvidia_qwen_image_edit_api_key'
+NVIDIA_QWEN_IMAGE_EDIT_API_KEY = os.environ.get('NVIDIA_QWEN_IMAGE_EDIT_API_KEY', '').strip()
+if not NVIDIA_QWEN_IMAGE_EDIT_API_KEY and _qwen_image_key_file.is_file():
+    NVIDIA_QWEN_IMAGE_EDIT_API_KEY = _qwen_image_key_file.read_text(encoding='utf-8').strip()
+
+_kontext_key_file = BASE_DIR / '.secrets' / 'nvidia_flux_kontext_api_key'
+NVIDIA_FLUX_KONTEXT_API_KEY = os.environ.get('NVIDIA_FLUX_KONTEXT_API_KEY', '').strip()
+if not NVIDIA_FLUX_KONTEXT_API_KEY and _kontext_key_file.is_file():
+    NVIDIA_FLUX_KONTEXT_API_KEY = _kontext_key_file.read_text(encoding='utf-8').strip()
+
+# Local credentials stay outside version control; deployments can use env vars.
+_gpt_oss_key_file = BASE_DIR / '.secrets' / 'nvidia_gpt_oss_api_key'
+NVIDIA_GPT_OSS_API_KEY = os.environ.get('NVIDIA_GPT_OSS_API_KEY', '').strip()
+if not NVIDIA_GPT_OSS_API_KEY and _gpt_oss_key_file.is_file():
+    NVIDIA_GPT_OSS_API_KEY = _gpt_oss_key_file.read_text(encoding='utf-8').strip()
+
 SECRET_KEY = os.environ.get(
     'DJANGO_SECRET_KEY',
     'django-insecure-2!^^*c(t)whrn^4w3xkoqx!1p85e5s!-xh0w+xai7&q*80tt@@'
