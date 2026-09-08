@@ -1791,8 +1791,12 @@ def dashboard_backup_run(request):
     if request.method == 'POST':
         settings_obj = DropboxSettings.get_solo()
         try:
-            filename = dropbox_backup.create_backup(settings_obj)
+            missing_images = []
+            filename = dropbox_backup.create_backup(settings_obj, missing_images=missing_images)
             messages.success(request, f'Backup saved to Dropbox as "{filename}".')
+            if missing_images:
+                examples = ', '.join(missing_images[:5])
+                messages.warning(request, f'Skipped {len(missing_images)} missing image(s): {examples}. Available images and the database were saved; skipped files are listed in the backup manifest.')
         except dropbox_backup.BackupError as exc:
             messages.error(request, str(exc))
     return redirect('dashboard_backup')

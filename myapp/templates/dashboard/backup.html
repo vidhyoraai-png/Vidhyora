@@ -39,7 +39,7 @@
 {% endblock %}
 
 {% block content %}
-<p class="backup-sub">Manually back up your SQLite database to Dropbox, or restore from a previous backup.</p>
+<p class="backup-sub">Back up your database and uploaded images to Dropbox, or restore them together from a previous backup.</p>
 
 {% for message in messages %}
   <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
@@ -63,7 +63,7 @@
     <div class="backup-card-body">
       <ul class="backup-facts">
         <li><i class="fas fa-folder"></i> Saves a timestamped copy to <code>{{ backup_folder }}/</code></li>
-        <li><i class="fas fa-file-circle-check"></i> Also refreshes <code>{{ backup_folder }}/db_latest.sqlite3</code></li>
+        <li><i class="fas fa-file-circle-check"></i> Includes the PWA install icon, favicon, social preview, and other uploaded site images. Refreshes <code>backup_latest.zip</code> and the legacy database copy.</li>
         <li><i class="fas fa-shield-halved"></i> Old backups are kept — nothing is deleted automatically</li>
       </ul>
       <form method="post" action="{% url 'dashboard_backup_run' %}">
@@ -78,8 +78,8 @@
   <div class="backup-card">
     <div class="backup-card-head red"><i class="fas fa-cloud-arrow-down"></i> Restore from Dropbox</div>
     <div class="backup-card-body">
-      <div class="backup-warn"><i class="fas fa-triangle-exclamation"></i> <span><b>Warning:</b> this will overwrite your current database. Take a fresh backup first!</span></div>
-      <form method="post" action="{% url 'dashboard_backup_restore' %}" onsubmit="return confirm('This will permanently overwrite the live database with the selected backup. This cannot be undone. Continue?');">
+      <div class="backup-warn"><i class="fas fa-triangle-exclamation"></i> <span><b>Warning:</b> this replaces your database and images included in the selected backup. Older .sqlite3 backups restore only the database. Take a fresh backup first!</span></div>
+      <form method="post" action="{% url 'dashboard_backup_restore' %}" onsubmit="return confirm('This will overwrite the live database and included uploaded images with the selected backup. This cannot be undone. Continue?');">
         {% csrf_token %}
         <div class="form-group">
           <label for="restoreFile">Select backup file</label>
@@ -133,7 +133,7 @@
   <div class="panel-head"><h3><i class="fas fa-triangle-exclamation"></i> Delete all backups</h3></div>
   <form class="backup-danger-body" method="post" action="{% url 'dashboard_backup_delete_all' %}" onsubmit="return confirm('Delete EVERY backup inside {{ backup_folder|escapejs }} on Dropbox? This cannot be undone.');">
     {% csrf_token %}
-    <p class="backup-danger-copy">This permanently deletes every timestamped backup and <code>db_latest.sqlite3</code> inside <code>{{ backup_folder }}/</code>. Your live database and other Dropbox folders are not affected.</p>
+    <p class="backup-danger-copy">This permanently deletes every timestamped backup, <code>backup_latest.zip</code>, and <code>db_latest.sqlite3</code> inside <code>{{ backup_folder }}/</code>. Your live database and other Dropbox folders are not affected.</p>
     <div class="form-group">
       <label for="deleteAllConfirmation">Type <b>DELETE ALL</b> to confirm</label>
       <input id="deleteAllConfirmation" name="confirmation" type="text" required pattern="DELETE ALL" autocomplete="off" placeholder="DELETE ALL">
