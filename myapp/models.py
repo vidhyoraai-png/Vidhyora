@@ -7,36 +7,6 @@ from django.db.models import F
 from django.utils import timezone
 
 
-class ContactLead(models.Model):
-    """Persists every contact / lead-form submission.
-
-    Saving to the database happens *before* the email is attempted, so
-    no inquiry is ever lost even if SMTP is unavailable.
-    """
-    SOURCE_EDUTRELLIS = 'edutrellis'
-    SOURCE_STORE = 'store'
-    SOURCE_WEBSITECREATION = 'websitecreation'
-    SOURCE_CHOICES = [
-        (SOURCE_EDUTRELLIS, 'edutrellis.in'),
-        (SOURCE_STORE, 'edutrellis.in/store'),
-        (SOURCE_WEBSITECREATION, 'edutrellis.in/websitecreation'),
-    ]
-
-    name       = models.CharField(max_length=120)
-    phone      = models.CharField(max_length=20)
-    email      = models.EmailField()
-    service    = models.CharField(max_length=200, blank=True)
-    message    = models.TextField(blank=True)
-    source     = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_EDUTRELLIS)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['-created_at']
-        verbose_name      = 'Contact Lead'
-        verbose_name_plural = 'Contact Leads'
-
-    def __str__(self):
-        return f"{self.name} — {self.phone} ({timezone.localtime(self.created_at):%d %b %Y %H:%M})"
 
 
 class StoreProfile(models.Model):
@@ -140,219 +110,15 @@ class ActiveUserSession(models.Model):
         return f'{self.user.username} — {self.session_key}'
 
 
-class Category(models.Model):
-    """A storefront category shown on the homepage's 'Shop by Category' rail
-    and used as a filter tab on the shop grid. Replaces the old hardcoded
-    icon-based categories with an admin-managed list backed by an image."""
-    name        = models.CharField(max_length=80)
-    slug        = models.SlugField(max_length=80, unique=True, help_text="Used to match product filter tags, e.g. 'audio'.")
-    description = models.CharField(max_length=200, blank=True)
-    image       = models.ImageField(upload_to='categories/', blank=True, null=True)
-    order       = models.PositiveIntegerField(default=0)
-    is_active   = models.BooleanField(default=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['order', 'name']
-        verbose_name = 'Store Category'
-        verbose_name_plural = 'Store Categories'
-
-    def __str__(self):
-        return self.name
 
 
-class Product(models.Model):
-    """A storefront product. Replaces the old hardcoded PRODUCTS array in
-    estore.html with an admin-managed catalogue backed by the database."""
-    category          = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='products')
-    slug              = models.SlugField(max_length=40, unique=True, help_text="Used as the product ID in the cart/orders — keep it stable once orders exist.")
-    brand             = models.CharField(max_length=80)
-    name              = models.CharField(max_length=200)
-    short_description = models.CharField(max_length=300, help_text="Shown on the product card.")
-    description       = models.TextField(blank=True, help_text="Longer description shown when a shopper opens the product detail view.")
-    specs             = models.TextField(blank=True, help_text="One spec per line, formatted as 'Label: Value' — shown on the product detail view.")
-    price             = models.DecimalField(max_digits=10, decimal_places=2)
-    mrp               = models.DecimalField(max_digits=10, decimal_places=2)
-    image             = models.ImageField(upload_to='products/', blank=True, null=True, help_text="Cover image. Falls back to the icon + gradient tile below when left blank. Add more angles under 'Product images' below (up to 5 total).")
-    video             = models.FileField(upload_to='products/videos/', blank=True, null=True, help_text="Optional MP4 product video, shown as a slide in the detail page gallery.")
-    icon              = models.CharField(max_length=60, default='fa-box', help_text="Font Awesome icon class shown when no image is set, e.g. 'fa-headphones'.")
-    gradient          = models.CharField(max_length=200, default='linear-gradient(135deg,#e8001e,#c0001a)', help_text="CSS background used behind the icon when no image is set.")
-    flag              = models.CharField(max_length=40, blank=True, help_text="Small badge on the card, e.g. 'Bestseller'.")
-    stock_status      = models.CharField(max_length=40, default='In stock', help_text="e.g. 'In stock', 'Only 4 left'.")
-    tags              = models.CharField(max_length=200, blank=True, help_text="Comma-separated, e.g. 'ANC, 40h battery, IPX5'.")
-    rating            = models.DecimalField(max_digits=2, decimal_places=1, default=4.5)
-    reviews_count     = models.PositiveIntegerField(default=0)
-    is_active         = models.BooleanField(default=True)
-    is_digital        = models.BooleanField(default=False, help_text="Digital/subscription product — nothing physically ships, so checkout hides Cash on Delivery for it.")
-    order             = models.PositiveIntegerField(default=0)
-    created_at        = models.DateTimeField(auto_now_add=True)
-    updated_at        = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['order', 'name']
-        verbose_name = 'Store Product'
-        verbose_name_plural = 'Store Products'
-
-    def __str__(self):
-        return self.name
-
-    @property
-    def tag_list(self):
-        return [t.strip() for t in self.tags.split(',') if t.strip()]
-
-    @property
-    def spec_list(self):
-        items = []
-        for line in self.specs.splitlines():
-            label, sep, value = line.partition(':')
-            if not label.strip():
-                continue
-            items.append((label.strip(), value.strip() if sep else ''))
-        return items
-
-    @property
-    def discount_pct(self):
-        if not self.mrp:
-            return 0
-        return round((1 - float(self.price) / float(self.mrp)) * 100)
-
-    @property
-    def review_stats(self):
-        """Blends the manually-set `rating`/`reviews_count` (the store's
-        starting/base figures) with real Review rows, so the displayed
-        average updates honestly as genuine reviews come in instead of
-        either ignoring them or discarding the base numbers outright."""
-        real = list(self.reviews.all())
-        real_count = len(real)
-        total_count = self.reviews_count + real_count
-        if total_count == 0:
-            return (0.0, 0)
-        points = float(self.rating) * self.reviews_count + sum(r.rating for r in real)
-        return (round(points / total_count, 1), total_count)
-
-class ProductImage(models.Model):
-    """One extra gallery photo for a Product's detail-page slider. Capped at
-    5 per product by the admin form (ProductImageFormSet)."""
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='images')
-    image   = models.ImageField(upload_to='products/gallery/')
-    order   = models.PositiveIntegerField(default=0)
-
-    class Meta:
-        ordering = ['order', 'id']
-        verbose_name = 'Product Image'
-        verbose_name_plural = 'Product Images'
-
-    def __str__(self):
-        return f"Image for {self.product.name}"
 
 
-class ProductColor(models.Model):
-    """A selectable colour variant shown as a swatch on the product detail
-    page. Purely presentational — it doesn't split stock or pricing."""
-    product   = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='colors')
-    name      = models.CharField(max_length=60, help_text="e.g. 'Midnight Black'.")
-    hex_code  = models.CharField(max_length=7, default='#1c2333', help_text="e.g. #1c2333 — used for the swatch colour.")
-    image     = models.ImageField(upload_to='products/colors/', blank=True, null=True, help_text="Optional — the gallery switches to this image when the shopper picks this colour.")
-    order     = models.PositiveIntegerField(default=0)
-
-    class Meta:
-        ordering = ['order', 'id']
-        verbose_name = 'Product Color'
-        verbose_name_plural = 'Product Colors'
-
-    def __str__(self):
-        return f"{self.name} ({self.product.name})"
 
 
-class AboutUsContent(models.Model):
-    """Singleton content block backing the storefront's About Us section."""
-    photo          = models.ImageField(upload_to='about/', blank=True, null=True)
-    badge_title    = models.CharField(max_length=120, default='Working since 2020')
-    badge_subtitle = models.CharField(max_length=200, default='Websites & technical services · store launched 2026')
-
-    founder_name     = models.CharField(max_length=120, default='Vijay Tiwari')
-    founder_title    = models.CharField(max_length=120, default='Founder & CEO')
-    founder_email    = models.EmailField(default='ceo@edutrellis.in')
-    founder_linkedin = models.URLField(blank=True, default='https://www.linkedin.com/in/vijaytiwariii/')
-    founder_photo    = models.ImageField(upload_to='about/', blank=True, null=True)
-
-    stat1_value = models.CharField(max_length=20, default='2020')
-    stat1_label = models.CharField(max_length=40, default='Founded')
-    stat2_value = models.CharField(max_length=20, default='1200+')
-    stat2_label = models.CharField(max_length=40, default='Clients')
-    stat3_value = models.CharField(max_length=20, default='500+')
-    stat3_label = models.CharField(max_length=40, default='Projects')
-    stat4_value = models.CharField(max_length=20, default='98%')
-    stat4_label = models.CharField(max_length=40, default='Satisfaction')
-
-    heading    = models.CharField(max_length=200, default='A gadget store run by a tech company')
-    paragraph1 = models.TextField(default=(
-        "EduTrellis Private Limited has been working since 2020 — building and selling websites, "
-        "and running the technical services around them: hosting, SEO, digital marketing and Google "
-        "Business, for clients across India from our base in Lucknow."
-    ))
-    paragraph2 = models.TextField(default=(
-        "Along the way we bought a lot of gear for our own team and for clients, and got tired of spec "
-        "sheets that didn't match reality. So this year we launched the store. Everything listed here is "
-        "stock we keep, unbox and test before it ships, sold at a fixed price."
-    ))
-
-    list_heading   = models.CharField(max_length=150, default='What you get with every order')
-    bullet_points  = models.TextField(default=(
-        "Sealed, genuine units, tested before dispatch\n"
-        "Specs listed honestly — real battery and charging numbers\n"
-        "Dispatch within 24 hours, tracking sent on WhatsApp\n"
-        "GST invoice on request for business purchases\n"
-        "A human who actually answers your messages"
-    ), help_text="One point per line.")
-
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = 'About Us Content'
-        verbose_name_plural = 'About Us Content'
-
-    def __str__(self):
-        return 'About Us content'
-
-    @property
-    def bullet_list(self):
-        return [b.strip() for b in self.bullet_points.splitlines() if b.strip()]
-
-    @classmethod
-    def get_solo(cls):
-        obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
 
 
-class PolicyPage(models.Model):
-    """Admin-editable legal/policy pages linked from the storefront footer."""
-    PRIVACY  = 'privacy'
-    TERMS    = 'terms'
-    REFUND   = 'refund'
-    SHIPPING = 'shipping'
-    KEY_CHOICES = [
-        (PRIVACY, 'Privacy Policy'),
-        (TERMS, 'Terms & Conditions'),
-        (REFUND, 'Refund Policy'),
-        (SHIPPING, 'Shipping & Delivery'),
-    ]
-    key        = models.CharField(max_length=20, choices=KEY_CHOICES, unique=True)
-    title      = models.CharField(max_length=150)
-    content    = models.TextField(help_text="Plain text — a blank line starts a new paragraph.")
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        ordering = ['key']
-        verbose_name = 'Policy Page'
-        verbose_name_plural = 'Policy Pages'
-
-    def __str__(self):
-        return self.title
-
-    @property
-    def paragraphs(self):
-        return [p.strip() for p in self.content.split('\n\n') if p.strip()]
 
 
 class PaymentSettings(models.Model):
@@ -414,43 +180,8 @@ class EmailSettings(models.Model):
         return bool(self.is_enabled and self.smtp_host and self.smtp_username and self.smtp_password)
 
 
-class Cart(models.Model):
-    """A shopping cart tied to a logged-in store user or an anonymous session."""
-    user        = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='carts')
-    session_key = models.CharField(max_length=40, blank=True, db_index=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    updated_at  = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = 'Store Cart'
-        verbose_name_plural = 'Store Carts'
-
-    def __str__(self):
-        owner = self.user.username if self.user else f"session:{self.session_key[:8]}"
-        return f"Cart #{self.pk} — {owner}"
 
 
-class CartItem(models.Model):
-    """A single product line inside a Cart. Product data is snapshotted here
-    since the storefront catalogue lives in the template, not the database."""
-    cart         = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='items')
-    product_id   = models.CharField(max_length=40)
-    product_name = models.CharField(max_length=200)
-    price        = models.DecimalField(max_digits=10, decimal_places=2)
-    quantity     = models.PositiveIntegerField(default=1)
-    added_at     = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('cart', 'product_id')
-        verbose_name = 'Cart Item'
-        verbose_name_plural = 'Cart Items'
-
-    def __str__(self):
-        return f"{self.product_name} x{self.quantity}"
-
-    @property
-    def subtotal(self):
-        return self.price * self.quantity
 
 
 # Product id (matches Product.slug) whose first delivered order
@@ -718,25 +449,6 @@ class PWASettings(models.Model):
         return bool(self.is_enabled)
 
 
-class FeeSettings(models.Model):
-    """Singleton delivery/handling fee configuration, managed from the store
-    dashboard. Any field left at 0 simply isn't charged."""
-    delivery_fee       = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, help_text='Flat delivery fee per order. Leave 0 for free delivery.')
-    free_delivery_over = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, help_text='Orders at or above this subtotal skip the delivery fee above, even if one is set. Leave 0 to always charge it (if set).')
-    handling_fee       = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, help_text='Flat handling fee per order. Leave 0 for no handling fee.')
-    updated_at         = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = 'Delivery & Handling Fees'
-        verbose_name_plural = 'Delivery & Handling Fees'
-
-    def __str__(self):
-        return 'Delivery & handling fees'
-
-    @classmethod
-    def get_solo(cls):
-        obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
 
 
 class EmailVerification(models.Model):
@@ -789,25 +501,6 @@ class PhoneVerification(models.Model):
         return timezone.now() > self.expires_at
 
 
-class Review(models.Model):
-    """A shopper's rating/comment on a Product. Every row here is a verified
-    purchase — creating one is gated (see views._user_can_review) on the
-    shopper having a Delivered order containing this product, so there's no
-    separate 'verified' flag to track."""
-    product    = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='reviews')
-    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name='product_reviews')
-    rating     = models.PositiveSmallIntegerField(choices=[(i, str(i)) for i in range(1, 6)])
-    comment    = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['-created_at']
-        unique_together = ('product', 'user')
-        verbose_name = 'Product Review'
-        verbose_name_plural = 'Product Reviews'
-
-    def __str__(self):
-        return f"{self.user.username} → {self.product.name} ({self.rating}★)"
 
 
 class AIConversation(models.Model):

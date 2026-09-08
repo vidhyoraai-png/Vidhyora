@@ -1,7 +1,9 @@
 import datetime
 import json
 import logging
+import queue
 import re
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -11,6 +13,7 @@ from openai import OpenAI
 from myapp import business_info
 
 logger = logging.getLogger(__name__)
+NVIDIA_CHAT_MODEL = getattr(settings, 'NVIDIA_CHAT_MODEL', 'nvidia/nemotron-3.5-lightning-30b-a3b')
 
 MAX_TOKENS = 2048
 TEMPERATURE = 0.5          # baseline/fallback
@@ -31,6 +34,22 @@ STREAM_TIMEOUT_DEFAULT = 15.0
 # requests — see wants_long_form_output below) — the 25s default is tuned
 # for an ordinary chat reply, not a multi-thousand-token document.
 STREAM_TIMEOUT_LONG = 60.0
+# Hedging. Live measurement against the NVIDIA endpoint showed time-to-first-
+# token for the very same one-word prompt swinging between 0.9s and 27s —
+# the request isn't slow to compute, it's waiting in a queue behind a busy
+# shared worker, and there is nothing about the request itself to fix. So
+# rather than sit through a bad draw, a second copy of the request goes out
+# on the NEXT API key once the first has stayed silent this long, and
+# whichever produces a first token first wins (the loser is closed
+# immediately). A fast reply is completely unaffected — it answers well
+# inside this delay and no second request is ever made — so the extra cost
+# lands only on the slow tail, which is exactly what makes the chat feel
+# broken.
+STREAM_HEDGE_AFTER_SECONDS = getattr(settings, 'AI_STREAM_HEDGE_AFTER_SECONDS', 3.5)
+# Counting the first attempt: 2 means one hedge. More copies would shave the
+# tail further, but each is a real billable request against a separate key,
+# and the outer retry/failover below still covers the case where both fail.
+STREAM_HEDGE_MAX_ATTEMPTS = getattr(settings, 'AI_STREAM_HEDGE_MAX_ATTEMPTS', 2)
 
 # EduTrellis Vision was live-tested to randomly (~1 in 3 tries, reproducible
 # across many prompt-wording variants and even at temperature 0) open with a
@@ -79,6 +98,18 @@ VISION_CHECK_BUFFER_CHARS = 380
 # enough to cover the observed first-sentence leaks, since every character
 # here is delay before the user sees anything at all.
 IDENTITY_CHECK_BUFFER_CHARS = 180
+# ...but a finished short reply shouldn't sit in that buffer waiting for a
+# window it will never fill. Measured against the live endpoint, a one-line
+# answer ("Hey! How can I help you today?") reached the browser only when
+# generation ended — ~3s after its first token — purely because it was
+# shorter than the window. A completed sentence is already enough text to
+# run the leak check against, so the buffer is released at the first
+# sentence end past this minimum instead. A leak in that opening is still
+# caught and regenerated exactly as before; one appearing later in the reply
+# is rewritten by views._chatgpt_public_reply, which re-runs over the whole
+# reply on every chunk and is the designed backstop for precisely that case.
+IDENTITY_CHECK_MIN_CHARS = 25
+_SENTENCE_END_RE = re.compile(r'[.!?][\'")\]\u201d\u2019]?(?:\s|$)')
 
 
 class _VisionNoImageDetected(Exception):
@@ -328,6 +359,7 @@ CODE_SYSTEM_SUFFIX = (
 )
 
 CHATGPT_56_MODEL_KEY = 'chatgpt56'
+NEMOTRON_SUPER_MODEL_KEY = 'nemotron-3-super'
 FLUX_KLEIN_4B_MODEL_KEY = 'flux-klein-4b'
 CHATGPT_56_SYSTEM_SUFFIX = (
     "\n\nYou are answering through Vidhyora's ChatGPT 5.6 experience. "
@@ -420,7 +452,7 @@ MODELS = {
         # A user-facing automatic route, not a separate upstream endpoint.
         # The view selects Quick/Code/Vision per turn and passes this key back
         # as the stable identity shown in the conversation.
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'id': NVIDIA_CHAT_MODEL,
         'label': 'ChatGPT 5.6',
         'description': "OpenAI's most powerful model — best for everyday questions, reasoning, coding, writing, and images.",
         'reasoning': True,
@@ -438,14 +470,14 @@ MODELS = {
         'retry_attempts': 1,
     },
     'ultra': {
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'id': NVIDIA_CHAT_MODEL,
         'label': 'Vidhyora Ultra',
         'description': 'Most capable — best for complex reasoning, multi-step problems, and detailed answers.',
         'reasoning': True,
         'vision': False,
     },
     'quick': {
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'id': NVIDIA_CHAT_MODEL,
         'label': 'Vidhyora Quick',
         'description': 'Fast and lightweight — best for everyday questions and general help.',
         'reasoning': True,
@@ -454,7 +486,7 @@ MODELS = {
     'code': {
         # Code behaviour is supplied by the late system instruction. Keeping
         # it on the verified endpoint avoids the retired code workers.
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'id': NVIDIA_CHAT_MODEL,
         'label': 'Vidhyora Code',
         'description': 'Tuned for coding, debugging, and technical questions.',
         'reasoning': True,
@@ -463,7 +495,7 @@ MODELS = {
     'reasoning': {
         # The verified endpoint supports the no-thinking template parameters
         # used below, preventing hidden reasoning from leaking into replies.
-        'id': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'id': NVIDIA_CHAT_MODEL,
         'label': 'Nemotron Super',
         'description': 'Excellent at complex, multi-step reasoning and planning — faster than Ultra, still very capable.',
         'reasoning': True,
@@ -485,6 +517,25 @@ MODELS = {
         'reasoning': False,
         'vision': False,
         'image_generation': True,
+    },
+    # Last in this dict is last in the model picker — views.ai_page builds the
+    # list straight from this ordering.
+    NEMOTRON_SUPER_MODEL_KEY: {
+        # The only entry that actually runs NVIDIA's Nemotron 3 Super (120B)
+        # endpoint — the older 'reasoning' entry above is labelled "Nemotron
+        # Super" but has always pointed at the Lightning worker. Verified
+        # live against this account: it answers, and enable_thinking=False is
+        # honoured (without it the reply opens with raw "Okay, the user asked
+        # me to..." chain-of-thought), so it stays a 'reasoning' model here.
+        'id': 'nvidia/nemotron-3-super-120b-a12b',
+        'label': 'Nemotron 3 Super',
+        'description': 'Largest reasoning model — best for hard, multi-step problems where depth matters more than speed.',
+        'reasoning': True,
+        'vision': False,
+        # Its own credential, so it is deliberately outside the shared key
+        # pool's failover and hedging — another key in that pool has no
+        # invoke access to this endpoint.
+        'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
     },
 }
 DEFAULT_MODEL_KEY = CHATGPT_56_MODEL_KEY
@@ -1213,7 +1264,11 @@ def jagu_system_note(greet=True, farewell=False):
     )
 
 
-_client = None
+# One cached client per API key. Several keys back the same chat endpoint
+# (settings.NVIDIA_API_KEYS) so a key that is rate-limited, out of credit or
+# revoked can be failed over instead of taking the chat down — see
+# _is_key_level_error and the key-switch branch in stream_chat.
+_clients = {}
 
 # The original prompt grew into a long collection of repeated edge-case
 # instructions. This compact version keeps the product/account/identity and
@@ -1354,26 +1409,45 @@ COMPACT_SYSTEM_PROMPT = (
 )
 
 
-def _get_client(api_key_setting=None):
-    if api_key_setting:
-        api_key = getattr(settings, api_key_setting, '').strip()
-        if not api_key:
-            raise ValueError(f'{api_key_setting} is not configured.')
-        return OpenAI(
+def nvidia_key_pool():
+    """The ordered chat API keys to try, primary first. Falls back to the
+    single NVIDIA_API_KEY so a settings file without the pool still works."""
+    keys = [
+        key.strip() for key in (getattr(settings, 'NVIDIA_API_KEYS', None) or [])
+        if isinstance(key, str) and key.strip()
+    ]
+    if not keys:
+        primary = (getattr(settings, 'NVIDIA_API_KEY', '') or '').strip()
+        keys = [primary] if primary else []
+    return keys
+
+
+def _client_for_key(api_key):
+    client = _clients.get(api_key)
+    if client is None:
+        client = OpenAI(
             base_url='https://integrate.api.nvidia.com/v1',
             api_key=api_key,
             timeout=25.0,
             max_retries=0,
         )
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            base_url='https://integrate.api.nvidia.com/v1',
-            api_key=settings.NVIDIA_API_KEY,
-            timeout=25.0,
-            max_retries=0,
-        )
-    return _client
+        _clients[api_key] = client
+    return client
+
+
+def _get_client(api_key_setting=None, key_index=0):
+    """key_index selects which of the pooled chat keys to use; only
+    stream_chat's failover passes anything other than 0. A model with its own
+    dedicated key (api_key_setting) is not part of the pool."""
+    if api_key_setting:
+        api_key = getattr(settings, api_key_setting, '').strip()
+        if not api_key:
+            raise ValueError(f'{api_key_setting} is not configured.')
+        return _client_for_key(api_key)
+    pool = nvidia_key_pool()
+    if not pool:
+        raise ValueError('NVIDIA_API_KEY is not configured.')
+    return _client_for_key(pool[key_index % len(pool)])
 
 
 def _is_transient_error(exc):
@@ -1386,6 +1460,148 @@ def _is_transient_error(exc):
     return any(term in name or term in text for term in (
         'timeout', 'connection', 'ratelimit', 'rate limit', 'temporar',
         'overload', 'worker local total request limit',
+    ))
+
+
+def _stream_content(client, kwargs):
+    """The plain, unhedged path: yield each non-empty content string."""
+    stream = client.chat.completions.create(**kwargs)
+    try:
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            content = getattr(chunk.choices[0].delta, 'content', None)
+            if content:
+                yield content
+    finally:
+        close = getattr(stream, 'close', None)
+        if close:
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _stream_content_hedged(kwargs, key_indexes, hedge_after):
+    """Same output as _stream_content, but raced across API keys.
+
+    The first attempt goes out immediately on key_indexes[0]. If it hasn't
+    produced a single token after hedge_after seconds, an identical request
+    goes out on the next key, and so on up to STREAM_HEDGE_MAX_ATTEMPTS.
+    Whichever attempt produces the first token owns the reply; every other
+    attempt is closed at its next chunk, so only one answer is ever yielded
+    and the losing requests stop consuming quota as soon as the race is
+    settled. If every attempt fails, the first failure is raised, so the
+    caller's existing retry/fallback handling behaves exactly as before.
+
+    Each attempt runs in a thread because the OpenAI client is synchronous;
+    they only ever push to a queue, so nothing here is shared mutable state
+    beyond the small winner/cancel handshake.
+    """
+    chunks = queue.Queue()
+    cancelled = threading.Event()
+    lock = threading.Lock()
+    winner = [None]
+
+    def attempt(slot, key_index):
+        stream = None
+        try:
+            stream = _get_client(key_index=key_index).chat.completions.create(**kwargs)
+            for chunk in stream:
+                if cancelled.is_set():
+                    break
+                if not chunk.choices:
+                    continue
+                content = getattr(chunk.choices[0].delta, 'content', None)
+                if not content:
+                    continue
+                with lock:
+                    if winner[0] is None:
+                        winner[0] = slot
+                    lost = winner[0] != slot
+                if lost:
+                    break
+                chunks.put((slot, 'chunk', content))
+            chunks.put((slot, 'done', None))
+        except Exception as exc:  # reported, not raised — this is a thread
+            chunks.put((slot, 'error', exc))
+        finally:
+            close = getattr(stream, 'close', None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    threads = []
+    started = 0
+    running = 0
+    first_error = None
+
+    def start_next():
+        nonlocal started, running
+        thread = threading.Thread(
+            target=attempt, args=(started, key_indexes[started]), daemon=True,
+        )
+        threads.append(thread)
+        started += 1
+        running += 1
+        thread.start()
+
+    try:
+        start_next()
+        while running:
+            waiting_to_hedge = started < len(key_indexes) and winner[0] is None
+            try:
+                slot, kind, payload = chunks.get(
+                    timeout=hedge_after if waiting_to_hedge else None,
+                )
+            except queue.Empty:
+                logger.info("AI hedging request onto key #%d after %.1fs", started + 1, hedge_after)
+                start_next()
+                continue
+            if kind == 'chunk':
+                yield payload
+                continue
+            running -= 1
+            if kind == 'error' and first_error is None:
+                first_error = payload
+            if winner[0] == slot:
+                # The attempt that owned the reply finished (or broke) —
+                # nothing another attempt could still say belongs in it.
+                if kind == 'error':
+                    raise payload
+                return
+            if not running:
+                # Every attempt in flight has ended without owning a reply.
+                # A *failure* is deliberately not hedged onto yet another key
+                # here — stream_chat's own key failover handles that, with
+                # its logging and retry budget. Only silence starts a new
+                # attempt (the queue.Empty branch above).
+                if first_error is not None:
+                    raise first_error
+                return
+    finally:
+        # Whether this ended normally, raised, or the consumer closed the
+        # generator mid-reply, every losing attempt gets told to stop.
+        cancelled.set()
+
+
+def _is_key_level_error(exc):
+    """True when the failure looks like a property of the API key itself —
+    revoked/invalid, out of credit, or over its own rate limit — rather than
+    of the request or the model. These are exactly the failures another key
+    can succeed at, so stream_chat fails over instead of retrying the same
+    credential (which would just fail identically). 429 counts: each key has
+    its own quota on NVIDIA's side."""
+    status = getattr(exc, 'status_code', None)
+    if status in (401, 402, 403, 429):
+        return True
+    text = str(exc).lower()
+    return any(term in text for term in (
+        'invalid api key', 'incorrect api key', 'api key', 'unauthorized',
+        'authentication', 'quota', 'out of credit', 'insufficient credit',
+        'credits', 'not entitled', 'account',
     ))
 
 
@@ -1504,7 +1720,6 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     cfg = MODELS.get(model_key) or MODELS[DEFAULT_MODEL_KEY]
     identity_key = identity_model_key or model_key
     identity_cfg = MODELS.get(identity_key) or cfg
-    client = _get_client(cfg['api_key_setting']) if cfg.get('api_key_setting') else _get_client()
     current_content = messages[-1].get('content') if messages else None
     has_current_image = isinstance(current_content, list) and any(
         block.get('type') == 'image_url' for block in current_content
@@ -1843,18 +2058,42 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     request_started = time.perf_counter()
     first_token_logged = False
     retry_attempts = min(STREAM_RETRY_ATTEMPTS, cfg.get('retry_attempts', STREAM_RETRY_ATTEMPTS))
-    for attempt in range(retry_attempts + 1):
+    # Failing over to a different API key isn't a retry of the same broken
+    # thing — it's a different credential against a working endpoint — so
+    # those attempts get their own budget on top of retry_attempts instead
+    # of eating into it, and retries_used (not the loop counter) is what the
+    # retry budget is measured against below. A model with its own dedicated
+    # key isn't part of the shared pool and gets no failover.
+    api_key_setting = cfg.get('api_key_setting')
+    key_pool = [] if api_key_setting else nvidia_key_pool()
+    key_index = 0
+    retries_used = 0
+    for attempt in range(retry_attempts + max(len(key_pool) - 1, 0) + 1):
         yielded_any = False
         buffer = ''
         identity_buffer = ''
         try:
-            stream = client.chat.completions.create(**kwargs)
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                content = getattr(chunk.choices[0].delta, 'content', None)
-                if not content:
-                    continue
+            # Hedge across the spare keys when there are any and the request
+            # is cheap to duplicate. An image turn is deliberately excluded:
+            # re-uploading a multi-megabyte data URI is itself a large part
+            # of that request's latency, so a second copy of it would more
+            # likely add delay than remove it.
+            # Only keys at or after the current one — a key the failover
+            # below has already moved past was rejected, so racing it again
+            # would just buy another rejection.
+            hedge_indexes = (
+                list(range(key_index, len(key_pool)))[:STREAM_HEDGE_MAX_ATTEMPTS]
+                if not has_current_image else []
+            )
+            if len(hedge_indexes) > 1 and STREAM_HEDGE_AFTER_SECONDS > 0:
+                chunk_iter = _stream_content_hedged(
+                    kwargs, hedge_indexes, STREAM_HEDGE_AFTER_SECONDS,
+                )
+            else:
+                chunk_iter = _stream_content(
+                    _get_client(api_key_setting, key_index=key_index), kwargs,
+                )
+            for content in chunk_iter:
                 if not first_token_logged:
                     logger.info(
                         "AI timing first_upstream_token=%.3fs model=%s attempt=%d",
@@ -1884,7 +2123,10 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                     # threshold.
                 if check_identity_opening:
                     identity_buffer += content
-                    if len(identity_buffer) < IDENTITY_CHECK_BUFFER_CHARS:
+                    if len(identity_buffer) < IDENTITY_CHECK_BUFFER_CHARS and not (
+                        len(identity_buffer) >= IDENTITY_CHECK_MIN_CHARS
+                        and _SENTENCE_END_RE.search(identity_buffer)
+                    ):
                         continue
                     if _IDENTITY_LEAK_RE.search(identity_buffer):
                         raise _IdentityLeakDetected()
@@ -1915,7 +2157,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
             )
             return
         except _VisionNoImageDetected:
-            if attempt >= STREAM_RETRY_ATTEMPTS:
+            if retries_used >= STREAM_RETRY_ATTEMPTS:
                 # The attachment was sent, but the vision backend failed to
                 # acknowledge/read it on every attempt. Do not surface its
                 # misleading denial or pretend we analysed pixels we could
@@ -1925,9 +2167,10 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                     "Please re-upload the image, preferably at a higher resolution."
                 )
                 return
+            retries_used += 1
             time.sleep(STREAM_RETRY_BACKOFF_SECONDS * (attempt + 1))
         except _IdentityLeakDetected:
-            if attempt >= STREAM_RETRY_ATTEMPTS:
+            if retries_used >= STREAM_RETRY_ATTEMPTS:
                 # Every retry still named the real backend or denied being
                 # ChatGPT — stop trusting the model to self-correct and give
                 # the one scripted, guaranteed-correct answer instead of
@@ -1935,6 +2178,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 yield "I'm ChatGPT, developed by OpenAI."
                 return
             logger.warning("ChatGPT 5.6 persona leaked backend identity; retrying")
+            retries_used += 1
             time.sleep(STREAM_RETRY_BACKOFF_SECONDS * (attempt + 1))
         except Exception as exc:
             transient = _is_transient_error(exc)
@@ -1950,11 +2194,34 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 MODELS['quick']['id'] != kwargs['model']
                 and (transient or _is_model_unavailable_error(exc))
             )
-            if yielded_any or attempt >= retry_attempts or (not transient and not can_fallback):
+            # A dead/exhausted/rate-limited key fails identically no matter
+            # how many times it's retried, so move to the next key in the
+            # pool first — before spending the retry budget or downgrading
+            # the user's chosen model to Quick. Only safe while nothing has
+            # been streamed yet, same rule as every other retry here.
+            can_switch_key = (
+                not yielded_any
+                and key_index + 1 < len(key_pool)
+                and _is_key_level_error(exc)
+            )
+            if can_switch_key:
+                key_index += 1
+                logger.warning(
+                    "AI key #%d rejected; failing over to key #%d model=%s error=%s",
+                    key_index, key_index + 1, model_key, exc,
+                )
+                continue
+            if yielded_any or retries_used >= retry_attempts or (not transient and not can_fallback):
                 raise
+            retries_used += 1
             if can_fallback:
                 kwargs['model'] = MODELS['quick']['id']
-                client = _get_client()
+                # Quick runs on the shared key pool, so a model that had its
+                # own dedicated key joins the pool (and its failover) here.
+                api_key_setting = None
+                if not key_pool:
+                    key_pool = nvidia_key_pool()
+                key_index = 0
                 kwargs['timeout'] = STREAM_TIMEOUT_DEFAULT
                 if MODELS['quick']['reasoning']:
                     kwargs['extra_body'] = {'chat_template_kwargs': {'enable_thinking': False, 'force_nonempty_content': True}}

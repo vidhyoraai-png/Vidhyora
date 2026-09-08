@@ -3,11 +3,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q
 from django.utils.text import slugify
 
-from myapp.models import (
-    Category, Order, Product, ProductImage, ProductColor, StoreProfile,
-    AboutUsContent, PolicyPage, PaymentSettings, DropboxSettings, EmailSettings, PWASettings, FeeSettings,
-    SiteCustomization,
-)
+from myapp.models import Order, StoreProfile, PaymentSettings, DropboxSettings, EmailSettings, PWASettings, SiteCustomization
 
 
 class GrantAISubscriptionForm(forms.Form):
@@ -226,128 +222,17 @@ class SignupEditForm(forms.ModelForm):
         return self.cleaned_data.get('amount_paid') or 0
 
 
-class CategoryForm(forms.ModelForm):
-    slug = forms.CharField(
-        max_length=80, required=False,
-        widget=forms.TextInput(attrs={'placeholder': 'auto-generated if left blank'}),
-    )
-
-    class Meta:
-        model = Category
-        fields = ['name', 'slug', 'description', 'image', 'order', 'is_active']
-
-    def clean_name(self):
-        name = self.cleaned_data['name'].strip()
-        if len(name) < 2:
-            raise forms.ValidationError('Category name must be at least 2 characters long.')
-        return name
-
-    def clean_slug(self):
-        slug = slugify(self.cleaned_data.get('slug') or self.cleaned_data.get('name', ''))
-        if not slug:
-            raise forms.ValidationError('Could not derive a slug — enter one manually.')
-        qs = Category.objects.filter(slug=slug)
-        if self.instance.pk:
-            qs = qs.exclude(pk=self.instance.pk)
-        if qs.exists():
-            raise forms.ValidationError('A category with this slug already exists.')
-        return slug
 
 
-class OrderStatusForm(forms.ModelForm):
-    class Meta:
-        model = Order
-        fields = ['status']
 
 
-class ProductForm(forms.ModelForm):
-    slug = forms.CharField(
-        max_length=40, required=False,
-        widget=forms.TextInput(attrs={'placeholder': 'auto-generated if left blank'}),
-    )
-
-    class Meta:
-        model = Product
-        # 'name' must precede 'slug' — clean_slug() reads self.cleaned_data['name'],
-        # and Django's _clean_fields() populates cleaned_data in this field order.
-        fields = [
-            'category', 'brand', 'name', 'slug', 'short_description', 'description', 'specs',
-            'price', 'mrp', 'image', 'video', 'icon', 'gradient', 'flag', 'stock_status', 'tags',
-            'rating', 'reviews_count', 'order', 'is_active',
-        ]
-        widgets = {
-            'short_description': forms.TextInput(),
-            'description': forms.Textarea(attrs={'rows': 4}),
-            'specs': forms.Textarea(attrs={'rows': 4, 'placeholder': 'Battery: 40 hours\nConnectivity: Bluetooth 5.3'}),
-        }
-
-    def clean_name(self):
-        name = self.cleaned_data['name'].strip()
-        if len(name) < 2:
-            raise forms.ValidationError('Product name must be at least 2 characters long.')
-        return name
-
-    def clean_slug(self):
-        slug = slugify(self.cleaned_data.get('slug') or self.cleaned_data.get('name', ''))
-        if not slug:
-            raise forms.ValidationError('Could not derive a slug — enter one manually.')
-        qs = Product.objects.filter(slug=slug)
-        if self.instance.pk:
-            qs = qs.exclude(pk=self.instance.pk)
-        if qs.exists():
-            raise forms.ValidationError('A product with this slug already exists.')
-        return slug
-
-    def clean(self):
-        cleaned = super().clean()
-        price, mrp = cleaned.get('price'), cleaned.get('mrp')
-        if price is not None and mrp is not None and price > mrp:
-            raise forms.ValidationError('Price cannot be higher than MRP.')
-        return cleaned
 
 
-ProductImageFormSet = forms.inlineformset_factory(
-    Product, ProductImage,
-    fields=['image', 'order'],
-    extra=8, max_num=10, validate_max=True, can_delete=True,
-)
-
-ProductColorFormSet = forms.inlineformset_factory(
-    Product, ProductColor,
-    fields=['name', 'hex_code', 'image', 'order'],
-    extra=6, max_num=14, validate_max=True, can_delete=True,
-    widgets={
-        'name': forms.TextInput(attrs={'placeholder': 'Colour name, e.g. Midnight Black'}),
-        'hex_code': forms.TextInput(attrs={'type': 'color'}),
-        'order': forms.NumberInput(attrs={'placeholder': 'Order'}),
-    },
-)
 
 
-class AboutUsContentForm(forms.ModelForm):
-    class Meta:
-        model = AboutUsContent
-        fields = [
-            'photo', 'badge_title', 'badge_subtitle',
-            'founder_name', 'founder_title', 'founder_email', 'founder_linkedin', 'founder_photo',
-            'stat1_value', 'stat1_label', 'stat2_value', 'stat2_label',
-            'stat3_value', 'stat3_label', 'stat4_value', 'stat4_label',
-            'heading', 'paragraph1', 'paragraph2', 'list_heading', 'bullet_points',
-        ]
-        widgets = {
-            'paragraph1': forms.Textarea(attrs={'rows': 4}),
-            'paragraph2': forms.Textarea(attrs={'rows': 4}),
-            'bullet_points': forms.Textarea(attrs={'rows': 5, 'placeholder': 'One point per line'}),
-        }
 
 
-class PolicyPageForm(forms.ModelForm):
-    class Meta:
-        model = PolicyPage
-        fields = ['title', 'content']
-        widgets = {
-            'content': forms.Textarea(attrs={'rows': 16}),
-        }
+
 
 
 class PaymentSettingsForm(forms.ModelForm):
@@ -399,23 +284,6 @@ class SiteCustomizationForm(forms.ModelForm):
         }
 
 
-class FeeSettingsForm(forms.ModelForm):
-    delivery_fee       = forms.DecimalField(required=False, min_value=0, widget=forms.NumberInput(attrs={'step': '0.01', 'placeholder': '0 = free delivery'}))
-    free_delivery_over = forms.DecimalField(required=False, min_value=0, widget=forms.NumberInput(attrs={'step': '0.01', 'placeholder': 'optional'}))
-    handling_fee       = forms.DecimalField(required=False, min_value=0, widget=forms.NumberInput(attrs={'step': '0.01', 'placeholder': '0 = no handling fee'}))
-
-    class Meta:
-        model = FeeSettings
-        fields = ['delivery_fee', 'free_delivery_over', 'handling_fee']
-
-    def clean_delivery_fee(self):
-        return self.cleaned_data.get('delivery_fee') or 0
-
-    def clean_free_delivery_over(self):
-        return self.cleaned_data.get('free_delivery_over') or 0
-
-    def clean_handling_fee(self):
-        return self.cleaned_data.get('handling_fee') or 0
 
 
 class EmailSettingsForm(forms.ModelForm):

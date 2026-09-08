@@ -34,21 +34,8 @@ from django.core.management import call_command
 from django.conf import settings
 from django.utils import timezone
 from datetime import datetime, timedelta, timezone as dt_timezone
-from myapp.forms import (
-    AISignupForm, PhoneVerifyForm, AILoginForm, SignupEditForm,
-    AIProfileEditForm, AIPasswordChangeForm, CategoryForm, OrderStatusForm,
-    ProductForm, ProductImageFormSet, ProductColorFormSet,
-    AboutUsContentForm, PolicyPageForm, PaymentSettingsForm, DropboxSettingsForm, PWASettingsForm,
-    FeeSettingsForm, GrantAISubscriptionForm, AddUserForm, SiteCustomizationForm,
-)
-from myapp.models import (
-    ContactLead, StoreProfile, Category, Order, OrderItem,
-    Product, AboutUsContent, PolicyPage, PaymentSettings, Payment,
-    DropboxSettings, PhoneVerification, PWASettings, FeeSettings, SiteCustomization,
-    AIAccountMessageSettings,
-    AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile,
-    AIUserImage, GitHubConnection, YouTubeDownloadJob,
-)
+from myapp.forms import AISignupForm, PhoneVerifyForm, AILoginForm, SignupEditForm, AIProfileEditForm, AIPasswordChangeForm, PaymentSettingsForm, DropboxSettingsForm, PWASettingsForm, GrantAISubscriptionForm, AddUserForm, SiteCustomizationForm
+from myapp.models import StoreProfile, Order, OrderItem, PaymentSettings, Payment, DropboxSettings, PhoneVerification, PWASettings, SiteCustomization, AIAccountMessageSettings, AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile, AIUserImage, GitHubConnection, YouTubeDownloadJob
 from myapp import dropbox_backup
 from myapp import dropbox_images
 from myapp import ai_chat
@@ -66,7 +53,6 @@ from myapp import youtube_download
 from myapp.ai_report_analysis import analyze_report, aggregate_report_issues
 from myapp.emailing import send_store_email, get_notify_email
 from myapp.sms import send_phone_otp, verify_phone_otp
-from myapp.seed_data import seed_demo_reviews
 from myapp.single_device import register_active_session
 
 logger = logging.getLogger(__name__)
@@ -1393,198 +1379,38 @@ def dashboard_ai_unblock(request, pk):
     return _ai_activity_redirect(request.POST.get('conversation_id', '').strip())
 
 
-@dashboard_staff_required
-def dashboard_contacts(request):
-    q = request.GET.get('q', '').strip()
-    leads = ContactLead.objects.order_by('-created_at')
-    if q:
-        leads = leads.filter(
-            Q(name__icontains=q) | Q(email__icontains=q) | Q(phone__icontains=q) |
-            Q(service__icontains=q) | Q(message__icontains=q)
-        )
-
-    all_leads = list(leads)
-    groups = [
-        {'source': value, 'label': label, 'leads': [l for l in all_leads if l.source == value]}
-        for value, label in ContactLead.SOURCE_CHOICES
-    ]
-    return render(request, 'dashboard/contacts.html', {
-        'active': 'contacts', 'leads': all_leads, 'groups': groups, 'q': q,
-    })
 
 
-@dashboard_staff_required
-def dashboard_contact_delete(request, pk):
-    if request.method == 'POST':
-        get_object_or_404(ContactLead, pk=pk).delete()
-    return redirect('dashboard_contacts')
 
 
-@dashboard_staff_required
-def dashboard_categories(request):
-    q = request.GET.get('q', '').strip()
-    categories = Category.objects.all()
-    if q:
-        categories = categories.filter(Q(name__icontains=q) | Q(slug__icontains=q))
-    return render(request, 'dashboard/categories.html', {'active': 'categories', 'categories': categories, 'q': q})
 
 
-@dashboard_staff_required
-def dashboard_category_add(request):
-    form = CategoryForm(request.POST or None, request.FILES or None)
-    if request.method == 'POST' and form.is_valid():
-        form.save()
-        return redirect('dashboard_categories')
-    return render(request, 'dashboard/category_form.html', {'active': 'categories', 'form': form, 'category': None})
 
 
-@dashboard_staff_required
-def dashboard_category_edit(request, pk):
-    category = get_object_or_404(Category, pk=pk)
-    form = CategoryForm(request.POST or None, request.FILES or None, instance=category)
-    if request.method == 'POST' and form.is_valid():
-        form.save()
-        return redirect('dashboard_categories')
-    return render(request, 'dashboard/category_form.html', {'active': 'categories', 'form': form, 'category': category})
 
 
-@dashboard_staff_required
-def dashboard_category_delete(request, pk):
-    if request.method == 'POST':
-        get_object_or_404(Category, pk=pk).delete()
-    return redirect('dashboard_categories')
 
 
-@dashboard_staff_required
-def dashboard_orders(request):
-    q = request.GET.get('q', '').strip()
-    status = request.GET.get('status', '').strip()
-    orders = Order.objects.select_related('user').prefetch_related('items', 'payments').order_by('-created_at')
-    if q:
-        orders = orders.filter(
-            Q(user__username__icontains=q) | Q(user__email__icontains=q) |
-            Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q)
-        )
-    if status:
-        orders = orders.filter(status=status)
-    return render(request, 'dashboard/orders.html', {
-        'active': 'orders', 'orders': orders, 'q': q, 'status': status,
-        'status_choices': Order.STATUS_CHOICES,
-    })
 
 
-@dashboard_staff_required
-def dashboard_delivery(request):
-    q = request.GET.get('q', '').strip()
-    status = request.GET.get('status', '').strip()
-    orders = Order.objects.select_related('user').prefetch_related('payments').filter(recipient_name__gt='').order_by('-created_at')
-    if q:
-        orders = orders.filter(
-            Q(recipient_name__icontains=q) | Q(recipient_phone__icontains=q) |
-            Q(city__icontains=q) | Q(pincode__icontains=q)
-        )
-    if status:
-        orders = orders.filter(status=status)
-    return render(request, 'dashboard/delivery.html', {
-        'active': 'delivery', 'orders': orders, 'q': q, 'status': status,
-        'status_choices': Order.STATUS_CHOICES,
-    })
 
 
-@dashboard_staff_required
-def dashboard_order_status_update(request, pk):
-    order = get_object_or_404(Order, pk=pk)
-    if request.method == 'POST':
-        form = OrderStatusForm(request.POST, instance=order)
-        if form.is_valid():
-            form.save()
-            order.maybe_credit_wallet()
-            order.maybe_grant_ai_subscription()
-    return redirect('dashboard_orders')
 
 
-@dashboard_staff_required
-def dashboard_products(request):
-    q = request.GET.get('q', '').strip()
-    products = Product.objects.select_related('category').all()
-    if q:
-        products = products.filter(
-            Q(name__icontains=q) | Q(brand__icontains=q) | Q(slug__icontains=q) | Q(tags__icontains=q)
-        )
-    return render(request, 'dashboard/products.html', {'active': 'products', 'products': products, 'q': q})
 
 
-@dashboard_staff_required
-def dashboard_product_add(request):
-    form = ProductForm(request.POST or None, request.FILES or None)
-    if request.method == 'POST' and form.is_valid():
-        product = form.save()
-        # Images/video/colors are added on the edit page, once the product
-        # (and therefore the FK the image/color formsets need) exists.
-        return redirect('dashboard_product_edit', pk=product.pk)
-    return render(request, 'dashboard/product_form.html', {
-        'active': 'products', 'form': form, 'product': None,
-        'image_formset': None, 'color_formset': None,
-    })
 
 
-@dashboard_staff_required
-def dashboard_product_edit(request, pk):
-    product = get_object_or_404(Product, pk=pk)
-    form = ProductForm(request.POST or None, request.FILES or None, instance=product)
-    image_formset = ProductImageFormSet(request.POST or None, request.FILES or None, instance=product, prefix='images')
-    color_formset = ProductColorFormSet(request.POST or None, request.FILES or None, instance=product, prefix='colors')
-    if request.method == 'POST' and form.is_valid() and image_formset.is_valid() and color_formset.is_valid():
-        form.save()
-        image_formset.save()
-        color_formset.save()
-        return redirect('dashboard_products')
-    return render(request, 'dashboard/product_form.html', {
-        'active': 'products', 'form': form, 'product': product,
-        'image_formset': image_formset, 'color_formset': color_formset,
-    })
 
 
-@dashboard_staff_required
-def dashboard_product_delete(request, pk):
-    if request.method == 'POST':
-        get_object_or_404(Product, pk=pk).delete()
-    return redirect('dashboard_products')
 
 
-@dashboard_staff_required
-def dashboard_seed_reviews(request):
-    if request.method == 'POST':
-        messages.success(request, seed_demo_reviews())
-    return redirect('dashboard_products')
 
 
-@dashboard_staff_required
-def dashboard_about(request):
-    about = AboutUsContent.get_solo()
-    form = AboutUsContentForm(request.POST or None, request.FILES or None, instance=about)
-    saved = False
-    if request.method == 'POST' and form.is_valid():
-        form.save()
-        saved = True
-        form = AboutUsContentForm(instance=about)
-    return render(request, 'dashboard/about_form.html', {'active': 'about', 'form': form, 'about': about, 'saved': saved})
 
 
-@dashboard_staff_required
-def dashboard_policies(request):
-    policies = PolicyPage.objects.all()
-    return render(request, 'dashboard/policies.html', {'active': 'policies', 'policies': policies})
 
 
-@dashboard_staff_required
-def dashboard_policy_edit(request, pk):
-    policy = get_object_or_404(PolicyPage, pk=pk)
-    form = PolicyPageForm(request.POST or None, instance=policy)
-    if request.method == 'POST' and form.is_valid():
-        form.save()
-        return redirect('dashboard_policies')
-    return render(request, 'dashboard/policy_form.html', {'active': 'policies', 'form': form, 'policy': policy})
 
 
 @dashboard_staff_required
@@ -1656,18 +1482,6 @@ def dashboard_customize(request):
     })
 
 
-@dashboard_staff_required
-def dashboard_fee_settings(request):
-    settings_obj = FeeSettings.get_solo()
-    form = FeeSettingsForm(request.POST or None, instance=settings_obj)
-    saved = False
-    if request.method == 'POST' and form.is_valid():
-        form.save()
-        saved = True
-        form = FeeSettingsForm(instance=settings_obj)
-    return render(request, 'dashboard/fee_settings.html', {
-        'active': 'fee_settings', 'form': form, 'settings_obj': settings_obj, 'saved': saved,
-    })
 
 
 @dashboard_staff_required

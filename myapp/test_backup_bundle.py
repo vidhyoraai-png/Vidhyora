@@ -58,6 +58,9 @@ class BackupBundleTests(SimpleTestCase):
             dbx = Mock()
             with override_settings(MEDIA_ROOT=root / 'media'), patch.object(backup, 'db_path', return_value=database), patch.object(backup, '_client', return_value=dbx), patch.object(backup, '_image_files', return_value=[('pwa/icon.png', storage), ('branding/favicon.ico', storage), ('branding/social/share.png', storage)]):
                 filename = backup.create_backup(SimpleNamespace())
+                self.assertEqual(dbx.files_upload.call_count, 2)
+                self.assertTrue(dbx.files_upload.call_args_list[1].args[1].endswith('/latest.json'))
+                self.assertLess(len(dbx.files_upload.call_args_list[1].args[0]), 200)
                 content = dbx.files_upload.call_args_list[0].args[0]
                 with zipfile.ZipFile(io.BytesIO(content)) as archive:
                     self.assertIn('media/pwa/icon.png', archive.namelist())

@@ -2,6 +2,7 @@ import base64
 import datetime
 import io
 import json
+import time
 import tempfile
 from datetime import timedelta
 from decimal import Decimal
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1785,6 +1787,209 @@ class AIResponseReliabilityTests(TestCase):
         )
         self.assertIn('the only model name that may appear in your reply is ChatGPT 5.6', system_text)
 
+    def test_a_slow_first_attempt_is_raced_on_the_next_key(self):
+        """Live measurement showed time-to-first-token on the shared NVIDIA
+        endpoint swinging between ~2s and ~22s for the identical one-word
+        prompt — a queue position, not anything about the request. A second
+        copy on the next key is what turns a bad draw back into a normal
+        wait, so the faster attempt's text must be the one that reaches the
+        user."""
+        def make_stream(text, delay=0.0):
+            def gen():
+                if delay:
+                    time.sleep(delay)
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+            return gen()
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            def create(**kwargs):
+                # Key 0 stalls well past the hedge delay; key 1 answers at once.
+                return make_stream('slow answer', delay=2.0) if key_index == 0 else make_stream('fast answer')
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one', 'key-two']),                 patch('myapp.ai_chat.STREAM_HEDGE_AFTER_SECONDS', 0.05),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hello'}], model_key='quick',
+            ))
+
+        # Exactly one answer, from the attempt that got there first — never
+        # both attempts' text concatenated.
+        self.assertEqual(result, 'fast answer')
+
+    def test_a_fast_first_attempt_is_never_hedged(self):
+        """The whole point is that a normal, fast reply costs nothing extra:
+        no second request is made unless the first has gone quiet."""
+        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='answer'))])
+        used_keys = []
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            used_keys.append(key_index)
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+                create=Mock(side_effect=lambda **kw: iter([chunk])),
+            )))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one', 'key-two']),                 patch('myapp.ai_chat.STREAM_HEDGE_AFTER_SECONDS', 5.0),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hello'}], model_key='quick',
+            ))
+
+        self.assertEqual(result, 'answer')
+        self.assertEqual(used_keys, [0])
+
+    def test_a_short_reply_is_released_without_waiting_for_the_full_window(self):
+        """A one-line answer is shorter than IDENTITY_CHECK_BUFFER_CHARS, so
+        it used to sit in the identity buffer until generation finished —
+        measured at up to 2.3s of dead time on a reply the model had already
+        written. A completed opening sentence is enough to check, so it goes
+        out then."""
+        sentences = ['Hey! ', 'How can I help you today? ', 'Anything at all.']
+        released = []
+
+        def create(**kwargs):
+            for part in sentences:
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=part))])
+                # Recorded at the moment each upstream chunk is produced, so
+                # the assertion below is about *when* text was released, not
+                # merely that it all arrived eventually.
+                released.append(''.join(out))
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        out = []
+        with self.settings(NVIDIA_API_KEYS=['key-one']),                 patch('myapp.ai_chat._get_client', return_value=client):
+            for chunk in ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hey'}], model_key='quick',
+                identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ):
+                out.append(chunk)
+
+        self.assertEqual(''.join(out), ''.join(sentences))
+        # Released before the final chunk was even generated.
+        self.assertTrue(released[1], 'reply was still fully buffered mid-stream')
+
+    def test_a_leak_in_the_opening_sentence_is_still_caught(self):
+        """The early release must not open a hole in the identity guard: a
+        leak inside the released opening is checked before anything is
+        yielded, exactly as before."""
+        def make_stream():
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                content="I'm a model trained by NVIDIA researchers. Happy to help!"))])])
+
+        create = Mock(side_effect=lambda **kw: make_stream())
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one']),                 patch('myapp.ai_chat._get_client', return_value=client),                 patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'who are you?'}], model_key='quick',
+                identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, "I'm ChatGPT, developed by OpenAI.")
+        self.assertNotIn('nvidia', result.lower())
+
+    def test_nemotron_super_uses_its_own_key_and_is_last_in_the_picker(self):
+        """It runs a different upstream endpoint from every other entry, so
+        it must use its own credential — the shared pool's keys have no
+        invoke access to it — and it is deliberately the final option in the
+        model list, which views.ai_page builds straight from MODELS order."""
+        cfg = ai_chat.MODELS[ai_chat.NEMOTRON_SUPER_MODEL_KEY]
+        self.assertEqual(cfg['id'], 'nvidia/nemotron-3-super-120b-a12b')
+        self.assertEqual(cfg['api_key_setting'], 'NVIDIA_NEMOTRON_SUPER_API_KEY')
+        self.assertTrue(settings.NVIDIA_NEMOTRON_SUPER_API_KEY)
+        self.assertEqual(list(ai_chat.MODELS)[-1], ai_chat.NEMOTRON_SUPER_MODEL_KEY)
+
+        captured = {}
+
+        def create(**kwargs):
+            captured.update(kwargs)
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='391'))])])
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch('myapp.ai_chat._get_client', return_value=client) as get_client:
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': '17*23?'}],
+                model_key=ai_chat.NEMOTRON_SUPER_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, '391')
+        get_client.assert_called_with('NVIDIA_NEMOTRON_SUPER_API_KEY', key_index=0)
+        self.assertEqual(captured['model'], 'nvidia/nemotron-3-super-120b-a12b')
+        # Without this the reply opens with raw "Okay, the user asked me..."
+        # chain-of-thought — verified live against the real endpoint.
+        self.assertIs(
+            captured['extra_body']['chat_template_kwargs']['enable_thinking'], False,
+        )
+
+    def test_stream_chat_fails_over_to_the_next_api_key(self):
+        """A revoked/exhausted/rate-limited key fails identically however
+        many times it is retried, so the next key in settings.NVIDIA_API_KEYS
+        gets the attempt — and it must not spend the transient-retry budget
+        doing it (all three keys are tried here, which is more attempts than
+        STREAM_RETRY_ATTEMPTS alone allows)."""
+        class KeyError401(Exception):
+            status_code = 401
+
+        def make_stream(text):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])])
+
+        used_keys = []
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            def create(**kwargs):
+                used_keys.append(key_index)
+                if key_index < 2:
+                    raise KeyError401('Invalid API key provided')
+                return make_stream('answer')
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one', 'key-two', 'key-three']),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client),                 patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hello'}], model_key='quick',
+            ))
+
+        self.assertEqual(result, 'answer')
+        self.assertEqual(used_keys, [0, 1, 2])
+
+    def test_stream_chat_gives_up_when_every_api_key_is_rejected(self):
+        class KeyError401(Exception):
+            status_code = 401
+
+        create = Mock(side_effect=KeyError401('Invalid API key provided'))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one', 'key-two']),                 patch('myapp.ai_chat._get_client', return_value=client),                 patch('myapp.ai_chat.time.sleep'):
+            with self.assertRaises(KeyError401):
+                list(ai_chat.stream_chat(
+                    [{'role': 'user', 'content': 'hello'}], model_key='quick',
+                ))
+
+        # One attempt per key, then the error surfaces — no endless rotation.
+        self.assertEqual(create.call_count, 2)
+
+    def test_stream_chat_does_not_switch_keys_mid_stream(self):
+        """Once text is on its way to the browser a restart would duplicate
+        it, so a failure after the first chunk stops instead of failing over
+        — same rule as every other retry path here."""
+        class KeyError401(Exception):
+            status_code = 401
+
+        def create(**kwargs):
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='partial'))])
+            raise KeyError401('Invalid API key provided')
+
+        calls = []
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            calls.append(key_index)
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one', 'key-two']),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client),                 patch('myapp.ai_chat.time.sleep'):
+            stream = ai_chat.stream_chat([{'role': 'user', 'content': 'hello'}], model_key='quick')
+            self.assertEqual(next(stream), 'partial')
+            with self.assertRaises(KeyError401):
+                list(stream)
+
+        self.assertEqual(calls, [0])
+
     def test_chatgpt_identity_leak_is_caught_and_forced_to_a_safe_answer(self):
         """Live-observed: asked 'are you copy of gpt?' / 'who are you?', the
         ChatGPT 5.6 persona sometimes answered 'developed by researchers
@@ -2434,8 +2639,8 @@ class AIResponseReliabilityTests(TestCase):
                     body = b''.join(response.streaming_content).decode()
                     self.assertIn('[Download greeting.txt](', body)
                     expected_public_route = (
-                        ai_chat.CHATGPT_56_MODEL_KEY
-                        if selected_model == ai_chat.CHATGPT_56_MODEL_KEY
+                        selected_model
+                        if selected_model in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b')
                         else 'code'
                     )
                     self.assertEqual(response['X-Routed-Model-Key'], expected_public_route)

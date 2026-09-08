@@ -460,7 +460,7 @@ main.wallpaper-on{background:transparent}
   0%,100%{transform:translateY(0) scale(1);box-shadow:0 4px 13px var(--m-glow,rgba(var(--accent-rgb),.4)),0 0 0 1px rgba(255,255,255,.14),inset 0 1px 0 rgba(255,255,255,.4)}
   50%{transform:translateY(-1px) scale(1.055);box-shadow:0 7px 22px var(--m-glow,rgba(var(--accent-rgb),.4)),0 0 0 4px color-mix(in srgb,var(--m-a,var(--red)) 18%,transparent),inset 0 1px 0 rgba(255,255,255,.55)}
 }
-.msg-bubble{font-size:.92rem;line-height:1.6;padding:.75rem 1rem;border-radius:14px;white-space:pre-wrap;word-wrap:break-word;max-width:min(600px,80%);box-shadow:0 1px 2px rgba(17,20,24,.04)}
+.msg-bubble{font-size:.92rem;line-height:1.65;padding:.75rem 1rem;border-radius:14px;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;min-width:0;max-width:min(600px,80%);box-shadow:0 1px 2px rgba(17,20,24,.04)}
 .msg-row.user .msg-bubble{background:var(--dark);color:#fff;border-top-right-radius:4px}
 .msg-row.assistant .msg-bubble{background:var(--bg-alt);color:var(--head);border-top-left-radius:4px;border:1px solid var(--line)}
 .msg-bubble.error{background:var(--tint);color:var(--red);border-color:rgba(var(--accent-rgb),.24)}
@@ -573,6 +573,9 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 #sendBtn{border:none;cursor:pointer;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .2s,transform .1s}
 #sendBtn:hover:not(:disabled){transform:scale(1.06)}
 #sendBtn:disabled{opacity:.45;cursor:default}
+#sendBtn:focus-visible,.input-wrap button:focus-visible{outline:2px solid var(--red);outline-offset:3px}
+#chatInput::placeholder{color:var(--text);opacity:.8}
+@media(max-width:640px){#chatInput{font-size:16px}}
 /* generating — a stop icon inside a pulsing ring, click to abort */
 #sendBtn.stop-mode i{font-size:.7rem}
 #sendBtn.stop-mode{animation:sendPulse 1.4s ease-in-out infinite}
@@ -1328,7 +1331,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         <button type="button" id="cameraBtn" class="mic-btn" aria-label="Take a photo" title="Take a photo"><i class="fas fa-camera"></i></button>
         <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
         <button type="button" id="micBtn" class="mic-btn" aria-label="Voice typing" title="Speak your message"><i class="fas fa-microphone"></i></button>
-        <textarea id="chatInput" rows="1" placeholder="Message AI" maxlength="16000"></textarea>
+        <textarea id="chatInput" rows="1" placeholder="Message AI" aria-label="Message AI" maxlength="16000"></textarea>
         <button type="button" id="sendBtn" aria-label="Send"><i class="fas fa-arrow-up"></i></button>
       </div>
       <p class="attach-error" id="attachError" hidden></p>

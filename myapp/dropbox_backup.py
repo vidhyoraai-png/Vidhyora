@@ -6,6 +6,8 @@ store owner's Dropbox App Key/Secret + a long-lived OAuth2 refresh token
 import datetime
 import io
 import json
+import logging
+import time
 import sqlite3
 import tempfile
 import zipfile
@@ -23,6 +25,7 @@ BACKUP_ROOT = '/EduTrellis Store'
 BACKUP_FOLDER = f'{BACKUP_ROOT}/backups'
 LATEST_NAME = 'db_latest.sqlite3'
 LATEST_BUNDLE_NAME = 'backup_latest.zip'
+logger = logging.getLogger(__name__)
 
 
 def _image_files():
@@ -45,10 +48,12 @@ def _upload(dbx, content, remote_path, mode):
         return dbx.files_upload(content, remote_path, mode=mode)
     session = dbx.files_upload_session_start(content[:chunk_size])
     offset = chunk_size
+    logger.info('Dropbox upload: %d/%d bytes', offset, len(content))
     while len(content) - offset > chunk_size:
         cursor = dropbox.files.UploadSessionCursor(session.session_id, offset)
         dbx.files_upload_session_append_v2(content[offset:offset + chunk_size], cursor)
         offset += chunk_size
+        logger.info('Dropbox upload: %d/%d bytes', offset, len(content))
     return dbx.files_upload_session_finish(
         content[offset:], dropbox.files.UploadSessionCursor(session.session_id, offset),
         dropbox.files.CommitInfo(path=remote_path, mode=mode),
@@ -72,6 +77,9 @@ def _client(settings_obj):
         oauth2_refresh_token=settings_obj.refresh_token,
         app_key=settings_obj.app_key,
         app_secret=settings_obj.app_secret,
+        timeout=30,
+        max_retries_on_error=1,
+        max_retries_on_rate_limit=0,
     )
 
 
@@ -85,6 +93,7 @@ def _ensure_folder(dbx, path):
 
 def create_backup(settings_obj, *, missing_images=None):
     """Upload a database-and-images ZIP and refresh the latest copies."""
+    started = time.monotonic()
     try:
         dbx = _client(settings_obj)
         _ensure_folder(dbx, BACKUP_ROOT)
@@ -100,8 +109,9 @@ def create_backup(settings_obj, *, missing_images=None):
                 source.backup(target)
             data = snapshot.read_bytes()
         bundle = io.BytesIO()
+        logger.info('Dropbox database snapshot ready: %d bytes', len(data))
         skipped = []
-        with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
             archive.writestr('db.sqlite3', data)
             for name, storage in _image_files():
                 try:
@@ -110,14 +120,22 @@ def create_backup(settings_obj, *, missing_images=None):
                 except FileNotFoundError:
                     skipped.append(name)
                     continue
-                archive.writestr('media/' + name.replace('\\', '/'), image_data)
+                archive.writestr('media/' + name.replace('\\', '/'), image_data, compress_type=zipfile.ZIP_STORED)
             archive.writestr('backup_manifest.json', json.dumps({'version': 1, 'missing_images': skipped}))
 
         stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         filename = f'backup_{stamp}.zip'
+        logger.info('Dropbox archive ready: %d bytes; starting upload', bundle.tell())
         _upload(dbx, bundle.getvalue(), f'{BACKUP_FOLDER}/{filename}', dropbox.files.WriteMode.add)
-        _upload(dbx, bundle.getvalue(), f'{BACKUP_FOLDER}/{LATEST_BUNDLE_NAME}', dropbox.files.WriteMode.overwrite)
-        dbx.files_upload(data, f'{BACKUP_FOLDER}/{LATEST_NAME}', mode=dropbox.files.WriteMode.overwrite)
+        # The timestamped bundle is the backup. A tiny pointer replaces two
+        # redundant full uploads; restore always selects the actual bundle.
+        try:
+            dbx.files_upload(json.dumps({'filename': filename}).encode(),
+                             f'{BACKUP_FOLDER}/latest.json', mode=dropbox.files.WriteMode.overwrite)
+        except Exception:
+            logger.warning('Backup saved, but latest pointer could not be updated', exc_info=True)
+        logger.info('Dropbox backup saved: bytes=%d elapsed=%.1fs missing=%d',
+                    bundle.tell(), time.monotonic() - started, len(skipped))
         if missing_images is not None:
             missing_images.extend(skipped)
         return filename

@@ -2,61 +2,19 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 
-from .models import (
-    ContactLead, StoreProfile, Cart, CartItem, Category, Order, OrderItem,
-    Product, ProductImage, ProductColor, AboutUsContent, PolicyPage, PaymentSettings, Payment,
-    DropboxSettings, Review, PhoneVerification, PWASettings, FeeSettings,
-    EmailSettings, EmailVerification, AIConversation, AIMessage, GitHubConnection,
-    KnowledgeEntry, AIReport,
-)
+from .models import StoreProfile, Order, OrderItem, PaymentSettings, Payment, DropboxSettings, PhoneVerification, PWASettings, EmailSettings, EmailVerification, AIConversation, AIMessage, GitHubConnection, KnowledgeEntry, AIReport
 
 
-@admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'slug', 'order', 'is_active', 'created_at')
-    list_editable = ('order', 'is_active')
-    search_fields = ('name', 'slug')
-    prepopulated_fields = {'slug': ('name',)}
 
 
-class ProductImageInline(admin.TabularInline):
-    model = ProductImage
-    extra = 1
-    max_num = 5
 
 
-class ProductColorInline(admin.TabularInline):
-    model = ProductColor
-    extra = 1
 
 
-@admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'brand', 'category', 'price', 'mrp', 'stock_status', 'is_active', 'order')
-    list_editable = ('price', 'mrp', 'is_active', 'order')
-    list_filter = ('category', 'is_active', 'brand')
-    search_fields = ('name', 'brand', 'slug', 'tags')
-    prepopulated_fields = {'slug': ('name',)}
-    inlines = [ProductImageInline, ProductColorInline]
 
 
-@admin.register(AboutUsContent)
-class AboutUsContentAdmin(admin.ModelAdmin):
-    list_display = ('__str__', 'founder_name', 'updated_at')
-
-    def has_add_permission(self, request):
-        return not AboutUsContent.objects.exists()
 
 
-@admin.register(PolicyPage)
-class PolicyPageAdmin(admin.ModelAdmin):
-    list_display = ('title', 'key', 'updated_at')
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(PaymentSettings)
@@ -91,11 +49,6 @@ class DropboxSettingsAdmin(admin.ModelAdmin):
         return not DropboxSettings.objects.exists()
 
 
-@admin.register(Review)
-class ReviewAdmin(admin.ModelAdmin):
-    list_display = ('product', 'user', 'rating', 'created_at')
-    list_filter = ('rating', 'created_at')
-    search_fields = ('product__name', 'user__username', 'user__email', 'comment')
 
 
 @admin.register(PWASettings)
@@ -106,12 +59,6 @@ class PWASettingsAdmin(admin.ModelAdmin):
         return not PWASettings.objects.exists()
 
 
-@admin.register(FeeSettings)
-class FeeSettingsAdmin(admin.ModelAdmin):
-    list_display = ('__str__', 'delivery_fee', 'free_delivery_over', 'handling_fee', 'updated_at')
-
-    def has_add_permission(self, request):
-        return not FeeSettings.objects.exists()
 
 
 @admin.register(EmailSettings)
@@ -248,30 +195,10 @@ class PhoneVerificationAdmin(admin.ModelAdmin):
     search_fields = ('user__username', 'user__email', 'phone')
 
 
-@admin.register(ContactLead)
-class ContactLeadAdmin(admin.ModelAdmin):
-    list_display = ('name', 'phone', 'email', 'service', 'created_at')
-    list_filter = ('service', 'created_at')
-    search_fields = ('name', 'phone', 'email', 'message')
-    ordering = ('-created_at',)
 
 
-class CartItemInline(admin.TabularInline):
-    model = CartItem
-    extra = 0
-    readonly_fields = ('product_id', 'product_name', 'price', 'quantity', 'added_at')
-    can_delete = False
 
 
-@admin.register(Cart)
-class CartAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'session_key', 'item_count', 'updated_at')
-    search_fields = ('user__username', 'user__email', 'session_key')
-    inlines = [CartItemInline]
-
-    def item_count(self, obj):
-        return obj.items.count()
-    item_count.short_description = 'Items'
 
 
 class OrderItemInline(admin.TabularInline):

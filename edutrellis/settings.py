@@ -194,7 +194,37 @@ TWO_FACTOR_API_KEY = '12feb4c9-9636-11f1-9cb1-0200cd936042'
 # the credentials above, which means it's visible in this repo's git
 # history to anyone with access. Rotate it in the NVIDIA console if it ever
 # needs to change.
-NVIDIA_API_KEY = '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'
+NVIDIA_API_KEY = os.environ.get('NVIDIA_API_KEY', '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').strip()
+NVIDIA_CHAT_MODEL = os.environ.get('NVIDIA_CHAT_MODEL', 'nvidia/nemotron-3.5-lightning-30b-a3b').strip()
+# Spare keys for the same endpoint. One key being rate-limited, out of
+# credit, or revoked shouldn't take the whole chat down, so ai_chat tries
+# these in order after the primary above (see _nvidia_key_pool there).
+# Same trade-off as NVIDIA_API_KEY: real, billable credentials kept in the
+# repo at the project owner's explicit choice, so they're visible in git
+# history to anyone with access — rotate them in the NVIDIA console.
+NVIDIA_FALLBACK_API_KEYS = [
+    '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',
+    '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',
+]
+# NVIDIA_API_KEYS overrides the whole ordered pool at once (comma-separated)
+# for deployments that would rather not carry the hardcoded spares.
+_nvidia_key_env = os.environ.get('NVIDIA_API_KEYS', '').strip()
+if _nvidia_key_env:
+    _nvidia_keys = _nvidia_key_env.split(',')
+else:
+    _nvidia_keys = [NVIDIA_API_KEY] + NVIDIA_FALLBACK_API_KEYS
+NVIDIA_API_KEYS = list(dict.fromkeys(k.strip() for k in _nvidia_keys if k.strip()))
+
+# Nemotron 3 Super (120B) — its own dedicated key rather than a member of the
+# pool above, since pool access to the Lightning endpoint says nothing about
+# invoke access to this one. Same hardcoding trade-off as the keys above.
+_nemotron_super_key_file = BASE_DIR / '.secrets' / 'nvidia_nemotron_super_api_key'
+NVIDIA_NEMOTRON_SUPER_API_KEY = os.environ.get(
+    'NVIDIA_NEMOTRON_SUPER_API_KEY',
+    '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',
+).strip()
+if not NVIDIA_NEMOTRON_SUPER_API_KEY and _nemotron_super_key_file.is_file():
+    NVIDIA_NEMOTRON_SUPER_API_KEY = _nemotron_super_key_file.read_text(encoding='utf-8').strip()
 # Intentionally hardcoded at the project owner's request.
 NVIDIA_FLUX_API_KEY = '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'
 NVIDIA_FLUX_EDIT_API_KEY = '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'

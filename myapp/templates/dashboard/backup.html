@@ -63,14 +63,15 @@
     <div class="backup-card-body">
       <ul class="backup-facts">
         <li><i class="fas fa-folder"></i> Saves a timestamped copy to <code>{{ backup_folder }}/</code></li>
-        <li><i class="fas fa-file-circle-check"></i> Includes the PWA install icon, favicon, social preview, and other uploaded site images. Refreshes <code>backup_latest.zip</code> and the legacy database copy.</li>
+        <li><i class="fas fa-file-circle-check"></i> Includes the PWA install icon, favicon, social preview, and other uploaded site images in one ZIP. Uploads once and updates <code>latest.json</code>.</li>
         <li><i class="fas fa-shield-halved"></i> Old backups are kept — nothing is deleted automatically</li>
       </ul>
-      <form method="post" action="{% url 'dashboard_backup_run' %}">
+      <form method="post" action="{% url 'dashboard_backup_run' %}" onsubmit="var button=this.querySelector('button'); button.disabled=true; button.innerHTML='Backing up… Please keep this page open'; this.setAttribute('aria-busy','true'); this.querySelector('[role=status]').hidden=false;">
         {% csrf_token %}
         <button type="submit" class="btn btn-blue btn-block" {% if not settings_obj.is_configured or not dropbox_installed %}disabled{% endif %}>
           <i class="fas fa-cloud-arrow-up"></i> Backup Now
         </button>
+        <p role="status" hidden style="margin-top:.8rem;font-size:.85rem">Preparing and uploading your database and images. Large backups may take a few minutes. Please do not submit again.</p>
       </form>
     </div>
   </div>
