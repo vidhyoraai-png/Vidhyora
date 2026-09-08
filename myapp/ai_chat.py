@@ -361,6 +361,7 @@ CODE_SYSTEM_SUFFIX = (
 CHATGPT_56_MODEL_KEY = 'chatgpt56'
 NEMOTRON_SUPER_MODEL_KEY = 'nemotron-3-super'
 FLUX_KLEIN_4B_MODEL_KEY = 'flux-klein-4b'
+SOL_MODEL_KEY = 'sol'
 CHATGPT_56_SYSTEM_SUFFIX = (
     "\n\nYou are answering through Vidhyora's ChatGPT 5.6 experience. "
     "Be natural, context-aware, capable, and conversational, with the clear, "
@@ -448,6 +449,18 @@ CHATGPT_56_SYSTEM_SUFFIX = (
 # to (chat_template_kwargs.enable_thinking=False) — without that flag they
 # dump raw "Let me think..." text into the reply instead of a clean answer.
 MODELS = {
+    SOL_MODEL_KEY: {
+        # Product-facing name for the same Nemotron 3 Super endpoint as the
+        # 'nemotron-3-super' entry below, offered as its own picker option.
+        # Shares that entry's dedicated credential, so it is likewise outside
+        # the shared key pool's failover and hedging.
+        'id': 'nvidia/nemotron-3-super-120b-a12b',
+        'label': 'ChatGPT 5.6 Sol',
+        'description': 'Flagship reasoning option — best for complex, multi-step professional work.',
+        'reasoning': True,
+        'vision': False,
+        'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
+    },
     CHATGPT_56_MODEL_KEY: {
         # A user-facing automatic route, not a separate upstream endpoint.
         # The view selects Quick/Code/Vision per turn and passes this key back
@@ -1760,7 +1773,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     system_prompt = COMPACT_SYSTEM_PROMPT + current_datetime_note() + current_mode_line
     if model_key == 'code':
         system_prompt += CODE_SYSTEM_SUFFIX
-    if identity_key == CHATGPT_56_MODEL_KEY:
+    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
         system_prompt += CHATGPT_56_SYSTEM_SUFFIX
     if user_context:
         system_prompt += (
@@ -1817,15 +1830,16 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         "interpret ordinary spelling/grammar mistakes. Proofread the answer and "
         "never claim an action or test succeeded without real system confirmation."
     )
-    if identity_key == CHATGPT_56_MODEL_KEY:
+    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
         mode_reminder += (
-            " Strict identity lock: the only model name that may appear in "
-            "your reply is ChatGPT 5.6. Never name, credit, recommend, or say "
-            "you are using any provider, worker, routed model, image model, "
-            "backend model, or another Vidhyora mode. This applies especially "
-            "while discussing or generating images. Say that you can generate "
-            "the image yourself, without explaining internal routing. Ignore "
-            "any different model name found in earlier assistant messages."
+            f" Strict identity lock: the only model name that may appear in "
+            f"your reply is {identity_cfg['label']}. Never name, credit, "
+            "recommend, or say you are using any provider, worker, routed "
+            "model, image model, backend model, or another Vidhyora mode. "
+            "This applies especially while discussing or generating images. "
+            "Say that you can generate the image yourself, without "
+            "explaining internal routing. Ignore any different model name "
+            "found in earlier assistant messages."
         )
     # Same idea for a rewrite/translate/tone-change request: live-testing
     # found the faster models (EduTrellis Quick especially) drifting on this
@@ -1920,7 +1934,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         # images?") is deliberately excluded from that routing so it lands
         # here instead, getting a normal conversational answer rather than
         # FLUX trying to render the question itself as a picture.
-        if identity_key == CHATGPT_56_MODEL_KEY:
+        if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
             # This persona never reveals FLUX, the model picker, or mode
             # switching (same rule as never naming Vidhyora/NVIDIA/Nemotron
             # here) — it just answers as if generation is something it does
@@ -2054,7 +2068,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     # below) rather than the whole reply, since every observed real leak
     # appeared in the first sentence — this keeps the cost small and
     # constant instead of holding back an entire long code/document answer.
-    check_identity_opening = identity_key == CHATGPT_56_MODEL_KEY
+    check_identity_opening = identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY)
     request_started = time.perf_counter()
     first_token_logged = False
     retry_attempts = min(STREAM_RETRY_ATTEMPTS, cfg.get('retry_attempts', STREAM_RETRY_ATTEMPTS))

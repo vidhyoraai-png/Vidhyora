@@ -2979,7 +2979,7 @@ def _chatgpt_public_reply(reply):
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
     """Never expose ChatGPT's private worker selection to the browser."""
-    if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit'):
+    if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit'):
         return response_model_key
     return routed_model_key
 
@@ -3344,7 +3344,7 @@ def ai_chat_send(request):
         else default_model_key
     )
     chatgpt_mode = selected_model_key == ai_chat.CHATGPT_56_MODEL_KEY
-    response_model_key = selected_model_key if selected_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit') else None
+    response_model_key = selected_model_key if selected_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit') else None
 
     # Gated on ai_chat.is_image_generation_request rather than just "FLUX is
     # selected" — that regex is what decides whether a message genuinely

@@ -434,6 +434,7 @@ main.wallpaper-on{background:transparent}
 /* --m-hi is the light end of the gradient, --m-b the deep end. Three stops
    instead of two gives the tile a rolled, dimensional surface. */
 .msg-avatar[data-m="chatgpt56"]{--m-hi:#3ddba6;--m-a:#10a37f;--m-b:#076b52;--m-glow:rgba(16,163,127,.5)}
+.msg-avatar[data-m="sol"]{--m-hi:#3ddba6;--m-a:#10a37f;--m-b:#076b52;--m-glow:rgba(16,163,127,.5)}
 .msg-avatar[data-m="ultra"]{--m-hi:#a78bfa;--m-a:#7c5cff;--m-b:#4c2bc9;--m-glow:rgba(124,92,255,.45)}
 .msg-avatar[data-m="quick"]{--m-hi:#fbbf24;--m-a:#f5a524;--m-b:#c2660a;--m-glow:rgba(245,165,36,.45)}
 .msg-avatar[data-m="code"]{--m-hi:#6ba6f5;--m-a:#2f80ed;--m-b:#1550b0;--m-glow:rgba(47,128,237,.45)}
@@ -444,13 +445,13 @@ main.wallpaper-on{background:transparent}
 
 /* ChatGPT 5.6 is the flagship, so its tile gets one extra touch the others
    don't: a faint ring of its own colour sitting just outside the edge. */
-.msg-avatar[data-m="chatgpt56"]{box-shadow:0 5px 18px var(--m-glow),0 0 0 1px rgba(61,219,166,.4),0 0 22px rgba(16,163,127,.16),inset 0 1px 0 rgba(255,255,255,.55),inset 0 -3px 5px rgba(0,0,0,.18)}
-.msg-row.assistant:hover .msg-avatar[data-m="chatgpt56"]{box-shadow:0 8px 20px var(--m-glow),0 0 0 1px rgba(16,163,127,.4),inset 0 1px 0 rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.16)}
+.msg-avatar[data-m="chatgpt56"],.msg-avatar[data-m="sol"]{box-shadow:0 5px 18px var(--m-glow),0 0 0 1px rgba(61,219,166,.4),0 0 22px rgba(16,163,127,.16),inset 0 1px 0 rgba(255,255,255,.55),inset 0 -3px 5px rgba(0,0,0,.18)}
+.msg-row.assistant:hover .msg-avatar[data-m="chatgpt56"],.msg-row.assistant:hover .msg-avatar[data-m="sol"]{box-shadow:0 8px 20px var(--m-glow),0 0 0 1px rgba(16,163,127,.4),inset 0 1px 0 rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.16)}
 /* The mark breathes very slowly — alive, but never distracting. Opacity only,
    so it composites and costs no layout. */
-.msg-avatar[data-m="chatgpt56"] svg{animation:core-breathe 4.5s ease-in-out infinite}
+.msg-avatar[data-m="chatgpt56"] svg,.msg-avatar[data-m="sol"] svg{animation:core-breathe 4.5s ease-in-out infinite}
 @keyframes core-breathe{0%,100%{opacity:1}50%{opacity:.82}}
-@media (prefers-reduced-motion:reduce){.msg-avatar[data-m="chatgpt56"] svg{animation:none}}
+@media (prefers-reduced-motion:reduce){.msg-avatar[data-m="chatgpt56"] svg,.msg-avatar[data-m="sol"] svg{animation:none}}
 /* While a reply is generating, its avatar breathes — a quiet "still working"
    signal that costs one composited animation and no JavaScript at all. */
 .msg-row.assistant.is-generating .msg-avatar{animation:avatar-pulse 1.25s ease-in-out infinite}
@@ -1809,6 +1810,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   var STATUS_PHRASES = {
     default: ['Thinking', 'Generating answer'],
     chatgpt56: ['Understanding your request', 'Crafting your answer', 'Almost ready'],
+    sol: ['Understanding your request', 'Crafting your answer', 'Almost ready'],
     vision: ['Looking at your image', 'Generating answer'],
     'flux-klein-4b': ['Creating your image', 'Rendering details'],
     code: ['Reading your code', 'Generating answer'],
@@ -2027,6 +2029,13 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     // Compact neural-orbit mark: three precise paths plus a luminous core.
     // It stays crisp at toolbar size while the glass tile supplies depth.
     'chatgpt56':
+      '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.55">' +
+      '<ellipse cx="12" cy="12" rx="9" ry="3.65"/>' +
+      '<ellipse cx="12" cy="12" rx="9" ry="3.65" transform="rotate(60 12 12)"/>' +
+      '<ellipse cx="12" cy="12" rx="9" ry="3.65" transform="rotate(120 12 12)"/>' +
+      '<circle cx="12" cy="12" r="1.65" fill="#fff" stroke="none"/>' +
+      '</svg>',
+    'sol':
       '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.55">' +
       '<ellipse cx="12" cy="12" rx="9" ry="3.65"/>' +
       '<ellipse cx="12" cy="12" rx="9" ry="3.65" transform="rotate(60 12 12)"/>' +
