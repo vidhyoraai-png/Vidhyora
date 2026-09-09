@@ -271,7 +271,7 @@ GEMINI_API_KEY = os.environ.get(
 # API is itself OpenAI-compatible, so this reuses the existing chat streaming
 # pipeline the same way Gemini does (see _OPENROUTER_BASE_URL there). Same
 # hardcoding trade-off as the keys above — intentionally hardcoded at the
-# project owner's request.
+# project owner's request
 OPENROUTER_API_KEY = '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'
 
 # Tavily powers optional live web search from the AI chat composer.
