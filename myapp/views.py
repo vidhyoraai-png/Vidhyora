@@ -24,6 +24,7 @@ from django.contrib.auth.models import User
 from django.db import OperationalError, ProgrammingError
 from django.db.models import Q, F, Count, Sum, Prefetch
 from django.shortcuts import render, redirect, get_object_or_404
+from django.template.loader import render_to_string
 from django.urls import resolve, Resolver404, reverse
 from django.templatetags.static import static as static_url
 from django.http import JsonResponse, StreamingHttpResponse, FileResponse, HttpResponse
@@ -48,6 +49,7 @@ from myapp import privacy
 from myapp import request_router
 from myapp import file_convert
 from myapp import web_search
+from myapp.utils import pdf_generator
 from myapp import audio_transcribe
 from myapp import youtube_download
 from myapp.ai_report_analysis import analyze_report, aggregate_report_issues
@@ -157,6 +159,14 @@ def _parse_json_body(request):
         return json.loads(request.body or '{}')
     except json.JSONDecodeError:
         return {}
+
+
+def _is_ajax(request):
+    """True for fetch() calls the dashboard JS makes to update a panel in
+    place — every such call sets this header. Used to return JSON/an HTML
+    fragment instead of the usual message+redirect, so a CRUD action (add,
+    delete, grant, revoke, search) never triggers a full page navigation."""
+    return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
 
 PHONE_VERIFY_OTP_TTL_MINUTES = 10
@@ -776,8 +786,24 @@ def dashboard_signups(request):
         {'label': 'Staff', 'count': staff_count, 'width': round((staff_count / role_max) * 100)},
         {'label': 'Superusers', 'count': superuser_count, 'width': round((superuser_count / role_max) * 100)},
     ]
+    # A live search (see signups.html) re-fetches this same view on every
+    # keystroke, but only wants the table+search-head fragment back — not
+    # a full page, which is what was forcing a visible reload on every
+    # search. Everything above this point (chart, insights, add-user form)
+    # is skipped since it isn't part of that fragment and doesn't change.
+    if _is_ajax(request):
+        return render(request, 'dashboard/_signup_table_panel.html', {
+            'users': users, 'q': q, 'active_filter': active_filter,
+        })
+
+    add_user_retry = request.session.pop('dashboard_add_user_retry', None)
+    add_user_open = bool(add_user_retry and add_user_retry.get('next') == 'dashboard_signups')
+    add_user_form = AddUserForm(add_user_retry['data']) if add_user_open else AddUserForm()
+    if add_user_open:
+        add_user_form.is_valid()  # re-run validation so the same errors render again
     return render(request, 'dashboard/signups.html', {
-        'active': 'signups', 'users': users, 'q': q, 'add_user_form': AddUserForm(),
+        'active': 'signups', 'users': users, 'q': q, 'add_user_form': add_user_form,
+        'add_user_open': add_user_open,
         'active_filter': active_filter, 'filter_label': filter_label,
         'filtered_count': users.count() if active_filter else None,
         'total_signups': total_signups, 'total_amount_paid': total_amount_paid,
@@ -836,6 +862,11 @@ def dashboard_user_add(request):
     next_url = request.POST.get('next', '')
     if next_url not in ('dashboard_signups', 'dashboard_ai_management'):
         next_url = 'dashboard_signups'
+    # The dashboard JS submits this via fetch() so a successful (or failed)
+    # add never navigates the page — it just patches the table/form in
+    # place. Non-AJAX POSTs (no JS, or a stale tab) still get the original
+    # message+redirect behaviour below.
+    ajax = _is_ajax(request)
     if request.method == 'POST':
         form = AddUserForm(request.POST)
         if form.is_valid():
@@ -855,27 +886,57 @@ def dashboard_user_add(request):
                 first_name=first_name, last_name=last_name,
             )
             access_until = timezone.now() + timedelta(days=access_days) if access_days else None
-            StoreProfile.objects.create(
+            profile = StoreProfile.objects.create(
                 user=user, phone=phone, manual_amount_paid=amount_paid,
                 manual_payment_received_at=(
                     (payment_received_at or timezone.now()) if amount_paid > 0 else None
                 ),
                 ai_subscription_until=access_until,
             )
-            messages.success(request, f'Created account for {email}.')
+            success_message = f'Created account for {email}.'
+            whatsapp_payload = None
             if next_url == 'dashboard_ai_management' and access_days:
                 whatsapp_message = AIAccountMessageSettings.get_solo().render_message(
                     email=email, password=password, access_days=access_days,
                 )
-                # Popped by the destination view so credentials only appear once.
-                request.session['dashboard_new_account_whatsapp'] = {
+                whatsapp_payload = {
                     'message': whatsapp_message, 'email': email, 'password': password,
                     'days': access_days,
                 }
+            if ajax:
+                response_data = {'status': 'ok', 'message': success_message}
+                if next_url == 'dashboard_signups':
+                    response_data['row_html'] = render_to_string(
+                        'dashboard/_signup_row.html', {'u': user}, request=request,
+                    )
+                elif next_url == 'dashboard_ai_management':
+                    if access_days:
+                        response_data['subscriber_row_html'] = render_to_string(
+                            'dashboard/_subscriber_row.html',
+                            {'profile': profile, 'now': timezone.now()}, request=request,
+                        )
+                    if whatsapp_payload:
+                        response_data['whatsapp'] = whatsapp_payload
+                return JsonResponse(response_data)
+            messages.success(request, success_message)
+            if whatsapp_payload:
+                # Popped by the destination view so credentials only appear once.
+                request.session['dashboard_new_account_whatsapp'] = whatsapp_payload
         else:
+            if ajax:
+                return JsonResponse({
+                    'status': 'validation_error',
+                    'errors': {field: [str(e) for e in errs] for field, errs in form.errors.items()},
+                }, status=400)
             for errs in form.errors.values():
                 for error in errs:
                     messages.error(request, error)
+            # Re-open the "Add user manually" popup on the redirected page
+            # with what was typed still filled in, instead of the admin
+            # having to retype everything after a duplicate-email error.
+            # Password is deliberately left out — re-enter it after an error.
+            repost = {k: v for k, v in request.POST.items() if k not in ('csrfmiddlewaretoken', 'next', 'password')}
+            request.session['dashboard_add_user_retry'] = {'next': next_url, 'data': repost}
     return redirect(next_url)
 
 
@@ -926,19 +987,34 @@ def dashboard_signup_reset_password(request, pk):
 
 @dashboard_staff_required
 def dashboard_signup_delete(request, pk):
-    if request.method == 'POST':
-        target = get_object_or_404(User, pk=pk)
-        if target.pk == request.user.pk:
-            messages.error(request, "You can't delete your own account from here.")
-        elif target.is_staff or target.is_superuser:
-            messages.error(request, "Staff and admin accounts can't be deleted from here — use Django admin if you're sure.")
-        elif Order.objects.filter(user=target).exists():
-            # Deleting the User cascades and wipes their Order/OrderItem/
-            # Payment rows — real financial records, not just a login.
-            messages.error(request, "This customer has order history — deleting the account would erase those orders and payment records. Use Django admin if you're sure.")
-        else:
-            target.delete()
-            messages.success(request, 'Customer account deleted.')
+    ajax = _is_ajax(request)
+    if request.method != 'POST':
+        if ajax:
+            return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+        return redirect('dashboard_signups')
+
+    target = get_object_or_404(User, pk=pk)
+    if target.pk == request.user.pk:
+        error = "You can't delete your own account from here."
+    elif target.is_staff or target.is_superuser:
+        error = "Staff and admin accounts can't be deleted from here — use Django admin if you're sure."
+    elif Order.objects.filter(user=target).exists():
+        # Deleting the User cascades and wipes their Order/OrderItem/
+        # Payment rows — real financial records, not just a login.
+        error = "This customer has order history — deleting the account would erase those orders and payment records. Use Django admin if you're sure."
+    else:
+        error = None
+        target.delete()
+
+    if ajax:
+        if error:
+            return JsonResponse({'status': 'error', 'detail': error}, status=400)
+        return JsonResponse({'status': 'ok', 'message': 'Customer account deleted.'})
+
+    if error:
+        messages.error(request, error)
+    else:
+        messages.success(request, 'Customer account deleted.')
     return redirect('dashboard_signups')
 
 
@@ -957,6 +1033,11 @@ def dashboard_ai_management(request):
         .select_related('user').order_by('-ai_subscription_until')
     )
     admins = User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).select_related('store_profile').order_by('-date_joined')
+    add_user_retry = request.session.pop('dashboard_add_user_retry', None)
+    add_user_open = bool(add_user_retry and add_user_retry.get('next') == 'dashboard_ai_management')
+    add_user_form = AddUserForm(add_user_retry['data']) if add_user_open else AddUserForm()
+    if add_user_open:
+        add_user_form.is_valid()  # re-run validation so the same errors render again
     context = {
         'active': 'ai_management',
         'subscribers': subscribers,
@@ -964,7 +1045,8 @@ def dashboard_ai_management(request):
         'admins': admins,
         'now': now,
         'grant_form': GrantAISubscriptionForm(),
-        'add_user_form': AddUserForm(),
+        'add_user_form': add_user_form,
+        'add_user_open': add_user_open,
         'new_account_whatsapp': request.session.pop('dashboard_new_account_whatsapp', None),
     }
     return render(request, 'dashboard/ai_management.html', context)
@@ -1015,6 +1097,7 @@ def dashboard_ai_message_template_save(request):
 
 @dashboard_staff_required
 def dashboard_ai_grant(request):
+    ajax = _is_ajax(request)
     if request.method == 'POST':
         form = GrantAISubscriptionForm(request.POST)
         if form.is_valid():
@@ -1024,26 +1107,67 @@ def dashboard_ai_grant(request):
             profile.ai_subscription_until = timezone.now() + timedelta(days=days)
             profile.ai_free_messages_used = 0
             profile.save(update_fields=['ai_subscription_until', 'ai_free_messages_used'])
-            messages.success(
-                request,
+            success_message = (
                 f"Granted {target_user.email or target_user.username} Vidhyora AI premium access "
-                f"until {timezone.localtime(profile.ai_subscription_until):%d %b %Y}.",
+                f"until {timezone.localtime(profile.ai_subscription_until):%d %b %Y}."
             )
+            if ajax:
+                now = timezone.now()
+                subscribers = StoreProfile.objects.filter(ai_subscription_until__isnull=False)
+                return JsonResponse({
+                    'status': 'ok',
+                    'message': success_message,
+                    # The JS replaces this profile's existing row if one is
+                    # already on screen, or prepends it as new — either way
+                    # avoids re-fetching/re-sorting the whole table, at the
+                    # minor cost of a freshly-granted row not always landing
+                    # in exact "-ai_subscription_until" sort order until the
+                    # next full page load.
+                    'row_html': render_to_string(
+                        'dashboard/_subscriber_row.html', {'profile': profile, 'now': now}, request=request,
+                    ),
+                    'active_subscriber_count': subscribers.filter(ai_subscription_until__gt=now).count(),
+                    'ever_granted_count': subscribers.count(),
+                })
+            messages.success(request, success_message)
         else:
+            if ajax:
+                errors = {
+                    field: [str(e) for e in errs]
+                    for field, errs in form.errors.items() if field in ('identifier', 'days')
+                }
+                return JsonResponse({'status': 'validation_error', 'errors': errors}, status=400)
             for error in form.errors.get('identifier', []):
                 messages.error(request, error)
             for error in form.errors.get('days', []):
                 messages.error(request, error)
+    elif ajax:
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
     return redirect('dashboard_ai_management')
 
 
 @dashboard_staff_required
 def dashboard_ai_revoke(request, pk):
-    if request.method == 'POST':
-        profile = get_object_or_404(StoreProfile, pk=pk)
-        profile.ai_subscription_until = None
-        profile.save(update_fields=['ai_subscription_until'])
-        messages.success(request, f'Revoked Vidhyora AI premium access for {profile.user.email or profile.user.username}.')
+    ajax = _is_ajax(request)
+    if request.method != 'POST':
+        if ajax:
+            return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+        return redirect('dashboard_ai_management')
+
+    profile = get_object_or_404(StoreProfile, pk=pk)
+    profile.ai_subscription_until = None
+    profile.save(update_fields=['ai_subscription_until'])
+    success_message = f'Revoked Vidhyora AI premium access for {profile.user.email or profile.user.username}.'
+    if ajax:
+        now = timezone.now()
+        subscribers = StoreProfile.objects.filter(ai_subscription_until__isnull=False)
+        return JsonResponse({
+            'status': 'ok',
+            'message': success_message,
+            'active_subscriber_count': subscribers.filter(ai_subscription_until__gt=now).count(),
+            'ever_granted_count': subscribers.count(),
+        })
+    messages.success(request, success_message)
     return redirect('dashboard_ai_management')
 
 
@@ -1679,6 +1803,10 @@ AI_CHAT_RATE_WINDOW = 10 * 60     # per 10 minutes, per IP
 AI_CHAT_MAX_MESSAGE_CHARS = 16000
 AI_CHAT_MAX_HISTORY = 20          # last 10 user+assistant turns — outer cap on how many rows are even fetched
 AI_IMAGE_DAILY_LIMIT = 20         # successfully generated images, per account/session and local day
+# Accounts exempt from AI_IMAGE_DAILY_LIMIT entirely, by login email —
+# a manual allowlist rather than a plan/subscription flag, so it's just
+# this one specific account rather than a purchasable tier.
+AI_UNLIMITED_IMAGE_EMAILS = frozenset({'rnt@gmail.com'})
 # A per-message-count cap alone doesn't bound size: an attached document can
 # replay up to 15,000 chars on every later turn, so a handful of document
 # turns can approach the model's real context window even within 20
@@ -1694,7 +1822,13 @@ AI_FREE_MESSAGE_LIMIT = 20        # free messages for a logged-in, non-staff, un
 AI_FREE_MODEL_KEYS = frozenset({
     'quick', 'code', ai_chat.FLUX_KLEIN_4B_MODEL_KEY,
     'flux-kontext-dev', 'qwen-image-edit',
+    ai_chat.SDXL_LIGHTNING_MODEL_KEY, ai_chat.FLUX_1_SCHNELL_MODEL_KEY,
+    ai_chat.SDXL_BASE_MODEL_KEY, ai_chat.DREAMSHAPER_8_LCM_MODEL_KEY,
 })
+_CLOUDFLARE_IMAGE_MODEL_KEYS = (
+    ai_chat.SDXL_LIGHTNING_MODEL_KEY, ai_chat.FLUX_1_SCHNELL_MODEL_KEY,
+    ai_chat.SDXL_BASE_MODEL_KEY, ai_chat.DREAMSHAPER_8_LCM_MODEL_KEY,
+)
 # ~1.5MB of raw image data as a base64 data: URI (~2M chars) — well under
 # Django's default 2.5MB DATA_UPLOAD_MAX_MEMORY_SIZE for the whole request
 # body, so an oversized image gets our own clean error instead of Django's
@@ -2213,6 +2347,61 @@ def ai_generated_file_download(request, token):
     return response
 
 
+def generate_pdf_response(request):
+    """Render AI-generated HTML into a real PDF via headless Chromium
+    (myapp.utils.pdf_generator) and return it directly.
+
+    Accepts JSON body with either:
+      - {"html": "<!DOCTYPE html>..."} — render this HTML verbatim, or
+      - {"token": "<uuid>"} — render the content of an already-saved
+        AIGeneratedFile (see AIGeneratedFile / ai_generated_file_download
+        above), which must itself be HTML.
+    Optional {"download": true} forces a "Save As" instead of an inline
+    (in-browser) view.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+
+    payload = _parse_json_body(request)
+    token = (payload.get('token') or '').strip()
+    html_content = payload.get('html')
+    default_filename = 'document.pdf'
+
+    if token:
+        files = AIGeneratedFile.objects.filter(token=token)
+        if request.user.is_authenticated:
+            files = files.filter(user=request.user)
+        else:
+            session_key = request.session.session_key
+            if not session_key:
+                files = files.none()
+            else:
+                files = files.filter(user__isnull=True, session_key=session_key)
+        generated_file = get_object_or_404(files)
+        html_content = generated_file.content
+        default_filename = generated_file.file_name
+        if default_filename.lower().endswith(('.html', '.htm')):
+            default_filename = default_filename.rsplit('.', 1)[0] + '.pdf'
+    elif not html_content:
+        return JsonResponse(
+            {'status': 'error', 'detail': 'Provide either "html" content or a saved file "token" to render.'},
+            status=400,
+        )
+
+    try:
+        pdf_bytes = pdf_generator.render_html_to_pdf(html_content)
+    except pdf_generator.PDFGenerationError as exc:
+        logger.exception("Playwright PDF rendering failed")
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
+
+    disposition = 'attachment' if payload.get('download') else 'inline'
+    response = HttpResponse(pdf_bytes, content_type='application/pdf')
+    response['Content-Disposition'] = f'{disposition}; filename="{default_filename}"'
+    response['X-Content-Type-Options'] = 'nosniff'
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
 def _ai_notes_snapshot(request):
     """Single database snapshot used by page boot, API responses and chat."""
     notes = list(
@@ -2318,7 +2507,10 @@ def ai_page(request):
         ai_subscribed = profile.is_ai_subscribed
         ai_free_used = profile.ai_free_messages_used
     ai_full_model_access = bool(ai_is_staff or ai_subscribed)
-    ai_default_model = ai_chat.DEFAULT_MODEL_KEY if ai_full_model_access else 'quick'
+    # Sol is the picker's default selection (a fixed flagship endpoint, not
+    # the ChatGPT-56 auto-router) — kept separate from ai_chat.DEFAULT_MODEL_KEY,
+    # which is the router model used as the internal MODELS-lookup fallback.
+    ai_default_model = ai_chat.SOL_MODEL_KEY if ai_full_model_access else 'quick'
     models = [
         {
             'key': key,
@@ -2979,7 +3171,7 @@ def _chatgpt_public_reply(reply):
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
     """Never expose ChatGPT's private worker selection to the browser."""
-    if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit'):
+    if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY, *_CLOUDFLARE_IMAGE_MODEL_KEYS, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit'):
         return response_model_key
     return routed_model_key
 
@@ -3017,7 +3209,7 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     """Run a FLUX generation/editing turn and persist the real image URL."""
     display_model_key = response_model_key or ai_chat.FLUX_KLEIN_4B_MODEL_KEY
     try:
-        if display_model_key in ('flux-kontext-dev', 'qwen-image-edit'):
+        if display_model_key in ('flux-kontext-dev', 'qwen-image-edit', *_CLOUDFLARE_IMAGE_MODEL_KEYS):
             generated = image_generation.generate_image(prompt, source_image or None, model_key=display_model_key)
         else:
             generated = image_generation.generate_image(prompt, source_image or None)
@@ -3336,7 +3528,7 @@ def ai_chat_send(request):
     # task-specific workers. Keep its public identity while routing the actual
     # turn to Vision, Code, or Quick.
     full_model_access = _ai_has_full_model_access(request.user)
-    default_model_key = ai_chat.DEFAULT_MODEL_KEY if full_model_access else 'quick'
+    default_model_key = ai_chat.SOL_MODEL_KEY if full_model_access else 'quick'
     requested_model_key = payload.get('model')
     selected_model_key = (
         requested_model_key
@@ -3344,7 +3536,7 @@ def ai_chat_send(request):
         else default_model_key
     )
     chatgpt_mode = selected_model_key == ai_chat.CHATGPT_56_MODEL_KEY
-    response_model_key = selected_model_key if selected_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit') else None
+    response_model_key = selected_model_key if selected_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY, *_CLOUDFLARE_IMAGE_MODEL_KEYS, 'gpt-oss-20b', 'flux-kontext-dev', 'qwen-image-edit') else None
 
     # Gated on ai_chat.is_image_generation_request rather than just "FLUX is
     # selected" — that regex is what decides whether a message genuinely
@@ -3383,10 +3575,23 @@ def ai_chat_send(request):
         # asked for a real PDF with a logo image attached "to add", and
         # having an image on the turn silently dropped the file request
         # straight through to Vision (which can only describe an image,
-        # never produce a download). is_image_request still wins first
-        # when the message itself is genuinely an image create/edit ask.
+        # never produce a download).
+        #
+        # Also deliberately NOT gated on "not is_image_request" any more —
+        # _ai_generated_file_spec only matches an explicit file/document
+        # word or a real filename extension (never an image noun; see
+        # AI_GENERATED_FILE_TYPE_EXTENSIONS/AI_GENERATED_FILE_EXTENSIONS,
+        # neither of which lists an image format), so it can never wrongly
+        # steal a genuine "generate a poster" request. Letting is_image_request
+        # win instead used to route "create a polished, professional PDF
+        # report of every country's population" straight to FLUX, which
+        # can't render legible text/numbers at all — the result was a
+        # picture full of garbled pseudo-text standing in for a real,
+        # accurate document. The elif chain below already checks
+        # generated_file_spec before is_image_request, so this just lets
+        # that ordering actually take effect.
         _ai_generated_file_spec(message)
-        if message and not document_text and not is_image_request
+        if message and not document_text
         else None
     )
     if previous_display_image:
@@ -3401,7 +3606,7 @@ def ai_chat_send(request):
     elif image_prompt_writing:
         model_key = 'vision' if image_data else 'quick'
         request_category = 'image' if image_data else 'writing'
-    elif selected_model_key in (ai_chat.FLUX_KLEIN_4B_MODEL_KEY, 'flux-kontext-dev', 'qwen-image-edit'):
+    elif selected_model_key in (ai_chat.FLUX_KLEIN_4B_MODEL_KEY, 'flux-kontext-dev', 'qwen-image-edit', *_CLOUDFLARE_IMAGE_MODEL_KEYS):
         if source_image_data or (message and not ai_chat.is_image_capability_question(message)) or not message:
             # Once the user deliberately selects FLUX, descriptive prompts
             # such as "a robot in a futuristic classroom" are valid even
@@ -3518,6 +3723,7 @@ def ai_chat_send(request):
 
     if (
         model_key == ai_chat.FLUX_KLEIN_4B_MODEL_KEY
+        and (getattr(request.user, 'email', '') or '').strip().lower() not in AI_UNLIMITED_IMAGE_EMAILS
         and _ai_image_daily_count(request) >= AI_IMAGE_DAILY_LIMIT
     ):
         return JsonResponse({
@@ -3776,8 +3982,11 @@ def ai_chat_send(request):
     web_search_enabled = payload.get('web_search') is True
     if (
         web_search_enabled and message and not image_data and not document_text
-        and not generated_file_spec
     ):
+        # Used to also exclude generated_file_spec, which meant manually
+        # enabling web search did nothing for a file-generation turn — the
+        # one case where grounding matters most, since the output is a
+        # downloadable document rather than a reply that scrolls away.
         search_started = time.perf_counter()
         web_context = web_search.build_context(message)
         logger.info(
@@ -3790,7 +3999,15 @@ def ai_chat_send(request):
     elif message and company_knowledge.is_company_query(recent_company_text):
         retrieved_context = company_knowledge.PUBLIC_SITE_CONTEXT
         retrieved_source = 'company_site'
-    elif message and not image_data and web_search.needs_search(message):
+    elif message and not image_data and (
+        # A downloadable reference document (population/GDP/rankings/etc.)
+        # gets the broader, no-freshness-word-required check — see
+        # web_search.needs_search_for_document — since a model's confident,
+        # unsourced guess at real-world figures is exactly what produced
+        # AIReport's population-by-country PDF full of made-up numbers.
+        web_search.needs_search_for_document(message) if generated_file_spec
+        else web_search.needs_search(message)
+    ):
         # Anything time-sensitive ("latest", "today's rate", "who won") is
         # otherwise answered from the model's training cutoff. Only runs when
         # the wording actually calls for it — this is a network round trip on

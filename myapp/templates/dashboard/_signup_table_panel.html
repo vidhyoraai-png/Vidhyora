@@ -1,0 +1,19 @@
+<div class="panel-head">
+  <h3 id="customerCount">{{ users|length }} customer{{ users|length|pluralize }}</h3>
+  <form class="panel-search" method="get" id="signupSearchForm" data-active-filter="{{ active_filter }}">
+    <i class="fas fa-magnifying-glass"></i>
+    <input type="search" name="q" id="signupSearchInput" value="{{ q }}" placeholder="Search name, email, phone…">
+  </form>
+</div>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Name</th><th>Email</th><th>Amount paid</th><th>Phone</th><th>Location</th><th>Wallet</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+  <tbody id="signupTableBody">
+    {% for u in users %}
+      {% include 'dashboard/_signup_row.html' with u=u %}
+    {% empty %}
+    <tr><td colspan="9" class="empty-row">No signups match your search</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>

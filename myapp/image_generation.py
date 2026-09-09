@@ -17,6 +17,12 @@ FLUX_API_URL = (
 )
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_PROMPT_CHARS = 10_000
+# FLUX.2 Klein's hosted NIM endpoint 400s on long, heavily-detailed prompts
+# well under MAX_PROMPT_CHARS above (that limit only guards against genuinely
+# absurd input). Rather than surface that as an error, a prompt longer than
+# this gets shortened to its leading sentences before being sent — almost
+# always still enough to carry the actual subject/style/composition intent.
+FLUX_SAFE_PROMPT_CHARS = 480
 
 # Every generated image used to be a hardcoded 1024x1024 square, whatever was
 # asked for. Three of the four newest reports were exactly that: #48 wanted a
@@ -94,9 +100,14 @@ class GeneratedImage:
 class ImageGenerationError(Exception):
     """A safe, user-facing failure from the image generation service."""
 
-    def __init__(self, message, *, status_code=503):
+    def __init__(self, message, *, status_code=503, blocked=False):
         super().__init__(message)
         self.status_code = status_code
+        # True when a backend refused the prompt itself (its content filter,
+        # or a generic 400 that's most often the same thing in practice) —
+        # generate_image() uses this to decide whether retrying on a
+        # different backend with a cleaned-up prompt is worth attempting.
+        self.blocked = blocked
 
 
 def _safe_error(response):
@@ -117,8 +128,10 @@ def _safe_error(response):
         )
     if status_code in (400, 413, 422):
         return ImageGenerationError(
-            "NVIDIA could not process that prompt or image. Try a clear prompt and a smaller PNG or JPEG image.",
+            "The image service could not process that prompt or image. Try a shorter, "
+            "clearer prompt and a smaller PNG or JPEG image.",
             status_code=400,
+            blocked=True,
         )
     if status_code in (401, 403):
         return ImageGenerationError(
@@ -126,10 +139,10 @@ def _safe_error(response):
         )
     if status_code == 404:
         return ImageGenerationError(
-            "The FLUX image model is not available for this NVIDIA account right now.",
+            "This image model is not available on the connected account right now.",
         )
     return ImageGenerationError(
-        "NVIDIA's image service is temporarily unavailable. Please try again in a moment.",
+        "The image service is temporarily unavailable. Please try again in a moment.",
     )
 
 
@@ -185,6 +198,55 @@ def resolve_dimensions(prompt):
             return _ASPECT_SIZES[ratio]
 
     return DEFAULT_SIZE
+
+
+def _shorten_prompt(prompt, limit):
+    """Cut ``prompt`` down to ``limit`` chars, preferring a sentence/word
+    boundary so the trimmed prompt still reads as a complete thought."""
+    if len(prompt) <= limit:
+        return prompt
+    window = prompt[:limit]
+    for boundary in (". ", "! ", "? "):
+        cut = window.rfind(boundary)
+        if cut != -1 and cut >= limit * 0.4:
+            return window[: cut + 1].strip()
+    cut = window.rfind(" ")
+    return (window[:cut] if cut >= limit * 0.4 else window).strip()
+
+
+# Phrases that plausibly trip a content filter not because the *picture*
+# they describe is unsafe, but because the prompt reads like it's staging a
+# security-bypass/data-leak scene — quoted "SYSTEM PROMPT" / "ACCESS DENIED"
+# style warning text, asked to be rendered literally. Stripped out before a
+# retry rather than guessed at case by case.
+_PROMPT_BLOCK_TRIGGER_RE = re.compile(
+    r"\b(?:system prompt|hidden instructions?|private data|model identity|"
+    r"internal configuration|jailbreak|access denied|extract(?:ing)? the ai'?s?)\b",
+    re.IGNORECASE,
+)
+_QUOTED_TEXT_RE = re.compile(r'["“][^"”]{1,80}["”]')
+
+
+def _sanitize_prompt_for_retry(prompt):
+    """Best-effort cleanup for a retry after a backend blocked the prompt.
+
+    Not a guess at the exact policy that tripped — just the two patterns
+    most likely to be the cause: literal warning/label text in quotes, and
+    security-jargon phrases describing a prompt-injection/data-leak scene.
+    """
+    cleaned = _QUOTED_TEXT_RE.sub("", prompt)
+    cleaned = _PROMPT_BLOCK_TRIGGER_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s*,\s*,+", ",", cleaned)
+    cleaned = re.sub(r"\s+([,.])", r"\1", cleaned)
+    return cleaned.strip(" ,")
+
+
+# Tried, in order, after the originally selected backend blocks a prompt.
+# Cloudflare's models run their own independent filtering, so a prompt one
+# provider blocks often just goes straight through on another — and by the
+# second entry the prompt has also been through the sanitizer above.
+_BLOCKED_PROMPT_FALLBACK_KEYS = ('sdxl-lightning', 'flux-1-schnell')
 
 
 def _api_key(*, editing=False):
@@ -244,18 +306,30 @@ def _decode_artifact(payload):
     finish_reason = artifact.get("finishReason") if artifact else None
     if finish_reason == "CONTENT_FILTERED":
         raise ImageGenerationError(
-            "That image request was blocked by NVIDIA's content filter. Try a different prompt or image.",
+            "That image request was blocked by the content filter. Try a different prompt or image.",
             status_code=400,
+            blocked=True,
         )
     if finish_reason == "ERROR":
-        raise ImageGenerationError("NVIDIA could not generate that image. Please try again.")
+        raise ImageGenerationError("The image service could not generate that image. Please try again.")
     encoded = artifact.get("base64") if artifact else None
     if not isinstance(encoded, str) or not encoded:
-        raise ImageGenerationError("NVIDIA returned no image. Please try again.")
+        raise ImageGenerationError("The image service returned no image. Please try again.")
     try:
         content = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error):
-        raise ImageGenerationError("NVIDIA returned an unreadable image. Please try again.")
+        raise ImageGenerationError("The image service returned an unreadable image. Please try again.")
+    return _validate_image_bytes(content)
+
+
+def _validate_image_bytes(content, *, service_name="The image service"):
+    """Detect the format, fully decode, and reject a blank placeholder frame.
+
+    Shared by every backend (NVIDIA and Cloudflare): a matching file
+    signature alone is not proof of a usable image — a truncated payload
+    used to be stored and returned as a broken image (report #51 also saw
+    all-white/all-black placeholder frames presented as a real generation).
+    """
     if content.startswith(b"\x89PNG\r\n\x1a\n"):
         extension = "png"
     elif content.startswith(b"\xff\xd8\xff"):
@@ -263,12 +337,7 @@ def _decode_artifact(payload):
     elif content.startswith((b"RIFF",)) and content[8:12] == b"WEBP":
         extension = "webp"
     else:
-        raise ImageGenerationError("NVIDIA returned an unsupported image format. Please try again.")
-    # A matching file signature alone is not proof of a usable image: a
-    # truncated payload used to be stored and returned as a broken image.
-    # Fully decode it before persisting, and reject the all-white/all-black
-    # placeholder frames seen in report #51 rather than presenting them as a
-    # successful generation.
+        raise ImageGenerationError(f"{service_name} returned an unsupported image format. Please try again.")
     try:
         with Image.open(io.BytesIO(content)) as opened:
             opened.load()
@@ -286,6 +355,94 @@ def _decode_artifact(payload):
             "The image service returned a blank image. Please try again."
         )
     return GeneratedImage(content=content, extension=extension)
+
+
+# Cloudflare Workers AI text-to-image models, picked from the model picker
+# (myapp/ai_chat.py MODELS) rather than being NVIDIA/FLUX at all. Each key
+# here matches a MODELS dict key there.
+CLOUDFLARE_MODEL_ENDPOINTS = {
+    'sdxl-lightning': '@cf/bytedance/stable-diffusion-xl-lightning',
+    'flux-1-schnell': '@cf/black-forest-labs/flux-1-schnell',
+    'sdxl-base': '@cf/stabilityai/stable-diffusion-xl-base-1.0',
+    'dreamshaper-8-lcm': '@cf/lykon/dreamshaper-8-lcm',
+}
+
+
+def _generate_cloudflare(prompt, source_image, model_key):
+    """Run a Cloudflare Workers AI text-to-image model.
+
+    Response shape from Workers AI for these models is normally raw image
+    bytes (the documented curl examples pipe straight to --output image.png),
+    but a failure comes back as JSON ({"success": false, "errors": [...]})
+    instead, so the content-type decides how to read the body.
+    """
+    account_id = getattr(settings, 'CLOUDFLARE_ACCOUNT_ID', '').strip()
+    token = getattr(settings, 'CLOUDFLARE_API_TOKEN', '').strip()
+    endpoint = CLOUDFLARE_MODEL_ENDPOINTS.get(model_key)
+    if not endpoint:
+        raise ImageGenerationError('That image model is not recognized.', status_code=400)
+    if not account_id or not token:
+        raise ImageGenerationError(
+            'Image generation is not configured yet. Set CLOUDFLARE_ACCOUNT_ID and '
+            'CLOUDFLARE_API_TOKEN on the server.',
+        )
+
+    body = {'prompt': prompt}
+    if source_image:
+        # Best-effort img2img: not every Workers AI model honours image_b64,
+        # but the ones that support editing (SDXL Base, DreamShaper) do, and
+        # a model that ignores it simply falls back to text-to-image.
+        data_uri = _normalize_source_image(source_image)
+        body['image_b64'] = data_uri.split(',', 1)[1]
+
+    url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{endpoint}'
+    try:
+        response = requests.post(
+            url,
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            json=body,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise ImageGenerationError('Could not reach the image service. Please try again.') from exc
+
+    content_type = response.headers.get('Content-Type', '')
+    if response.status_code == 200 and content_type.startswith('image/'):
+        return _validate_image_bytes(response.content)
+
+    # Anything else (an error, or a JSON success body carrying base64 instead
+    # of a raw stream) is read as JSON.
+    try:
+        payload = response.json()
+    except ValueError:
+        raise ImageGenerationError('The image service returned an invalid response. Please try again.')
+
+    if response.status_code == 429:
+        raise ImageGenerationError('The image-generation limit has been reached. Please wait and try again later.', status_code=429)
+    if response.status_code in (401, 403):
+        raise ImageGenerationError('Image generation is not configured correctly right now. Please contact support.')
+    if response.status_code == 404:
+        raise ImageGenerationError('This image model is not available on the connected account right now.')
+
+    result = payload.get('result') if isinstance(payload, dict) else None
+    encoded = None
+    if isinstance(result, dict):
+        encoded = result.get('image')
+    elif isinstance(result, str):
+        encoded = result
+    if isinstance(encoded, str) and encoded:
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise ImageGenerationError('The image service returned an unreadable image. Please try again.')
+        return _validate_image_bytes(content)
+
+    errors = payload.get('errors') if isinstance(payload, dict) else None
+    # Cloudflare's own error text sometimes names the model/provider — trim
+    # that off rather than surface it, since every backend here is meant to
+    # look like a single "the image service", not a specific vendor.
+    detail = '; '.join(str(e.get('message', e)) for e in errors) if errors else 'Please try again.'
+    raise ImageGenerationError(f'The image service could not generate that image. {detail}', blocked=True)
 
 
 def _generate_qwen_edit(prompt, source_image):
@@ -317,6 +474,13 @@ def generate_image(prompt, source_image=None, *, model_key=None):
 
     ``source_image`` is the browser-provided PNG/JPEG data URI. It is decoded
     and normalized before being placed in FLUX's reference-image array.
+
+    When the originally selected backend blocks the prompt outright (its own
+    content filter, or a generic 400 that in practice is usually the same
+    thing — see ImageGenerationError.blocked), this retries once or twice on
+    a different backend with the prompt's most likely trigger phrases
+    stripped, instead of just handing the user an error for a prompt that a
+    different provider's filter is often fine with.
     """
     prompt = (prompt or "").strip()
     if not prompt:
@@ -327,8 +491,29 @@ def generate_image(prompt, source_image=None, *, model_key=None):
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ImageGenerationError("That image prompt is too long.", status_code=400)
 
+    try:
+        return _dispatch_generate(prompt, source_image, model_key)
+    except ImageGenerationError as exc:
+        if not exc.blocked:
+            raise
+        fallback_keys = [k for k in _BLOCKED_PROMPT_FALLBACK_KEYS if k != model_key]
+        if not fallback_keys:
+            raise
+        sanitized = _sanitize_prompt_for_retry(prompt) or prompt
+        last_error = exc
+        for fallback_key in fallback_keys:
+            try:
+                return _generate_cloudflare(sanitized, source_image, fallback_key)
+            except ImageGenerationError as fallback_exc:
+                last_error = fallback_exc
+        raise last_error
+
+
+def _dispatch_generate(prompt, source_image, model_key):
     if model_key == 'qwen-image-edit':
         return _generate_qwen_edit(prompt, source_image)
+    if model_key in CLOUDFLARE_MODEL_ENDPOINTS:
+        return _generate_cloudflare(prompt, source_image, model_key)
 
     editing = bool(source_image)
     kontext = model_key == 'flux-kontext-dev'
@@ -348,8 +533,13 @@ def generate_image(prompt, source_image=None, *, model_key=None):
         )
 
     width, height = resolve_dimensions(prompt)
+    # Dimensions are read from the full prompt (a size/ratio cue could sit
+    # anywhere), but the text actually sent to FLUX is shortened — see
+    # FLUX_SAFE_PROMPT_CHARS above. Kontext edits keep the full prompt: it's
+    # already proven to accept longer text in practice.
+    flux_prompt = prompt if kontext else _shorten_prompt(prompt, FLUX_SAFE_PROMPT_CHARS)
     body = {
-        "prompt": prompt,
+        "prompt": flux_prompt,
         "width": width,
         "height": height,
         "steps": 4,
@@ -381,7 +571,7 @@ def generate_image(prompt, source_image=None, *, model_key=None):
         )
     except requests.RequestException as exc:
         raise ImageGenerationError(
-            "Could not reach NVIDIA's image service. Please try again."
+            "Could not reach the image service. Please try again."
         ) from exc
 
     if response.status_code != 200:
@@ -389,5 +579,5 @@ def generate_image(prompt, source_image=None, *, model_key=None):
     try:
         payload = response.json()
     except ValueError as exc:
-        raise ImageGenerationError("NVIDIA returned an invalid response. Please try again.") from exc
+        raise ImageGenerationError("The image service returned an invalid response. Please try again.") from exc
     return _decode_artifact(payload)

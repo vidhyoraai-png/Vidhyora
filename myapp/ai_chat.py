@@ -362,6 +362,19 @@ CHATGPT_56_MODEL_KEY = 'chatgpt56'
 NEMOTRON_SUPER_MODEL_KEY = 'nemotron-3-super'
 FLUX_KLEIN_4B_MODEL_KEY = 'flux-klein-4b'
 SOL_MODEL_KEY = 'sol'
+TERRA_MODEL_KEY = 'terra'
+SDXL_LIGHTNING_MODEL_KEY = 'sdxl-lightning'
+FLUX_1_SCHNELL_MODEL_KEY = 'flux-1-schnell'
+SDXL_BASE_MODEL_KEY = 'sdxl-base'
+DREAMSHAPER_8_LCM_MODEL_KEY = 'dreamshaper-8-lcm'
+# The real Google Gemini API (see MODELS entry below) — supersedes the
+# earlier same-named picker option that was actually Gemma-on-NVIDIA under
+# an aspirational label; that one is gone now that this is the genuine
+# article, so there's only ever one "Gemini 3.6 Flash" in the picker.
+GEMINI_36_FLASH_MODEL_KEY = 'gemini-3-6-flash'
+OPENROUTER_AUTO_FREE_MODEL_KEY = 'openrouter-auto-free'
+LAGUNA_S_21_MODEL_KEY = 'laguna-s-2-1'
+COHERE_NORTH_MINI_CODE_MODEL_KEY = 'cohere-north-mini-code'
 CHATGPT_56_SYSTEM_SUFFIX = (
     "\n\nYou are answering through Vidhyora's ChatGPT 5.6 experience. "
     "Be natural, context-aware, capable, and conversational, with the clear, "
@@ -461,12 +474,23 @@ MODELS = {
         'vision': False,
         'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
     },
+    TERRA_MODEL_KEY: {
+        # Its own dedicated endpoint/credential, same as Sol above — pool
+        # access to the shared Lightning key says nothing about invoke
+        # access to nemotron-3-ultra-550b-a55b.
+        'id': 'nvidia/nemotron-3-ultra-550b-a55b',
+        'label': 'ChatGPT 5.6 Terra',
+        'description': 'Balances intelligence and cost — strong reasoning for everyday professional work.',
+        'reasoning': True,
+        'vision': False,
+        'api_key_setting': 'NVIDIA_TERRA_API_KEY',
+    },
     CHATGPT_56_MODEL_KEY: {
         # A user-facing automatic route, not a separate upstream endpoint.
         # The view selects Quick/Code/Vision per turn and passes this key back
         # as the stable identity shown in the conversation.
         'id': NVIDIA_CHAT_MODEL,
-        'label': 'ChatGPT 5.6',
+        'label': 'ChatGPT 5.6 Luna',
         'description': "OpenAI's most powerful model — best for everyday questions, reasoning, coding, writing, and images.",
         'reasoning': True,
         'vision': False,
@@ -531,6 +555,42 @@ MODELS = {
         'vision': False,
         'image_generation': True,
     },
+    # Cloudflare Workers AI image models — routed through
+    # image_generation._generate_cloudflare (CLOUDFLARE_MODEL_ENDPOINTS)
+    # rather than NVIDIA/FLUX at all. Each has its own dedicated Cloudflare
+    # account/token, shared across the four rather than per-model.
+    SDXL_LIGHTNING_MODEL_KEY: {
+        'id': '@cf/bytedance/stable-diffusion-xl-lightning',
+        'label': 'SDXL Lightning',
+        'description': 'Fast & efficient image generation — best for instant image creation and light edits.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
+    FLUX_1_SCHNELL_MODEL_KEY: {
+        'id': '@cf/black-forest-labs/flux-1-schnell',
+        'label': 'Flux 1 Schnell',
+        'description': 'High quality & sharp details — best for complex image generation and prompt adherence.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
+    SDXL_BASE_MODEL_KEY: {
+        'id': '@cf/stabilityai/stable-diffusion-xl-base-1.0',
+        'label': 'Stable Diffusion XL Base',
+        'description': 'Balanced performance — strong overall image editing, outpainting, and background changes.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
+    DREAMSHAPER_8_LCM_MODEL_KEY: {
+        'id': '@cf/lykon/dreamshaper-8-lcm',
+        'label': 'DreamShaper 8 LCM',
+        'description': 'Fast artistic styling — best for stylized, anime, and creative image alterations.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
     # Last in this dict is last in the model picker — views.ai_page builds the
     # list straight from this ordering.
     NEMOTRON_SUPER_MODEL_KEY: {
@@ -549,6 +609,51 @@ MODELS = {
         # pool's failover and hedging — another key in that pool has no
         # invoke access to this endpoint.
         'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
+    },
+    GEMINI_36_FLASH_MODEL_KEY: {
+        # The real Google Gemini API (not NVIDIA-hosted), called through
+        # Google's OpenAI-compatible endpoint — see _GEMINI_BASE_URL — so it
+        # reuses the same chat streaming/retry pipeline as every other model
+        # here instead of a separate native generateContent integration.
+        # 'gemini-2.5-flash' was requested originally, but that version 404s
+        # as "no longer available to new users" against this key — Google's
+        # own error names gemini-3.6-flash as its replacement, verified live.
+        'id': 'gemini-3.6-flash',
+        'label': 'Gemini 3.6 Flash',
+        'description': "Google's flagship model — fast reasoning, text generation, and image understanding capabilities.",
+        'reasoning': False,
+        'vision': True,
+        'api_key_setting': 'GEMINI_API_KEY',
+    },
+    # OpenRouter — each shares one dedicated key against OpenRouter's own
+    # OpenAI-compatible endpoint (see _OPENROUTER_BASE_URL), all with an
+    # 8192 max_tokens ceiling rather than the shared MAX_TOKENS default.
+    OPENROUTER_AUTO_FREE_MODEL_KEY: {
+        'id': 'openrouter/free',
+        'label': 'OpenRouter Auto Free (Recommended)',
+        'description': 'Automatically routes requests to the best active zero-cost model.',
+        'reasoning': False,
+        'vision': False,
+        'api_key_setting': 'OPENROUTER_API_KEY',
+        'max_tokens': 8192,
+    },
+    LAGUNA_S_21_MODEL_KEY: {
+        'id': 'poolside/laguna-s-2.1:free',
+        'label': 'Laguna S 2.1 (Free)',
+        'description': 'Software engineering agent — best for long, single-file HTML, CSS, and JS code generation.',
+        'reasoning': False,
+        'vision': False,
+        'api_key_setting': 'OPENROUTER_API_KEY',
+        'max_tokens': 8192,
+    },
+    COHERE_NORTH_MINI_CODE_MODEL_KEY: {
+        'id': 'cohere/north-mini-code:free',
+        'label': 'Cohere North Mini Code (Free)',
+        'description': 'Optimized for high-speed code syntax, HTML formatting, and quick completions.',
+        'reasoning': False,
+        'vision': False,
+        'api_key_setting': 'OPENROUTER_API_KEY',
+        'max_tokens': 8192,
     },
 }
 DEFAULT_MODEL_KEY = CHATGPT_56_MODEL_KEY
@@ -1435,16 +1540,35 @@ def nvidia_key_pool():
     return keys
 
 
-def _client_for_key(api_key):
-    client = _clients.get(api_key)
+# Google's OpenAI-compatible layer for Gemini — same API key and model name
+# as the native generateContent REST API, but speaks the same chat.completions
+# shape as every NVIDIA model here, so it drops straight into the existing
+# streaming/retry/hedging pipeline instead of needing a parallel one.
+_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
+# OpenRouter's own REST API is itself OpenAI-compatible (its documented
+# endpoint is https://openrouter.ai/api/v1/chat/completions — the OpenAI SDK
+# appends the /chat/completions part itself, so the base_url stops at /v1).
+_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+# Non-NVIDIA providers, each on their own dedicated key setting — every model
+# not listed here is assumed to be NVIDIA-hosted (see _get_client and the
+# same_provider check in stream_chat's error handling).
+_NON_NVIDIA_BASE_URLS = {
+    'GEMINI_API_KEY': _GEMINI_BASE_URL,
+    'OPENROUTER_API_KEY': _OPENROUTER_BASE_URL,
+}
+
+
+def _client_for_key(api_key, base_url='https://integrate.api.nvidia.com/v1'):
+    cache_key = (base_url, api_key)
+    client = _clients.get(cache_key)
     if client is None:
         client = OpenAI(
-            base_url='https://integrate.api.nvidia.com/v1',
+            base_url=base_url,
             api_key=api_key,
             timeout=25.0,
             max_retries=0,
         )
-        _clients[api_key] = client
+        _clients[cache_key] = client
     return client
 
 
@@ -1456,7 +1580,8 @@ def _get_client(api_key_setting=None, key_index=0):
         api_key = getattr(settings, api_key_setting, '').strip()
         if not api_key:
             raise ValueError(f'{api_key_setting} is not configured.')
-        return _client_for_key(api_key)
+        base_url = _NON_NVIDIA_BASE_URLS.get(api_key_setting, 'https://integrate.api.nvidia.com/v1')
+        return _client_for_key(api_key, base_url)
     pool = nvidia_key_pool()
     if not pool:
         raise ValueError('NVIDIA_API_KEY is not configured.')
@@ -1773,7 +1898,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     system_prompt = COMPACT_SYSTEM_PROMPT + current_datetime_note() + current_mode_line
     if model_key == 'code':
         system_prompt += CODE_SYSTEM_SUFFIX
-    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
+    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY, TERRA_MODEL_KEY):
         system_prompt += CHATGPT_56_SYSTEM_SUFFIX
     if user_context:
         system_prompt += (
@@ -1830,7 +1955,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         "interpret ordinary spelling/grammar mistakes. Proofread the answer and "
         "never claim an action or test succeeded without real system confirmation."
     )
-    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
+    if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY, TERRA_MODEL_KEY):
         mode_reminder += (
             f" Strict identity lock: the only model name that may appear in "
             f"your reply is {identity_cfg['label']}. Never name, credit, "
@@ -1934,7 +2059,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         # images?") is deliberately excluded from that routing so it lands
         # here instead, getting a normal conversational answer rather than
         # FLUX trying to render the question itself as a picture.
-        if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY):
+        if identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY, TERRA_MODEL_KEY):
             # This persona never reveals FLUX, the model picker, or mode
             # switching (same rule as never naming Vidhyora/NVIDIA/Nemotron
             # here) — it just answers as if generation is something it does
@@ -2034,7 +2159,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
         temperature = TEMPERATURE  # unchanged — not live-tested against a higher value
     else:
         temperature = TEMPERATURE_CONVERSATIONAL
-    resolved_max_tokens = max_tokens or MAX_TOKENS
+    resolved_max_tokens = max_tokens or cfg.get('max_tokens') or MAX_TOKENS
     kwargs = dict(
         model=cfg['id'],
         messages=full_messages,
@@ -2068,7 +2193,7 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     # below) rather than the whole reply, since every observed real leak
     # appeared in the first sentence — this keeps the cost small and
     # constant instead of holding back an entire long code/document answer.
-    check_identity_opening = identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY)
+    check_identity_opening = identity_key in (CHATGPT_56_MODEL_KEY, SOL_MODEL_KEY, TERRA_MODEL_KEY)
     request_started = time.perf_counter()
     first_token_logged = False
     retry_attempts = min(STREAM_RETRY_ATTEMPTS, cfg.get('retry_attempts', STREAM_RETRY_ATTEMPTS))
@@ -2204,8 +2329,19 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
             # model whose worker is struggling should still get one attempt
             # on Quick (fast, reliably available) before giving up entirely,
             # not just the default.
+            # Quick runs on NVIDIA's shared key pool, so this swap only makes
+            # sense for a model that's *also* NVIDIA-hosted — falling back
+            # keeps the reply on the same provider, just a different worker.
+            # A model on a different provider entirely (Gemini's own key
+            # against Google's endpoint) has no NVIDIA fallback to give: this
+            # is exactly the bug behind AIReport-style leaks where "Gemini"
+            # started answering as raw, unbranded Nemotron — Quick has no
+            # identity-suffix override, so the swap silently exposed NVIDIA's
+            # backend on a model that was supposed to look like Google's.
+            same_provider = api_key_setting is None or api_key_setting.startswith('NVIDIA_')
             can_fallback = (
-                MODELS['quick']['id'] != kwargs['model']
+                same_provider
+                and MODELS['quick']['id'] != kwargs['model']
                 and (transient or _is_model_unavailable_error(exc))
             )
             # A dead/exhausted/rate-limited key fails identically no matter

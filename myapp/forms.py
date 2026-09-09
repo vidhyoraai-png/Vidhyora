@@ -75,8 +75,16 @@ class AddUserForm(forms.Form):
 
     def clean_email(self):
         email = self.cleaned_data['email'].strip().lower()
-        if User.objects.filter(email__iexact=email).exists():
-            raise forms.ValidationError('An account with this email already exists.')
+        existing = User.objects.filter(email__iexact=email).select_related('store_profile').first()
+        if existing:
+            joined = existing.date_joined.strftime('%d %b %Y')
+            role = 'Superuser' if existing.is_superuser else ('Staff' if existing.is_staff else 'Customer')
+            name = (f'{existing.first_name} {existing.last_name}'.strip()) or existing.username
+            phone = getattr(existing.store_profile, 'phone', '') or 'not on file'
+            raise forms.ValidationError(
+                f'An account with "{email}" already exists — {name}, {role.lower()}, '
+                f'phone {phone}, joined {joined}. Edit that account instead of creating a new one.'
+            )
         return email
 
     def clean_phone(self):

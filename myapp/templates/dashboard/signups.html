@@ -55,6 +55,7 @@
 {% for message in messages %}
   <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
 {% endfor %}
+<div id="dashboardFlash"></div>
 
 <div class="stat-grid">
   <a class="stat-card{% if not active_filter %} active{% endif %}" href="?{% if q %}q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_signups }}</div><div class="stat-lbl">Total Signups</div></div></a>
@@ -111,9 +112,9 @@
   </section>
 </div>
 
-<details class="panel add-user-panel">
+<details class="panel add-user-panel" id="addUserPanel"{% if add_user_open %} open{% endif %}>
   <summary><i class="fas fa-user-plus"></i> Add user manually <i class="fas fa-chevron-down chevron"></i></summary>
-  <form method="post" action="{% url 'dashboard_user_add' %}">
+  <form method="post" action="{% url 'dashboard_user_add' %}" id="addUserForm">
     {% csrf_token %}
     <input type="hidden" name="next" value="dashboard_signups">
     <div class="form-grid-2">
@@ -160,60 +161,8 @@
   </form>
 </details>
 
-<div class="panel">
-  <div class="panel-head">
-    <h3>{{ users|length }} customer{{ users|length|pluralize }}</h3>
-    <form class="panel-search" method="get">
-      <i class="fas fa-magnifying-glass"></i>
-      <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, phone…">
-    </form>
-  </div>
-  <div class="table-scroll">
-  <table>
-    <thead><tr><th>Name</th><th>Email</th><th>Amount paid</th><th>Phone</th><th>Location</th><th>Wallet</th><th>Role</th><th>Joined</th><th></th></tr></thead>
-    <tbody>
-      {% for u in users %}
-      <tr>
-        <td>{{ u.first_name|default:u.username }} {{ u.last_name }}</td>
-        <td>{{ u.email }}</td>
-        <td>₹{{ u.store_profile.manual_amount_paid|default:0|floatformat:2 }}{% if u.store_profile.manual_payment_received_at %}<span class="sub-line">{{ u.store_profile.manual_payment_received_at|date:"d M Y, h:i A" }}</span>{% endif %}</td>
-        <td>{{ u.store_profile.phone|default:"—" }}</td>
-        <td>
-          {% if u.store_profile.location_consent == 'granted' %}
-            <span class="location-status enabled"><i class="fas fa-location-dot"></i> Enabled</span>
-            <span class="location-coords" data-lat="{{ u.store_profile.location_latitude }}" data-lng="{{ u.store_profile.location_longitude }}">{{ u.store_profile.location_latitude|floatformat:4 }}, {{ u.store_profile.location_longitude|floatformat:4 }}</span>
-          {% elif u.store_profile.location_consent == 'denied' %}
-            <span class="location-status declined"><i class="fas fa-location-crosshairs"></i> Declined</span>
-          {% else %}
-            <span class="location-status unknown"><i class="fas fa-minus"></i> Not asked</span>
-          {% endif %}
-        </td>
-        <td>₹{{ u.store_profile.wallet_balance|default:0|floatformat:0 }}</td>
-        <td>
-          {% if u.is_superuser %}<span class="badge staff">Superuser</span>
-          {% elif u.is_staff %}<span class="badge staff">Staff</span>
-          {% else %}<span class="badge user">Customer</span>{% endif %}
-        </td>
-        <td>{{ u.date_joined|date:"d M Y, h:i A" }}</td>
-        <td>
-          <div class="row-actions">
-            <a class="edit-btn" href="{% url 'dashboard_signup_edit' u.pk %}" title="Edit"><i class="fas fa-pen"></i></a>
-            {% if not u.is_staff and not u.is_superuser %}
-            <button type="button" class="reset-password-btn" data-url="{% url 'dashboard_signup_reset_password' u.pk %}" data-user="{{ u.email|default:u.username }}" title="Reset password for {{ u.email|default:u.username }}"><i class="fas fa-key"></i> Reset password</button>
-            <form method="post" action="{% url 'dashboard_signup_delete' u.pk %}" onsubmit="return confirm('Permanently delete this customer? This also deletes all their orders, reviews and cart. This cannot be undone.')">
-              {% csrf_token %}
-              <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
-            </form>
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="9" class="empty-row">No signups match your search</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
+<div class="panel" id="customerPanel">
+  {% include 'dashboard/_signup_table_panel.html' %}
 </div>
 
 <div class="password-result" id="passwordResult" role="dialog" aria-modal="true" aria-labelledby="passwordResultTitle">
@@ -235,6 +184,29 @@
   var modal = document.getElementById('passwordResult');
   var passwordText = document.getElementById('generatedPassword');
   var copyButton = document.getElementById('copyGeneratedPassword');
+  var customerPanel = document.getElementById('customerPanel');
+  var addUserForm = document.getElementById('addUserForm');
+  var addUserPanel = document.getElementById('addUserPanel');
+  var searchTimer = null;
+
+  function showFlash(type, text){
+    var container = document.getElementById('dashboardFlash');
+    if (!container) return;
+    container.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'flash ' + type;
+    var icon = document.createElement('i');
+    icon.className = 'fas ' + (type === 'error' ? 'fa-circle-exclamation' : 'fa-circle-check');
+    div.appendChild(icon);
+    div.appendChild(document.createTextNode(' ' + text));
+    container.appendChild(div);
+  }
+
+  function jsonRequest(url, options){
+    return fetch(url, options).then(function(response){
+      return response.json().then(function(data){ return {ok: response.ok, status: response.status, data: data}; });
+    });
+  }
 
   function closePasswordResult(){
     modal.classList.remove('open');
@@ -242,31 +214,30 @@
     copyButton.innerHTML = '<i class="fas fa-copy"></i> Copy';
   }
 
-  document.querySelectorAll('.reset-password-btn').forEach(function(button){
-    button.addEventListener('click', function(){
-      var account = button.getAttribute('data-user');
-      if (!confirm('Generate a new password for ' + account + '? Their current password will stop working immediately.')) return;
+  // Delegated (not bound per-button) because rows are added/replaced by the
+  // add-user and search flows below without a full page reload — a listener
+  // attached to a specific button at load time would go dead the moment that
+  // button's row is replaced.
+  document.addEventListener('click', function(event){
+    var button = event.target.closest('.reset-password-btn');
+    if (!button) return;
+    var account = button.getAttribute('data-user');
+    if (!confirm('Generate a new password for ' + account + '? Their current password will stop working immediately.')) return;
 
-      button.disabled = true;
-      fetch(button.getAttribute('data-url'), {
-        method: 'POST',
-        headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
-        credentials: 'same-origin'
+    button.disabled = true;
+    jsonRequest(button.getAttribute('data-url'), {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
+      credentials: 'same-origin'
+    })
+      .then(function(result){
+        if (!result.ok) throw new Error(result.data.detail || 'Could not reset the password.');
+        passwordText.textContent = result.data.password;
+        modal.classList.add('open');
+        document.getElementById('closePasswordResult').focus();
       })
-        .then(function(response){
-          return response.json().then(function(data){
-            if (!response.ok) throw new Error(data.detail || 'Could not reset the password.');
-            return data;
-          });
-        })
-        .then(function(data){
-          passwordText.textContent = data.password;
-          modal.classList.add('open');
-          document.getElementById('closePasswordResult').focus();
-        })
-        .catch(function(error){ alert(error.message); })
-        .finally(function(){ button.disabled = false; });
-    });
+      .catch(function(error){ alert(error.message); })
+      .finally(function(){ button.disabled = false; });
   });
 
   copyButton.addEventListener('click', function(){
@@ -283,10 +254,140 @@
   modal.addEventListener('click', function(event){ if (event.target === modal) closePasswordResult(); });
   document.addEventListener('keydown', function(event){ if (event.key === 'Escape' && modal.classList.contains('open')) closePasswordResult(); });
 
+  // ---- delete a customer without navigating away ----
+  document.addEventListener('submit', function(event){
+    var form = event.target.closest('form.signup-delete-form');
+    if (!form) return;
+    event.preventDefault();
+    if (!confirm('Permanently delete this customer? This also deletes all their orders, reviews and cart. This cannot be undone.')) return;
+
+    var row = form.closest('tr');
+    var button = form.querySelector('button[type="submit"]');
+    if (button) button.disabled = true;
+    jsonRequest(form.getAttribute('action'), {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
+      credentials: 'same-origin'
+    })
+      .then(function(result){
+        if (!result.ok || result.data.status !== 'ok') throw new Error(result.data.detail || 'Could not delete this customer.');
+        if (row) row.remove();
+        var tbody = document.getElementById('signupTableBody');
+        if (tbody && !tbody.querySelector('tr[data-row-id]')) {
+          tbody.innerHTML = '<tr><td colspan="9" class="empty-row">No signups match your search</td></tr>';
+        }
+        updateCustomerCount();
+        showFlash('success', result.data.message || 'Customer deleted.');
+      })
+      .catch(function(error){
+        showFlash('error', error.message);
+        if (button) button.disabled = false;
+      });
+  });
+
+  function updateCustomerCount(){
+    var countEl = document.getElementById('customerCount');
+    if (!countEl) return;
+    var n = document.querySelectorAll('#signupTableBody tr[data-row-id]').length;
+    countEl.textContent = n + ' customer' + (n === 1 ? '' : 's');
+  }
+
+  // ---- live search: replaces only the table panel, never navigates ----
+  function runSearch(){
+    if (!customerPanel) return;
+    var input = document.getElementById('signupSearchInput');
+    var form = document.getElementById('signupSearchForm');
+    if (!input) return;
+    var params = new URLSearchParams();
+    var q = input.value.trim();
+    if (q) params.set('q', q);
+    var activeFilter = form ? form.getAttribute('data-active-filter') : '';
+    if (activeFilter) params.set('filter', activeFilter);
+    var url = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+    fetch(url, {headers: {'X-Requested-With': 'XMLHttpRequest'}, credentials: 'same-origin'})
+      .then(function(response){ return response.text(); })
+      .then(function(html){
+        customerPanel.innerHTML = html;
+        history.replaceState(null, '', url);
+        runLocationResolver();
+      })
+      .catch(function(){});
+  }
+
+  document.addEventListener('submit', function(event){
+    if (event.target && event.target.id === 'signupSearchForm') {
+      event.preventDefault();
+      clearTimeout(searchTimer);
+      runSearch();
+    }
+  });
+  document.addEventListener('input', function(event){
+    if (event.target && event.target.id === 'signupSearchInput') {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(runSearch, 300);
+    }
+  });
+
+  // ---- add user manually, without navigating away ----
+  function clearFormErrors(form){
+    form.querySelectorAll('.errorlist').forEach(function(el){ el.remove(); });
+  }
+  function showFormErrors(form, errors){
+    clearFormErrors(form);
+    Object.keys(errors || {}).forEach(function(field){
+      var input = form.querySelector('[name="' + field + '"]');
+      var group = input ? input.closest('.form-group') : null;
+      var list = document.createElement('ul');
+      list.className = 'errorlist';
+      (errors[field] || []).forEach(function(msg){
+        var li = document.createElement('li');
+        li.textContent = msg;
+        list.appendChild(li);
+      });
+      if (group) { group.appendChild(list); } else { form.insertBefore(list, form.firstChild); }
+    });
+  }
+
+  if (addUserForm) {
+    addUserForm.addEventListener('submit', function(event){
+      event.preventDefault();
+      clearFormErrors(addUserForm);
+      var submitBtn = addUserForm.querySelector('button[type="submit"]');
+      if (submitBtn) submitBtn.disabled = true;
+      jsonRequest(addUserForm.getAttribute('action'), {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        credentials: 'same-origin',
+        body: new FormData(addUserForm)
+      })
+        .then(function(result){
+          if (result.data.status === 'validation_error') {
+            showFormErrors(addUserForm, result.data.errors);
+            return;
+          }
+          if (!result.ok || result.data.status !== 'ok') throw new Error(result.data.detail || 'Could not create the account.');
+          var tbody = document.getElementById('signupTableBody');
+          if (tbody) {
+            var emptyRow = tbody.querySelector('.empty-row');
+            if (emptyRow) emptyRow.closest('tr').remove();
+            if (result.data.row_html) tbody.insertAdjacentHTML('afterbegin', result.data.row_html);
+          }
+          updateCustomerCount();
+          addUserForm.reset();
+          if (addUserPanel) addUserPanel.removeAttribute('open');
+          showFlash('success', result.data.message || 'Account created.');
+        })
+        .catch(function(error){ showFlash('error', error.message); })
+        .finally(function(){ if (submitBtn) submitBtn.disabled = false; });
+    });
+  }
+
   // Sequential, rate-limited (~1 req/sec) against OpenStreetMap's free public
   // Nominatim reverse-geocoder — same service/throttle as dashboard/delivery.html's
   // forward geocoding, no API key involved. Coordinates stay as the visible
-  // fallback until (if) a name resolves, so nothing is ever blank.
+  // fallback until (if) a name resolves, so nothing is ever blank. Exposed as
+  // runLocationResolver so it can re-run against freshly inserted rows after
+  // a live search, not just once at page load.
   function resolveRow(cells, i){
     if (i >= cells.length) return;
     var cell = cells[i];
@@ -310,8 +411,12 @@
       .finally(function(){ setTimeout(function(){ resolveRow(cells, i + 1); }, 1100); });
   }
 
-  var cells = Array.prototype.slice.call(document.querySelectorAll('.location-coords[data-lat]'));
-  if (cells.length) resolveRow(cells, 0);
+  function runLocationResolver(){
+    var cells = Array.prototype.slice.call(document.querySelectorAll('.location-coords[data-lat]'));
+    if (cells.length) resolveRow(cells, 0);
+  }
+
+  runLocationResolver();
 })();
 </script>
 {% endblock %}

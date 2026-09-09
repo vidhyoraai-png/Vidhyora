@@ -104,6 +104,36 @@ _NO_SEARCH_RE = re.compile(
 )
 
 
+# A downloadable reference document (see views._ai_generated_file_spec) is
+# explicitly meant to be an accurate, citable artifact — unlike a throwaway
+# chat reply, "close enough" from the model's training cutoff isn't good
+# enough, and there's no freshness word ("latest", "current") to trigger the
+# narrower needs_search() above for something like "PDF of every country's
+# population". This is deliberately broader: multi-entry, numeric, or
+# ranked real-world data is exactly what a model most confidently hallucinates
+# (AIReport: a population-by-country PDF came back with fabricated figures).
+_REFERENCE_DATA_RE = re.compile(
+    r"\b(?:population|demographics|census|gdp|economy|economies|literacy\s+rate|"
+    r"life\s+expectancy|statistics|stats|figures|data(?:set)?|ranking|ranked|"
+    r"rank(?:ings)?|top\s+\d+|comparison|compare|capital(?:s)?|currency|"
+    r"currencies|exchange\s+rate|area\s+(?:of|in)|coordinates|time\s?zone|"
+    r"all\s+countries|every\s+country|list\s+of\s+countries|country\s+list|"
+    r"world\s+record|records?)\b",
+    re.IGNORECASE,
+)
+
+
+def needs_search_for_document(text):
+    """Broader than needs_search() — used only when generating a real,
+    downloadable file (see views._ai_generated_file_spec), where getting the
+    facts right matters enough to warrant a search even without an explicit
+    freshness cue in the wording."""
+    text = (text or '').strip()
+    if len(text) < 3 or _NO_SEARCH_RE.search(text):
+        return False
+    return bool(_REFERENCE_DATA_RE.search(text)) or needs_search(text)
+
+
 def needs_search(text):
     """True when a message's answer plausibly depends on current information.
 

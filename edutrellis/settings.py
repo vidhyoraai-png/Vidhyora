@@ -17,7 +17,13 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 _gemma_key_file = BASE_DIR / '.secrets' / 'nvidia_gemma_api_key'
-NVIDIA_GEMMA_API_KEY = os.environ.get('NVIDIA_GEMMA_API_KEY', '').strip()
+# Backs the "Gemini 3.6 Flash" picker option (myapp/ai_chat.py), which calls
+# google/gemma-4-31b-it on NVIDIA NIM. Same hardcoding trade-off as the other
+# keys in this file — intentionally hardcoded at the project owner's request.
+NVIDIA_GEMMA_API_KEY = os.environ.get(
+    'NVIDIA_GEMMA_API_KEY',
+    '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',
+).strip()
 if not NVIDIA_GEMMA_API_KEY and _gemma_key_file.is_file():
     NVIDIA_GEMMA_API_KEY = _gemma_key_file.read_text(encoding='utf-8').strip()
 
@@ -227,7 +233,48 @@ if not NVIDIA_NEMOTRON_SUPER_API_KEY and _nemotron_super_key_file.is_file():
     NVIDIA_NEMOTRON_SUPER_API_KEY = _nemotron_super_key_file.read_text(encoding='utf-8').strip()
 # Intentionally hardcoded at the project owner's request.
 NVIDIA_FLUX_API_KEY = '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'
+
+# ChatGPT 5.6 Terra — its own dedicated key against nemotron-3-ultra-550b-a55b,
+# same trade-off as NVIDIA_NEMOTRON_SUPER_API_KEY above (not part of the
+# shared pool, since pool access says nothing about invoke access to this
+# endpoint). Intentionally hardcoded at the project owner's request.
+_terra_key_file = BASE_DIR / '.secrets' / 'nvidia_terra_api_key'
+NVIDIA_TERRA_API_KEY = os.environ.get(
+    'NVIDIA_TERRA_API_KEY',
+    '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',
+).strip()
+if not NVIDIA_TERRA_API_KEY and _terra_key_file.is_file():
+    NVIDIA_TERRA_API_KEY = _terra_key_file.read_text(encoding='utf-8').strip()
 NVIDIA_FLUX_EDIT_API_KEY = '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'
+
+# ── Cloudflare Workers AI (image models) ────────────────────────────────────
+# Backs the SDXL Lightning / Flux 1 Schnell / SDXL Base / DreamShaper 8 LCM
+# picker options (myapp/image_generation.py). Same hardcoding trade-off as
+# the keys above — intentionally hardcoded at the project owner's request.
+CLOUDFLARE_ACCOUNT_ID = os.environ.get(
+    'CLOUDFLARE_ACCOUNT_ID', 'e6e651b3aa7f473cce2cf81eeeafcfc8',
+).strip()
+CLOUDFLARE_API_TOKEN = os.environ.get(
+    'CLOUDFLARE_API_TOKEN', 'cfut_ZI5Am6F16CgLJpggh6NjHgCyPliNyDiMjLZiGWwIec9f322b',
+).strip()
+
+# Backs the "Gemini 2.5 Flash" picker option (myapp/ai_chat.py) — called
+# through Google's OpenAI-compatible endpoint, not the native generateContent
+# REST API, so it can reuse the existing chat streaming pipeline. Same
+# hardcoding trade-off as the keys above — intentionally hardcoded at the
+# project owner's request.
+GEMINI_API_KEY = os.environ.get(
+    'GEMINI_API_KEY', 'AQ.Ab8RN6LjJgl8ECIgKRLcyq9PaeWtiYbf5jskVN7K2y3NM6yZuA',
+).strip()
+
+# Backs the OpenRouter picker options (myapp/ai_chat.py) — OpenRouter's REST
+# API is itself OpenAI-compatible, so this reuses the existing chat streaming
+# pipeline the same way Gemini does (see _OPENROUTER_BASE_URL there). Same
+# hardcoding trade-off as the keys above — intentionally hardcoded at the
+# project owner's request.
+OPENROUTER_API_KEY = os.environ.get(
+    'OPENROUTER_API_KEY', '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',
+).strip()
 
 # Tavily powers optional live web search from the AI chat composer.
 TAVILY_API_KEY = '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'

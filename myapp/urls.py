@@ -61,6 +61,7 @@ urlpatterns = [
     path('AI/api/profile/phone/verify/confirm/', views.ai_phone_verify_confirm, name='ai_phone_verify_confirm'),
     path('AI/api/send/', views.ai_chat_send, name='ai_chat_send'),
     path('AI/api/files/<uuid:token>/download/', views.ai_generated_file_download, name='ai_generated_file_download'),
+    path('AI/api/pdf/render/', views.generate_pdf_response, name='generate_pdf_response'),
     path('AI/api/extract/', views.ai_extract_document, name='ai_extract_document'),
     path('AI/api/convert/', views.ai_convert_file, name='ai_convert_file'),
     path('AI/api/transcribe/', views.ai_transcribe_audio, name='ai_transcribe_audio'),
