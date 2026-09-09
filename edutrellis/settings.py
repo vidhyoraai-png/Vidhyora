@@ -255,7 +255,7 @@ CLOUDFLARE_ACCOUNT_ID = os.environ.get(
     'CLOUDFLARE_ACCOUNT_ID', 'e6e651b3aa7f473cce2cf81eeeafcfc8',
 ).strip()
 CLOUDFLARE_API_TOKEN = os.environ.get(
-    'CLOUDFLARE_API_TOKEN', 'cfut_ZI5Am6F16CgLJpggh6NjHgCyPliNyDiMjLZiGWwIec9f322b',
+    'CLOUDFLARE_API_TOKEN', 'cfut_d1JeYZGV6PkqSfpfTFIGUqEmXFQ4CqAJ4Hez0OKe07db5be0',
 ).strip()
 
 # Backs the "Gemini 2.5 Flash" picker option (myapp/ai_chat.py) — called
@@ -264,7 +264,7 @@ CLOUDFLARE_API_TOKEN = os.environ.get(
 # hardcoding trade-off as the keys above — intentionally hardcoded at the
 # project owner's request.
 GEMINI_API_KEY = os.environ.get(
-    'GEMINI_API_KEY', 'AQ.Ab8RN6LjJgl8ECIgKRLcyq9PaeWtiYbf5jskVN7K2y3NM6yZuA',
+    'GEMINI_API_KEY', 'AQ.Ab8RN6K_Zkn2pjY7mgLzwZpfJk4qNTu5oN1VCEtAeu1B3DD5TA',
 ).strip()
 
 # Backs the OpenRouter picker options (myapp/ai_chat.py) — OpenRouter's REST
@@ -272,7 +272,7 @@ GEMINI_API_KEY = os.environ.get(
 # pipeline the same way Gemini does (see _OPENROUTER_BASE_URL there). Same
 # hardcoding trade-off as the keys above — intentionally hardcoded at the
 # project owner's request.
-OPENROUTER_API_KEY = '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'
+OPENROUTER_API_KEY = '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'
 
 # Tavily powers optional live web search from the AI chat composer.
 TAVILY_API_KEY = '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'
