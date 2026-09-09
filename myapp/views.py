@@ -49,7 +49,6 @@ from myapp import privacy
 from myapp import request_router
 from myapp import file_convert
 from myapp import web_search
-from myapp.utils import pdf_generator
 from myapp import audio_transcribe
 from myapp import youtube_download
 from myapp.ai_report_analysis import analyze_report, aggregate_report_issues
@@ -2342,61 +2341,6 @@ def ai_generated_file_download(request, token):
         content_type = f"{mimetypes.guess_type(generated_file.file_name)[0] or 'text/plain'}; charset=utf-8"
     response = HttpResponse(payload, content_type=content_type)
     response['Content-Disposition'] = f'attachment; filename="{generated_file.file_name}"'
-    response['X-Content-Type-Options'] = 'nosniff'
-    response['Cache-Control'] = 'private, no-store'
-    return response
-
-
-def generate_pdf_response(request):
-    """Render AI-generated HTML into a real PDF via headless Chromium
-    (myapp.utils.pdf_generator) and return it directly.
-
-    Accepts JSON body with either:
-      - {"html": "<!DOCTYPE html>..."} — render this HTML verbatim, or
-      - {"token": "<uuid>"} — render the content of an already-saved
-        AIGeneratedFile (see AIGeneratedFile / ai_generated_file_download
-        above), which must itself be HTML.
-    Optional {"download": true} forces a "Save As" instead of an inline
-    (in-browser) view.
-    """
-    if request.method != 'POST':
-        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
-
-    payload = _parse_json_body(request)
-    token = (payload.get('token') or '').strip()
-    html_content = payload.get('html')
-    default_filename = 'document.pdf'
-
-    if token:
-        files = AIGeneratedFile.objects.filter(token=token)
-        if request.user.is_authenticated:
-            files = files.filter(user=request.user)
-        else:
-            session_key = request.session.session_key
-            if not session_key:
-                files = files.none()
-            else:
-                files = files.filter(user__isnull=True, session_key=session_key)
-        generated_file = get_object_or_404(files)
-        html_content = generated_file.content
-        default_filename = generated_file.file_name
-        if default_filename.lower().endswith(('.html', '.htm')):
-            default_filename = default_filename.rsplit('.', 1)[0] + '.pdf'
-    elif not html_content:
-        return JsonResponse(
-            {'status': 'error', 'detail': 'Provide either "html" content or a saved file "token" to render.'},
-            status=400,
-        )
-
-    try:
-        pdf_bytes = pdf_generator.render_html_to_pdf(html_content)
-    except pdf_generator.PDFGenerationError as exc:
-        logger.exception("Playwright PDF rendering failed")
-        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=503)
-
-    disposition = 'attachment' if payload.get('download') else 'inline'
-    response = HttpResponse(pdf_bytes, content_type='application/pdf')
-    response['Content-Disposition'] = f'{disposition}; filename="{default_filename}"'
     response['X-Content-Type-Options'] = 'nosniff'
     response['Cache-Control'] = 'private, no-store'
     return response
