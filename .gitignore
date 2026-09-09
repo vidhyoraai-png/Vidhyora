@@ -9,3 +9,5 @@ __pycache__/
 # Temporary AI-generated social-media downloads
 media/ai_youtube/
 media/ai_generated/
+
+db.sqlite3
