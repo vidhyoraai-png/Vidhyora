@@ -249,30 +249,25 @@ NVIDIA_FLUX_EDIT_API_KEY = 'nvapi-SU5rnFSYexTuT1IDahxBGp6ZCpn7KuhfPJRXvjTe64smr4
 
 # ── Cloudflare Workers AI (image models) ────────────────────────────────────
 # Backs the SDXL Lightning / Flux 1 Schnell / SDXL Base / DreamShaper 8 LCM
-# picker options (myapp/image_generation.py). Same hardcoding trade-off as
-# the keys above — intentionally hardcoded at the project owner's request.
-CLOUDFLARE_ACCOUNT_ID = os.environ.get(
-    'CLOUDFLARE_ACCOUNT_ID', 'e6e651b3aa7f473cce2cf81eeeafcfc8',
-).strip()
-CLOUDFLARE_API_TOKEN = os.environ.get(
-    'CLOUDFLARE_API_TOKEN', 'cfut_d1JeYZGV6PkqSfpfTFIGUqEmXFQ4CqAJ4Hez0OKe07db5be0',
-).strip()
+# picker options (myapp/image_generation.py). Set both in the deployment
+# environment (Railway → Variables) — no hardcoded fallback, since GitHub's
+# push protection flags this token if it's committed in plaintext.
+CLOUDFLARE_ACCOUNT_ID = os.environ.get('CLOUDFLARE_ACCOUNT_ID', '').strip()
+CLOUDFLARE_API_TOKEN = os.environ.get('CLOUDFLARE_API_TOKEN', '').strip()
 
 # Backs the "Gemini 2.5 Flash" picker option (myapp/ai_chat.py) — called
 # through Google's OpenAI-compatible endpoint, not the native generateContent
-# REST API, so it can reuse the existing chat streaming pipeline. Same
-# hardcoding trade-off as the keys above — intentionally hardcoded at the
-# project owner's request.
-GEMINI_API_KEY = os.environ.get(
-    'GEMINI_API_KEY', 'AQ.Ab8RN6K_Zkn2pjY7mgLzwZpfJk4qNTu5oN1VCEtAeu1B3DD5TA',
-).strip()
+# REST API, so it can reuse the existing chat streaming pipeline. Set via env
+# (Railway → Variables) — no hardcoded fallback, since GitHub's push
+# protection flags this key if it's committed in plaintext.
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
 # Backs the OpenRouter picker options (myapp/ai_chat.py) — OpenRouter's REST
 # API is itself OpenAI-compatible, so this reuses the existing chat streaming
-# pipeline the same way Gemini does (see _OPENROUTER_BASE_URL there). Same
-# hardcoding trade-off as the keys above — intentionally hardcoded at the
-# project owner's request
-OPENROUTER_API_KEY = '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'
+# pipeline the same way Gemini does (see _OPENROUTER_BASE_URL there). Set via
+# env (Railway → Variables) — no hardcoded fallback, since GitHub's push
+# protection flags this key if it's committed in plaintext.
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '').strip()
 
 # Tavily powers optional live web search from the AI chat composer.
 TAVILY_API_KEY = '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'
@@ -323,5 +318,4 @@ LOGGING = {
         },
     },
 }
-
 
