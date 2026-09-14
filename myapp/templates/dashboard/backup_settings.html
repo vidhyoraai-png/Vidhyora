@@ -12,6 +12,13 @@
 </div>
 {% endif %}
 
+{% if settings_obj.is_configured and not settings_obj.app_key and not settings_obj.app_secret and not settings_obj.refresh_token %}
+<div class="panel" style="padding:1.1rem 1.4rem;background:#e8fbf0;border-color:#8fd9ae">
+  <b style="color:#177245"><i class="fas fa-circle-check"></i> Using this server's built-in Dropbox credentials.</b>
+  <div class="help" style="margin-top:.4rem">DROPBOX_APP_KEY/DROPBOX_APP_SECRET/DROPBOX_REFRESH_TOKEN are already set on the server, so backups work without filling in the fields below. Only fill them in if you want this feature to use a different Dropbox account than the rest of the app.</div>
+</div>
+{% endif %}
+
 <form class="form-card" style="max-width:640px" method="post">
   {% csrf_token %}
 

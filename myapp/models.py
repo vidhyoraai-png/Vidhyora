@@ -1,6 +1,7 @@
 from datetime import timedelta
 import uuid
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import F
@@ -392,7 +393,12 @@ class Payment(models.Model):
 
 class DropboxSettings(models.Model):
     """Singleton Dropbox App credentials used to back up/restore db.sqlite3,
-    managed from the store dashboard."""
+    managed from the store dashboard. Falls back to the server-level
+    DROPBOX_APP_KEY/DROPBOX_APP_SECRET/DROPBOX_REFRESH_TOKEN settings (the
+    same credentials dropbox_images.py already uses for AI image archiving)
+    whenever a field here is left blank, so a server that already has those
+    configured shows as connected without also requiring them to be
+    re-entered through this dashboard form."""
     app_key       = models.CharField(max_length=200, blank=True)
     app_secret    = models.CharField(max_length=200, blank=True)
     refresh_token = models.CharField(max_length=400, blank=True)
@@ -411,8 +417,20 @@ class DropboxSettings(models.Model):
         return obj
 
     @property
+    def effective_app_key(self):
+        return self.app_key or getattr(settings, 'DROPBOX_APP_KEY', '')
+
+    @property
+    def effective_app_secret(self):
+        return self.app_secret or getattr(settings, 'DROPBOX_APP_SECRET', '')
+
+    @property
+    def effective_refresh_token(self):
+        return self.refresh_token or getattr(settings, 'DROPBOX_REFRESH_TOKEN', '')
+
+    @property
     def is_configured(self):
-        return bool(self.app_key and self.app_secret and self.refresh_token)
+        return bool(self.effective_app_key and self.effective_app_secret and self.effective_refresh_token)
 
 
 class PWASettings(models.Model):

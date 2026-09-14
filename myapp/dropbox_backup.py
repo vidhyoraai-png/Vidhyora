@@ -74,9 +74,9 @@ def _client(settings_obj):
     if not settings_obj.is_configured:
         raise BackupError('Dropbox is not configured yet — add your App Key, App Secret and Refresh Token first.')
     return dropbox.Dropbox(
-        oauth2_refresh_token=settings_obj.refresh_token,
-        app_key=settings_obj.app_key,
-        app_secret=settings_obj.app_secret,
+        oauth2_refresh_token=settings_obj.effective_refresh_token,
+        app_key=settings_obj.effective_app_key,
+        app_secret=settings_obj.effective_app_secret,
         timeout=30,
         max_retries_on_error=1,
         max_retries_on_rate_limit=0,
