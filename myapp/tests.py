@@ -1921,6 +1921,47 @@ class AIResponseReliabilityTests(TestCase):
             captured['extra_body']['chat_template_kwargs']['enable_thinking'], False,
         )
 
+    def test_luna_routed_workers_use_dedicated_key(self):
+        for worker in ('chatgpt56', 'quick', 'code', 'vision'):
+            with self.subTest(worker=worker):
+                def create(**kwargs):
+                    return iter([SimpleNamespace(choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content='391'),
+                    )])])
+
+                client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+                with patch('myapp.ai_chat._get_client', return_value=client) as get_client, \
+                        patch('myapp.ai_chat.nvidia_key_pool') as pool:
+                    result = ''.join(ai_chat.stream_chat(
+                        [{'role': 'user', 'content': '17*23?'}], model_key=worker,
+                        identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+                    ))
+                self.assertEqual(result, '391')
+                get_client.assert_called_with('NVIDIA_LUNA_API_KEY', key_index=0)
+                pool.assert_not_called()
+
+    def test_luna_and_terra_text_routes_use_super_with_separate_keys(self):
+        for persona, setting in [('chatgpt56', 'NVIDIA_LUNA_API_KEY'), ('terra', 'NVIDIA_TERRA_API_KEY')]:
+            for worker in (persona, 'quick', 'code'):
+                with self.subTest(persona=persona, worker=worker):
+                    captured = {}
+
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return iter([SimpleNamespace(choices=[SimpleNamespace(
+                            delta=SimpleNamespace(content='391'),
+                        )])])
+
+                    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+                    with patch('myapp.ai_chat._get_client', return_value=client) as get_client:
+                        result = ''.join(ai_chat.stream_chat(
+                            [{'role': 'user', 'content': '17*23?'}], model_key=worker,
+                            identity_model_key=persona,
+                        ))
+                    self.assertEqual(result, '391')
+                    self.assertEqual(captured['model'], 'nvidia/nemotron-3-super-120b-a12b')
+                    get_client.assert_called_with(setting, key_index=0)
+
     def test_stream_chat_fails_over_to_the_next_api_key(self):
         """A revoked/exhausted/rate-limited key fails identically however
         many times it is retried, so the next key in settings.NVIDIA_API_KEYS

@@ -500,6 +500,17 @@ def generate_image(prompt, source_image=None, *, model_key=None):
     try:
         return _dispatch_generate(prompt, source_image, model_key)
     except ImageGenerationError as exc:
+        # Retry ordinary generation on a separately credentialed FLUX worker.
+        # Do not send uploads to a text-to-image backend or retry content
+        # refusals here. Input validation above also never triggers failover.
+        if (
+            not source_image
+            and model_key in (None, 'flux-klein-4b')
+            and not exc.blocked
+            and not exc.editing_unavailable
+            and getattr(settings, 'NVIDIA_FLUX_DEV_API_KEY', '').strip()
+        ):
+            return _generate_flux_dev(prompt)
         if not exc.blocked:
             raise
         fallback_keys = [k for k in _BLOCKED_PROMPT_FALLBACK_KEYS if k != model_key]
@@ -515,7 +526,55 @@ def generate_image(prompt, source_image=None, *, model_key=None):
         raise last_error
 
 
+def _generate_flux_dev(prompt):
+    """One backup attempt using FLUX.1-dev's hosted text-to-image schema."""
+    key = getattr(settings, 'NVIDIA_FLUX_DEV_API_KEY', '').strip()
+    if not key:
+        raise ImageGenerationError('The backup image service is not configured.')
+    try:
+        response = requests.post(
+            'https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev',
+            headers={
+                'Authorization': f'Bearer {key}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            },
+            # Hosted FLUX.1-dev documents 1024x1024 output only.
+            json={'prompt': prompt, 'mode': 'base', 'width': 1024,
+                  'height': 1024, 'cfg_scale': 5, 'steps': 50,
+                  'samples': 1, 'seed': 0},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise ImageGenerationError('Could not reach the backup image service. Please try again.') from exc
+    if response.status_code != 200:
+        raise _safe_error(response)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ImageGenerationError('The backup image service returned an invalid response.') from exc
+    return _decode_artifact(payload)
+
+
 def _dispatch_generate(prompt, source_image, model_key):
+    """Try the primary Klein key, then its backup before model failover."""
+    try:
+        return _dispatch_generate_once(prompt, source_image, model_key)
+    except ImageGenerationError as exc:
+        backup = getattr(settings, 'NVIDIA_FLUX_BACKUP_API_KEY', '').strip()
+        if (
+            not source_image
+            and model_key in (None, 'flux-klein-4b')
+            and not exc.blocked
+            and not exc.editing_unavailable
+            and backup
+            and backup != _api_key()
+        ):
+            return _dispatch_generate_once(prompt, source_image, model_key, generation_key=backup)
+        raise
+
+
+def _dispatch_generate_once(prompt, source_image, model_key, *, generation_key=None):
     if model_key == 'qwen-image-edit':
         return _generate_qwen_edit(prompt, source_image)
     if model_key in CLOUDFLARE_MODEL_ENDPOINTS:
@@ -526,9 +585,24 @@ def _dispatch_generate(prompt, source_image, model_key):
     if kontext and not editing:
         raise ImageGenerationError('Attach an image and describe the changes you want.', status_code=400)
     edit_url = getattr(settings, 'FLUX_EDIT_API_URL', '').strip() if editing else ''
+    # NVIDIA's hosted FLUX.2 Klein preview does not accept arbitrary uploads.
+    # Its ``image`` field only accepts one of four NVIDIA-owned example IDs
+    # (data:image/png;example_id,0..3), so sending a browser image as base64
+    # can never work there.  Real uploads must go to an upload-capable NIM
+    # configured through FLUX_EDIT_API_URL.  Signal the caller immediately so
+    # it can use the existing describe-and-regenerate fallback without making
+    # a guaranteed-to-fail, potentially billable hosted request first.
+    if editing and not edit_url and not kontext:
+        raise ImageGenerationError(
+            'Uploaded-image editing needs an upload-capable image-editing server.',
+            status_code=503,
+            editing_unavailable=True,
+        )
     # A private deployment has its own optional credential. Never forward the
     # hosted NVIDIA credential to a separately configured server.
     key = getattr(settings, 'FLUX_EDIT_API_KEY', '').strip() if edit_url else _api_key(editing=editing)
+    if not editing and generation_key is not None:
+        key = generation_key
     if kontext:
         edit_url = ''
         key = getattr(settings, 'NVIDIA_FLUX_KONTEXT_API_KEY', '').strip()

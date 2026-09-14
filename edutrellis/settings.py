@@ -31,6 +31,17 @@ if not NVIDIA_GEMMA_API_KEY and _gemma_key_file.is_file():
 FLUX_EDIT_API_URL = os.environ.get('FLUX_EDIT_API_URL', '').strip()
 FLUX_EDIT_API_KEY = os.environ.get('FLUX_EDIT_API_KEY', '').strip()
 
+# Separate credentials for the Klein backup and FLUX.1-dev fallback.
+NVIDIA_FLUX_BACKUP_API_KEY = os.environ.get('NVIDIA_FLUX_BACKUP_API_KEY', '').strip()
+_flux_backup_key_file = BASE_DIR / '.secrets' / 'nvidia_flux_backup_api_key'
+if not NVIDIA_FLUX_BACKUP_API_KEY and _flux_backup_key_file.is_file():
+    NVIDIA_FLUX_BACKUP_API_KEY = _flux_backup_key_file.read_text(encoding='utf-8').strip()
+
+NVIDIA_FLUX_DEV_API_KEY = os.environ.get('NVIDIA_FLUX_DEV_API_KEY', '').strip()
+_flux_dev_key_file = BASE_DIR / '.secrets' / 'nvidia_flux_dev_api_key'
+if not NVIDIA_FLUX_DEV_API_KEY and _flux_dev_key_file.is_file():
+    NVIDIA_FLUX_DEV_API_KEY = _flux_dev_key_file.read_text(encoding='utf-8').strip()
+
 QWEN_IMAGE_EDIT_API_URL = os.environ.get('QWEN_IMAGE_EDIT_API_URL', '').strip()
 QWEN_IMAGE_EDIT_ENDPOINT_KEY = os.environ.get('QWEN_IMAGE_EDIT_ENDPOINT_KEY', '').strip()
 _qwen_image_key_file = BASE_DIR / '.secrets' / 'nvidia_qwen_image_edit_api_key'
@@ -214,12 +225,28 @@ NVIDIA_FALLBACK_API_KEYS = [
 ]
 # NVIDIA_API_KEYS overrides the whole ordered pool at once (comma-separated)
 # for deployments that would rather not carry the hardcoded spares.
+NVIDIA_CHAT_BACKUP_API_KEY = os.environ.get('NVIDIA_CHAT_BACKUP_API_KEY', '').strip()
+_chat_backup_key_file = BASE_DIR / '.secrets' / 'nvidia_chat_backup_api_key'
+if not NVIDIA_CHAT_BACKUP_API_KEY and _chat_backup_key_file.is_file():
+    NVIDIA_CHAT_BACKUP_API_KEY = _chat_backup_key_file.read_text(encoding='utf-8').strip()
+NVIDIA_LUNA_API_KEY = os.environ.get('NVIDIA_LUNA_API_KEY', '').strip()
+_luna_key_file = BASE_DIR / '.secrets' / 'nvidia_luna_api_key'
+if not NVIDIA_LUNA_API_KEY and _luna_key_file.is_file():
+    NVIDIA_LUNA_API_KEY = _luna_key_file.read_text(encoding='utf-8').strip()
+# Support deployments that already configured this key under its old name.
+if not NVIDIA_LUNA_API_KEY:
+    NVIDIA_LUNA_API_KEY = NVIDIA_CHAT_BACKUP_API_KEY
+if NVIDIA_CHAT_BACKUP_API_KEY and NVIDIA_CHAT_BACKUP_API_KEY != NVIDIA_LUNA_API_KEY:
+    NVIDIA_FALLBACK_API_KEYS.append(NVIDIA_CHAT_BACKUP_API_KEY)
+
 _nvidia_key_env = os.environ.get('NVIDIA_API_KEYS', '').strip()
 if _nvidia_key_env:
     _nvidia_keys = _nvidia_key_env.split(',')
 else:
     _nvidia_keys = [NVIDIA_API_KEY] + NVIDIA_FALLBACK_API_KEYS
 NVIDIA_API_KEYS = list(dict.fromkeys(k.strip() for k in _nvidia_keys if k.strip()))
+# Luna's text credential stays out of the shared pool, including env overrides.
+NVIDIA_API_KEYS = [k for k in NVIDIA_API_KEYS if k != NVIDIA_LUNA_API_KEY]
 
 # Nemotron 3 Super (120B) — its own dedicated key rather than a member of the
 # pool above, since pool access to the Lightning endpoint says nothing about

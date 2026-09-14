@@ -1272,9 +1272,15 @@ def _ai_api_registry():
     return [
         {
             'name': 'NVIDIA Lightning (shared pool)',
-            'note': 'Backs the default Quick/Code/Ultra/Reasoning modes, the ChatGPT 5.6 Luna auto-router, and Vidhyora Vision (image understanding).',
+            'note': 'Backs Quick/Code/Ultra/Reasoning modes and Vidhyora Vision.',
             'connected': bool(dj_settings.NVIDIA_API_KEYS or dj_settings.NVIDIA_API_KEY),
-            'model_keys': ['ultra', 'quick', 'code', 'reasoning', ai_chat.CHATGPT_56_MODEL_KEY, 'vision'],
+            'model_keys': ['ultra', 'quick', 'code', 'reasoning', 'vision'],
+        },
+        {
+            'name': 'NVIDIA Luna (dedicated)',
+            'note': 'Dedicated text credential for ChatGPT 5.6 Luna and its automatic routing.',
+            'connected': bool(getattr(dj_settings, 'NVIDIA_LUNA_API_KEY', '')),
+            'model_keys': [ai_chat.CHATGPT_56_MODEL_KEY],
         },
         {
             'name': 'NVIDIA Nemotron Super (dedicated)',
@@ -1301,9 +1307,9 @@ def _ai_api_registry():
             'model_keys': [ai_chat.FLUX_KLEIN_4B_MODEL_KEY],
         },
         {
-            'name': 'NVIDIA FLUX Edit',
-            'note': 'Uploaded-photo editing for FLUX.2 Klein 4B (falls back to a described text-to-image regeneration when unavailable).',
-            'connected': bool(getattr(dj_settings, 'NVIDIA_FLUX_EDIT_API_KEY', '') or getattr(dj_settings, 'FLUX_EDIT_API_URL', '')),
+            'name': 'FLUX Edit NIM',
+            'note': 'Upload-capable FLUX server for real photo editing. Without it, uploads use described text-to-image regeneration.',
+            'connected': bool(getattr(dj_settings, 'FLUX_EDIT_API_URL', '')),
             'model_keys': [],
         },
         {
@@ -1377,7 +1383,7 @@ def dashboard_api_data(request):
         {
             'key': key,
             'label': cfg['label'],
-            'in_frontend': key != 'vision',
+            'in_frontend': key != 'vision' and not cfg.get('hidden_from_picker', False),
             'requests': request_counts.get(key, 0),
         }
         for key, cfg in ai_chat.MODELS.items()
@@ -2635,7 +2641,8 @@ def ai_page(request):
             'description': cfg['description'],
             'locked': not ai_full_model_access and key not in AI_FREE_MODEL_KEYS,
         }
-        for key, cfg in ai_chat.MODELS.items() if key != 'vision'
+        for key, cfg in ai_chat.MODELS.items()
+        if key != 'vision' and not cfg.get('hidden_from_picker', False)
     ]
 
     return render(request, 'ai.html', {
@@ -2751,8 +2758,11 @@ def _ai_profile_gate(user, ip=None):
     profile, _ = StoreProfile.objects.get_or_create(user=user)
     if profile.is_ai_subscribed:
         return None
-    ip_capped = bool(ip) and _ip_free_messages_used(ip) >= (AI_GUEST_MESSAGE_LIMIT + AI_FREE_MESSAGE_LIMIT)
-    if profile.ai_free_messages_used >= AI_FREE_MESSAGE_LIMIT or ip_capped:
+    # If this account has already exhausted its allowance, the potentially
+    # large IP message-count query cannot change the gate's response.
+    if profile.ai_free_messages_used >= AI_FREE_MESSAGE_LIMIT or (
+        bool(ip) and _ip_free_messages_used(ip) >= (AI_GUEST_MESSAGE_LIMIT + AI_FREE_MESSAGE_LIMIT)
+    ):
         return {
             'status': 'subscription_required',
             'detail': (
@@ -2838,7 +2848,7 @@ def _ai_note_action_reply(request, conversation, confirmation, extra_headers=Non
         yield confirmation
 
     response = StreamingHttpResponse(event_stream(), content_type='text/plain; charset=utf-8')
-    response['Cache-Control'] = 'no-cache'
+    response['Cache-Control'] = 'private, no-cache, no-store, no-transform'
     response['X-Accel-Buffering'] = 'no'
     response['X-Conversation-Id'] = str(conversation.id)
     response['X-Model-Key'] = 'note'
@@ -4036,10 +4046,12 @@ def ai_chat_send(request):
             return sum(len(b.get('text', '')) for b in content if isinstance(b, dict))
         return 0
 
-    while len(clean_history) > 1 and (
-        sum(_content_char_len(m['content']) for m in clean_history) > AI_CHAT_HISTORY_CHAR_BUDGET
-    ):
-        clean_history.pop(0)
+    history_chars = sum(_content_char_len(m['content']) for m in clean_history)
+    history_start = 0
+    while len(clean_history) - history_start > 1 and history_chars > AI_CHAT_HISTORY_CHAR_BUDGET:
+        history_chars -= _content_char_len(clean_history[history_start]['content'])
+        history_start += 1
+    clean_history = clean_history[history_start:]
 
     # Keep saved conversation text intact for the user, but redact common
     # personal identifiers in the copy sent to the external model.
@@ -4357,7 +4369,7 @@ def ai_chat_send(request):
                     logger.exception("Failed to save AI assistant reply for conversation %s", conversation.pk)
 
     response = StreamingHttpResponse(event_stream(), content_type='text/plain; charset=utf-8')
-    response['Cache-Control'] = 'no-cache'
+    response['Cache-Control'] = 'private, no-cache, no-store, no-transform'
     response['X-Accel-Buffering'] = 'no'
     response['X-Conversation-Id'] = str(conversation.id)
     response['X-Model-Key'] = response_model_key

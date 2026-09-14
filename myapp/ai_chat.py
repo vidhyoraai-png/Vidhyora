@@ -469,18 +469,16 @@ MODELS = {
         # the shared key pool's failover and hedging.
         'id': 'nvidia/nemotron-3-super-120b-a12b',
         'label': 'ChatGPT 5.6 Sol',
-        'description': 'Flagship reasoning option — best for complex, multi-step professional work.',
+        'description': "OpenAI's most powerful model — named for the sun, the brightest core model, built for complex, multi-step professional work.",
         'reasoning': True,
         'vision': False,
         'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
     },
     TERRA_MODEL_KEY: {
-        # Its own dedicated endpoint/credential, same as Sol above — pool
-        # access to the shared Lightning key says nothing about invoke
-        # access to nemotron-3-ultra-550b-a55b.
-        'id': 'nvidia/nemotron-3-ultra-550b-a55b',
+        # Same Super backend as Sol, with Terra's separately verified key.
+        'id': 'nvidia/nemotron-3-super-120b-a12b',
         'label': 'ChatGPT 5.6 Terra',
-        'description': 'Balances intelligence and cost — strong reasoning for everyday professional work.',
+        'description': "OpenAI's most powerful model — named for the earth, grounded and balanced, steady reasoning for everyday professional work.",
         'reasoning': True,
         'vision': False,
         'api_key_setting': 'NVIDIA_TERRA_API_KEY',
@@ -489,12 +487,13 @@ MODELS = {
         # A user-facing automatic route, not a separate upstream endpoint.
         # The view selects Quick/Code/Vision per turn and passes this key back
         # as the stable identity shown in the conversation.
-        'id': NVIDIA_CHAT_MODEL,
+        'id': 'nvidia/nemotron-3-super-120b-a12b',
         'label': 'ChatGPT 5.6 Luna',
-        'description': "OpenAI's most powerful model — best for everyday questions, reasoning, coding, writing, and images.",
+        'description': "OpenAI's most powerful model — named for the moon, always with you, the everyday all-rounder for questions, reasoning, coding, writing, and images.",
         'reasoning': True,
         'vision': False,
         'router': True,
+        'api_key_setting': 'NVIDIA_LUNA_API_KEY',
     },
     'gpt-oss-20b': {
         'id': 'openai/gpt-oss-20b',
@@ -534,6 +533,7 @@ MODELS = {
         # used below, preventing hidden reasoning from leaking into replies.
         'id': NVIDIA_CHAT_MODEL,
         'label': 'Nemotron Super',
+        'hidden_from_picker': True,  # Temporarily hidden; retain existing chats/routing.
         'description': 'Excellent at complex, multi-step reasoning and planning — faster than Ultra, still very capable.',
         'reasoning': True,
         'vision': False,
@@ -550,6 +550,7 @@ MODELS = {
     FLUX_KLEIN_4B_MODEL_KEY: {
         'id': 'black-forest-labs/flux_2-klein-4b',
         'label': 'FLUX.2 Klein 4B',
+        'hidden_from_picker': True,
         'description': 'Creates images from prompts. An uploaded photo is read and described, then regenerated as a new image with your requested changes.',
         'reasoning': False,
         'vision': False,
@@ -562,6 +563,7 @@ MODELS = {
     SDXL_LIGHTNING_MODEL_KEY: {
         'id': '@cf/bytedance/stable-diffusion-xl-lightning',
         'label': 'SDXL Lightning',
+        'hidden_from_picker': True,
         'description': 'Fast & efficient image generation — best for instant image creation and light edits.',
         'reasoning': False,
         'vision': False,
@@ -570,6 +572,7 @@ MODELS = {
     FLUX_1_SCHNELL_MODEL_KEY: {
         'id': '@cf/black-forest-labs/flux-1-schnell',
         'label': 'Flux 1 Schnell',
+        'hidden_from_picker': True,
         'description': 'High quality & sharp details — best for complex image generation and prompt adherence.',
         'reasoning': False,
         'vision': False,
@@ -578,6 +581,7 @@ MODELS = {
     SDXL_BASE_MODEL_KEY: {
         'id': '@cf/stabilityai/stable-diffusion-xl-base-1.0',
         'label': 'Stable Diffusion XL Base',
+        'hidden_from_picker': True,
         'description': 'Balanced performance — strong overall image editing, outpainting, and background changes.',
         'reasoning': False,
         'vision': False,
@@ -586,6 +590,7 @@ MODELS = {
     DREAMSHAPER_8_LCM_MODEL_KEY: {
         'id': '@cf/lykon/dreamshaper-8-lcm',
         'label': 'DreamShaper 8 LCM',
+        'hidden_from_picker': True,
         'description': 'Fast artistic styling — best for stylized, anime, and creative image alterations.',
         'reasoning': False,
         'vision': False,
@@ -602,6 +607,7 @@ MODELS = {
         # me to..." chain-of-thought), so it stays a 'reasoning' model here.
         'id': 'nvidia/nemotron-3-super-120b-a12b',
         'label': 'Nemotron 3 Super',
+        'hidden_from_picker': True,
         'description': 'Largest reasoning model — best for hard, multi-step problems where depth matters more than speed.',
         'reasoning': True,
         'vision': False,
@@ -631,6 +637,7 @@ MODELS = {
     OPENROUTER_AUTO_FREE_MODEL_KEY: {
         'id': 'openrouter/free',
         'label': 'OpenRouter Auto Free (Recommended)',
+        'hidden_from_picker': True,
         'description': 'Automatically routes requests to the best active zero-cost model.',
         'reasoning': False,
         'vision': False,
@@ -640,6 +647,7 @@ MODELS = {
     LAGUNA_S_21_MODEL_KEY: {
         'id': 'poolside/laguna-s-2.1:free',
         'label': 'Laguna S 2.1 (Free)',
+        'hidden_from_picker': True,
         'description': 'Software engineering agent — best for long, single-file HTML, CSS, and JS code generation.',
         'reasoning': False,
         'vision': False,
@@ -649,6 +657,7 @@ MODELS = {
     COHERE_NORTH_MINI_CODE_MODEL_KEY: {
         'id': 'cohere/north-mini-code:free',
         'label': 'Cohere North Mini Code (Free)',
+        'hidden_from_picker': True,
         'description': 'Optimized for high-speed code syntax, HTML formatting, and quick completions.',
         'reasoning': False,
         'vision': False,
@@ -1387,6 +1396,7 @@ def jagu_system_note(greet=True, farewell=False):
 # revoked can be failed over instead of taking the chat down — see
 # _is_key_level_error and the key-switch branch in stream_chat.
 _clients = {}
+_clients_lock = threading.Lock()
 
 # The original prompt grew into a long collection of repeated edge-case
 # instructions. This compact version keeps the product/account/identity and
@@ -1562,13 +1572,18 @@ def _client_for_key(api_key, base_url='https://integrate.api.nvidia.com/v1'):
     cache_key = (base_url, api_key)
     client = _clients.get(cache_key)
     if client is None:
-        client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=25.0,
-            max_retries=0,
-        )
-        _clients[cache_key] = client
+        # Concurrent first requests should share one connection pool instead
+        # of constructing competing clients. Warm requests do not take a lock.
+        with _clients_lock:
+            client = _clients.get(cache_key)
+            if client is None:
+                client = OpenAI(
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=25.0,
+                    max_retries=0,
+                )
+                _clients[cache_key] = client
     return client
 
 
@@ -1896,6 +1911,13 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     cfg = MODELS.get(model_key) or MODELS[DEFAULT_MODEL_KEY]
     identity_key = identity_model_key or model_key
     identity_cfg = MODELS.get(identity_key) or cfg
+    # Text routes retain their coding/writing instructions but use the
+    # selected persona's Super backend and dedicated credential. Keep the
+    # image-understanding worker: Super is configured as text-only here.
+    if identity_key in (CHATGPT_56_MODEL_KEY, TERRA_MODEL_KEY) and not cfg.get('vision'):
+        cfg = {**cfg, 'id': identity_cfg['id'],
+               'api_key_setting': identity_cfg['api_key_setting'],
+               'reasoning': identity_cfg['reasoning']}
     current_content = messages[-1].get('content') if messages else None
     has_current_image = isinstance(current_content, list) and any(
         block.get('type') == 'image_url' for block in current_content
@@ -2242,6 +2264,9 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     # retry budget is measured against below. A model with its own dedicated
     # key isn't part of the shared pool and gets no failover.
     api_key_setting = cfg.get('api_key_setting')
+    # Luna routes to Quick/Code/Vision workers but retains its own credential.
+    if identity_key == CHATGPT_56_MODEL_KEY:
+        api_key_setting = 'NVIDIA_LUNA_API_KEY'
     key_pool = [] if api_key_setting else nvidia_key_pool()
     key_index = 0
     retries_used = 0
@@ -2406,8 +2431,8 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
                 kwargs['model'] = MODELS['quick']['id']
                 # Quick runs on the shared key pool, so a model that had its
                 # own dedicated key joins the pool (and its failover) here.
-                api_key_setting = None
-                if not key_pool:
+                api_key_setting = 'NVIDIA_LUNA_API_KEY' if identity_key == CHATGPT_56_MODEL_KEY else None
+                if not key_pool and api_key_setting is None:
                     key_pool = nvidia_key_pool()
                 key_index = 0
                 kwargs['timeout'] = STREAM_TIMEOUT_DEFAULT

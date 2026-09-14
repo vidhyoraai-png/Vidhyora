@@ -84,7 +84,10 @@
       <span class="status-count status-count-{{ group.status }}">{{ group.reports|length }}</span>
     </div>
     <div class="table-scroll">
-      <table>
+      <table class="report-table">
+        <colgroup>
+          <col style="width:13%"><col style="width:22%"><col style="width:17%"><col style="width:20%"><col style="width:13%"><col style="width:15%">
+        </colgroup>
         <thead><tr><th>Reported by</th><th>Reported turn</th><th>User report</th><th>Detected issue &amp; fix</th><th>Model / received</th><th></th></tr></thead>
         <tbody>
           {% for r in group.reports %}
@@ -96,27 +99,27 @@
             </td>
             <td class="turn-cell">
               <span class="turn-label">User asked</span>
-              <p>{{ r.user_prompt|default:"Prompt unavailable"|truncatechars:220 }}</p>
-              {% if r.user_image %}<span class="evidence-chip"><i class="fas fa-image"></i> Input image preserved</span>{% endif %}
-              {% if r.user_document_name %}<span class="evidence-chip"><i class="fas fa-file-lines"></i> {{ r.user_document_name }}</span>{% endif %}
+              <p>{{ r.user_prompt|default:"Prompt unavailable"|truncatechars:90 }}</p>
+              {% if r.user_image %}<span class="evidence-chip"><i class="fas fa-image"></i> Image</span>{% endif %}
+              {% if r.user_document_name %}<span class="evidence-chip"><i class="fas fa-file-lines"></i> Doc</span>{% endif %}
               <span class="turn-label ai-label">AI replied</span>
-              <p>{{ r.reported_reply|default:"Image-only response"|truncatechars:220 }}</p>
-              {% if r.reported_image %}<img class="report-thumb" src="{% url 'dashboard_ai_report_image' r.pk 'assistant' %}" loading="lazy" alt="Reported AI image" onerror="this.hidden=true">{% endif %}
+              <p>{{ r.reported_reply|default:"Image-only response"|truncatechars:90 }}</p>
             </td>
-            <td class="complaint-cell">{{ r.explanation|default:"No explanation" }}</td>
+            <td class="complaint-cell">{{ r.explanation|default:"No explanation"|truncatechars:80 }}</td>
             <td class="analysis-cell">
               {% if r.primary_issue %}
               <span class="issue-label">{{ r.primary_issue.label }}</span>
-              <p>{{ r.primary_issue.fix }}</p>
+              <p>{{ r.primary_issue.fix|truncatechars:80 }}</p>
               {% else %}<span class="muted">Manual review needed</span>{% endif %}
             </td>
             <td><b>{{ r.model_key|default:"AI" }}</b><span class="sub-line">{{ r.created_at|date:"d M Y, h:i A" }}</span></td>
             <td>
               <div class="row-actions">
-                <a class="review-btn" href="{% url 'dashboard_ai_report_detail' r.pk %}"><i class="fas fa-magnifying-glass"></i> Full review</a>
+                <button type="button" class="eye-btn" title="Quick view conversation" data-tpl="report-tpl-{{ r.pk }}"><i class="fas fa-eye"></i></button>
+                <a class="review-btn" href="{% url 'dashboard_ai_report_detail' r.pk %}" title="Full review"><i class="fas fa-magnifying-glass"></i></a>
                 <form method="post" action="{% url 'dashboard_ai_report_status_update' r.pk %}">
                   {% csrf_token %}
-                  <button type="submit" class="block-btn">{% if r.status == 'open' %}Resolve{% else %}Reopen{% endif %}</button>
+                  <button type="submit" class="block-btn" title="{% if r.status == 'open' %}Resolve{% else %}Reopen{% endif %}"><i class="fas {% if r.status == 'open' %}fa-circle-check{% else %}fa-rotate-left{% endif %}"></i></button>
                 </form>
                 <form method="post" action="{% url 'dashboard_ai_report_delete' r.pk %}" onsubmit="return confirm('Delete this report?')">
                   {% csrf_token %}<button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
@@ -124,6 +127,30 @@
               </div>
             </td>
           </tr>
+          <template id="report-tpl-{{ r.pk }}">
+            <div class="qv-meta">
+              <div>
+                {% if r.user %}<b>{{ r.user.get_full_name|default:r.user.username }}</b><span class="sub-line">{{ r.user.email }}</span>
+                {% else %}<span class="badge ai-guest">Guest</span>{% if r.session_key %}<span class="sub-line mono">{{ r.session_key|slice:":10" }}…</span>{% endif %}{% endif %}
+                {% if r.ip_address %}<span class="sub-line mono">{{ r.ip_address }}</span>{% endif %}
+              </div>
+              <div class="sub-line">{{ r.model_key|default:"AI" }} &middot; {{ r.created_at|date:"d M Y, h:i A" }}</div>
+            </div>
+            <span class="turn-label">User asked</span>
+            <p>{{ r.user_prompt|default:"Prompt unavailable" }}</p>
+            {% if r.user_image %}<span class="evidence-chip"><i class="fas fa-image"></i> Input image preserved</span><br><img class="report-thumb qv-thumb" src="{% url 'dashboard_ai_report_image' r.pk 'user' %}" loading="lazy" alt="User image" onerror="this.hidden=true">{% endif %}
+            {% if r.user_document_name %}<span class="evidence-chip"><i class="fas fa-file-lines"></i> {{ r.user_document_name }}</span>{% endif %}
+            <span class="turn-label ai-label">AI replied</span>
+            <p>{{ r.reported_reply|default:"Image-only response" }}</p>
+            {% if r.reported_image %}<img class="report-thumb qv-thumb" src="{% url 'dashboard_ai_report_image' r.pk 'assistant' %}" loading="lazy" alt="Reported AI image" onerror="this.hidden=true">{% endif %}
+            <span class="turn-label complaint-label">User's complaint</span>
+            <p>{{ r.explanation|default:"No explanation" }}</p>
+            {% if r.primary_issue %}
+            <span class="turn-label complaint-label">Detected issue</span>
+            <p><b class="issue-label">{{ r.primary_issue.label }}</b><br>{{ r.primary_issue.fix }}</p>
+            {% endif %}
+            <a class="review-btn qv-full-link" href="{% url 'dashboard_ai_report_detail' r.pk %}"><i class="fas fa-magnifying-glass"></i> Open full review</a>
+          </template>
           {% empty %}
           <tr><td colspan="6" class="empty-row">No {{ group.label|lower }} reports{% if q %} matching your search{% endif %}</td></tr>
           {% endfor %}
@@ -134,12 +161,66 @@
   {% empty %}<p class="empty-row">No reports yet.</p>{% endfor %}
 </div>
 
+<div class="qv-overlay" id="qvOverlay">
+  <div class="qv-modal">
+    <button type="button" class="qv-close" id="qvClose" aria-label="Close"><i class="fas fa-xmark"></i></button>
+    <div class="qv-body" id="qvBody"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var overlay = document.getElementById('qvOverlay');
+  var body = document.getElementById('qvBody');
+  document.querySelectorAll('.eye-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var tpl = document.getElementById(btn.getAttribute('data-tpl'));
+      if(!tpl) return;
+      body.innerHTML = '';
+      body.appendChild(tpl.content.cloneNode(true));
+      overlay.classList.add('open');
+    });
+  });
+  function closeModal(){ overlay.classList.remove('open'); }
+  document.getElementById('qvClose').addEventListener('click', closeModal);
+  overlay.addEventListener('click', function(e){ if(e.target === overlay) closeModal(); });
+  document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeModal(); });
+})();
+</script>
+
+<style>
+.report-table{table-layout:fixed;width:100%}
+.qv-overlay{display:none;position:fixed;inset:0;background:rgba(17,20,24,.5);z-index:200;align-items:center;justify-content:center;padding:1.5rem}
+.qv-overlay.open{display:flex}
+.qv-modal{position:relative;background:#fff;border-radius:16px;max-width:560px;width:100%;max-height:86vh;overflow-y:auto;padding:1.6rem 1.4rem 1.4rem;box-shadow:0 24px 60px rgba(17,20,24,.3)}
+.qv-close{position:absolute;top:.8rem;right:.8rem;border:none;background:var(--bg-alt);color:#697386;width:30px;height:30px;border-radius:50%;cursor:pointer}
+.qv-close:hover{color:var(--red)}
+.qv-meta{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.6rem;padding-bottom:.6rem;border-bottom:1px solid var(--line)}
+.qv-body p{white-space:pre-wrap;line-height:1.5;font-size:.85rem;margin:.2rem 0 .5rem}
+.qv-thumb{display:block;max-width:100%;max-height:260px;width:auto;height:auto;object-fit:contain;border-radius:10px;border:1px solid var(--line);margin:.4rem 0}
+.complaint-label{color:#3b5bdb!important}
+.qv-full-link{display:inline-flex;margin-top:.6rem}
+</style>
+
 <style>
 .panel-note{padding:0 1.4rem 1.15rem;font-size:.82rem;color:var(--text);line-height:1.55}
 .analysis-section{margin-bottom:1.6rem}.section-heading{display:flex;align-items:end;justify-content:space-between;gap:1.5rem;margin-bottom:.9rem}.section-heading h2{font-size:1.15rem}.section-heading>p{font-size:.78rem;max-width:520px;text-align:right}.eyebrow{display:block;color:var(--red);font-size:.67rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800;margin-bottom:.2rem}
 .insight-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:.9rem}.insight-card{background:#fff;border:1px solid var(--line);border-top:3px solid #f59f00;border-radius:14px;padding:1.05rem;box-shadow:var(--shadow-sm)}.insight-card.severity-high{border-top-color:var(--red)}.insight-card.severity-low{border-top-color:#3b82f6}.insight-top{display:flex;align-items:center;justify-content:space-between}.insight-count{font-family:'Sora',sans-serif;font-size:1.55rem;font-weight:900;color:var(--head)}.severity-pill{text-transform:uppercase;font-size:.6rem;letter-spacing:.08em;font-weight:800;background:#fff4e5;color:#a15c00;border-radius:20px;padding:.18rem .5rem}.severity-high .severity-pill{background:var(--red-soft);color:var(--red)}.severity-low .severity-pill{background:#eaf2ff;color:#2563eb}.insight-card h3{font-size:.9rem;margin:.45rem 0}.evidence{font-size:.78rem;line-height:1.5}.fix{display:flex;gap:.55rem;background:var(--bg-alt);border-radius:10px;padding:.7rem;margin-top:.8rem;font-size:.75rem;line-height:1.45}.fix i{color:var(--red);margin-top:.12rem}.fix b{color:var(--head)}
 .report-panel{overflow:visible}.status-group+.status-group{border-top:3px solid var(--line)}.status-group-head{display:flex;align-items:center;gap:.5rem;padding:.8rem 1.2rem;font-weight:800;color:var(--head);background:var(--bg-alt)}.status-group-head i{color:var(--red)}.status-count{margin-left:auto;background:var(--red);color:#fff;border-radius:50px;padding:.1rem .65rem;font-size:.76rem}.status-count-resolved{background:#1da851}
-.reporter-cell b{display:block}.badge.ai-guest{background:#eef2ff;color:#3b5bdb}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.76rem}.turn-cell{min-width:270px;max-width:390px}.turn-cell p{white-space:pre-wrap;line-height:1.45;margin:.15rem 0 .45rem}.turn-label{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:.61rem;font-weight:900;color:var(--red)}.turn-label.ai-label{color:#3b5bdb;margin-top:.55rem}.evidence-chip{display:inline-flex;align-items:center;gap:.3rem;background:#eef2ff;color:#3b5bdb;border-radius:20px;padding:.18rem .5rem;font-size:.67rem;font-weight:700;margin:.15rem .15rem .25rem 0}.report-thumb{display:block;width:76px;height:76px;object-fit:cover;border-radius:10px;border:1px solid var(--line);margin-top:.35rem}.complaint-cell{min-width:190px;max-width:280px;white-space:pre-wrap;line-height:1.5}.analysis-cell{min-width:230px;max-width:320px}.issue-label{font-weight:800;color:var(--head);font-size:.8rem}.analysis-cell p{font-size:.75rem;line-height:1.45;margin-top:.3rem}.muted{color:#9aa3b0}.row-actions{display:flex;flex-direction:column;align-items:flex-start;gap:.45rem;min-width:100px}.row-actions form{display:inline}.review-btn{display:inline-flex;align-items:center;gap:.35rem;color:var(--red);font-size:.76rem;font-weight:800;white-space:nowrap}.block-btn{border:none;background:none;color:#697386;cursor:pointer;font-size:.76rem;font-weight:800}.block-btn:hover{color:var(--red)}
+.report-table td,.report-table th{padding:.6rem .7rem;font-size:.78rem;vertical-align:top;overflow:hidden}
+.reporter-cell b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge.ai-guest{background:#eef2ff;color:#3b5bdb}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.72rem}
+.sub-line{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.turn-cell p{line-height:1.4;margin:.1rem 0 .3rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.turn-label{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:.6rem;font-weight:900;color:var(--red)}.turn-label.ai-label{color:#3b5bdb;margin-top:.4rem}
+.evidence-chip{display:inline-flex;align-items:center;gap:.3rem;background:#eef2ff;color:#3b5bdb;border-radius:20px;padding:.14rem .45rem;font-size:.63rem;font-weight:700;margin:.1rem .15rem .15rem 0}
+.report-thumb{border-radius:10px;border:1px solid var(--line)}
+.complaint-cell{line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.issue-label{font-weight:800;color:var(--head);font-size:.78rem}
+.analysis-cell p{font-size:.73rem;line-height:1.4;margin-top:.25rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.muted{color:#9aa3b0}
+.row-actions{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}.row-actions form{display:inline-flex}
+.eye-btn,.review-btn,.block-btn,.del-btn{border:none;background:var(--bg-alt);color:#697386;cursor:pointer;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:.78rem}
+.eye-btn:hover{color:#3b5bdb;background:#eef2ff}.review-btn:hover{color:var(--red);background:var(--red-soft)}.block-btn:hover{color:#1da851;background:#e7f8ee}.del-btn:hover{color:var(--red);background:var(--red-soft)}
 @media(max-width:700px){.section-heading{display:block}.section-heading>p{text-align:left;margin-top:.4rem}.insight-grid{grid-template-columns:1fr}}
 </style>
 {% endblock %}

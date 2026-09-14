@@ -382,9 +382,9 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
    up slightly so the blur's soft edge falls outside the visible box. */
 .chat-wallpaper{position:absolute;inset:0;z-index:0;pointer-events:none;background-size:cover;background-position:center;filter:blur(7px);transform:scale(1.06);opacity:0;transition:opacity .3s ease}
 .chat-wallpaper.active{opacity:1}
-main{flex:1;overflow-y:auto;padding:1.5rem 1.25rem 1rem;background:radial-gradient(circle at 50% 0%,var(--bg-alt) 0%,var(--bg) 45%);position:relative;z-index:1;transition:background .25s ease}
+main{flex:1;overflow-y:auto;display:flex;flex-direction:column;padding:1.5rem 1.25rem 1rem;background:radial-gradient(circle at 50% 0%,var(--bg-alt) 0%,var(--bg) 45%);position:relative;z-index:1;transition:background .25s ease}
 main.wallpaper-on{background:transparent}
-.chat-col{max-width:780px;margin:0 auto;display:flex;flex-direction:column;gap:1.1rem;min-height:100%}
+.chat-col{max-width:780px;width:100%;margin:0 auto;display:flex;flex-direction:column;flex:1;min-height:0;gap:1.1rem}
 
 .empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.6rem;padding:2rem 1rem;color:var(--text)}
 .empty-state p{font-size:.9rem;max-width:29rem}
@@ -870,6 +870,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   .msg-bubble{max-width:88%}
   .msg-row.assistant .msg-bubble:has(.code-block){max-width:calc(100% - 36px);width:calc(100% - 36px)}
   main{padding:1.1rem .9rem .8rem}
+  /* On phones the empty-state's rounded, inset card read as a small boxed
+     square floating in the middle of the screen with dead space around it.
+     Full-bleed it so the glow fills the whole chat pane instead. */
+  .empty-state{border-radius:0;margin:-1.1rem -.9rem -.8rem;padding:1.1rem .9rem .8rem;width:calc(100% + 1.8rem)}
   .suggest-row{gap:.4rem}
   .suggest-chip{font-size:.75rem;padding:.45rem .75rem}
   .gate-card{padding:1.4rem 1.1rem}
@@ -1906,13 +1910,61 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     file_generation: ['Reading your request', 'Writing your file', 'Almost done'],
     github: ['Checking repository', 'Planning changes', 'Applying changes'],
   };
-  var STATUS_ROTATE_MS = 1200;
+  // Ambient request descriptions, not claims about measured server progress.
+  var STATUS_VARIANTS = {
+    default: ['Working on your response', 'Considering your question', 'Making sense of the details',
+      'Bringing your answer together', 'Thinking through your request', 'Finding a clear way to explain',
+      'Putting your context into words', 'Developing a useful response', 'Giving your question some thought',
+      'Preparing a clear answer', 'Connecting the relevant ideas', 'Working through the details'],
+    code: ['Working through your coding request', 'Considering the implementation', 'Shaping a code-focused response',
+      'Thinking through the logic', 'Organizing the solution', 'Preparing a technical explanation',
+      'Considering your requirements', 'Putting the implementation into words'],
+    writing: ['Finding the right wording', 'Shaping your draft', 'Working on the tone', 'Bringing your ideas into focus',
+      'Developing the structure', 'Turning your brief into words', 'Considering the flow', 'Preparing your writing response'],
+    learning: ['Thinking through the explanation', 'Breaking the topic into steps', 'Connecting the key concepts',
+      'Finding a clear starting point', 'Making room for useful examples', 'Organizing the main ideas',
+      'Working toward a clear explanation', 'Considering the details of your question'],
+    vision: ['Working on your image request', 'Considering the visual context', 'Preparing a response about your image',
+      'Thinking through your image question', 'Bringing the visual details together', 'Considering your attachment'],
+    image: ['Your image request is processing', 'Waiting for your image', 'Image generation is underway',
+      'Your visual request is in progress', 'Giving your image time to generate', 'The image service is working on your request'],
+    file_generation: ['Working on your file request', 'Preparing your requested content', 'Developing the document content',
+      'Organizing your file response', 'Your file request is in progress', 'Working through the requested details'],
+    github: ['Your repository request is processing', 'Working on your repository task', 'Preparing the repository response',
+      'Your coding task is in progress', 'Waiting for the repository task', 'Working through your requested changes']
+  };
+  var statusRecent = {};
+  function typingPhrases(statusKey, prompt){
+    var category = 'default';
+    if (/^(flux-|sdxl-|dreamshaper-)/.test(statusKey)) category = 'image';
+    else if (STATUS_VARIANTS[statusKey]) category = statusKey;
+    else if (/^(laguna-|cohere-)/.test(statusKey)) category = 'code';
+    if (category === 'default') {
+      if (/\b(code|debug|function|script|html|css|javascript|python|sql|api|bug)\b/i.test(prompt || '')) category = 'code';
+      else if (/\b(write|rewrite|draft|email|essay|story|caption|poem|translate)\b/i.test(prompt || '')) category = 'writing';
+      else if (/\b(explain|learn|teach|solve|calculate|why|how|math)\b/i.test(prompt || '')) category = 'learning';
+    }
+    var phrases = STATUS_VARIANTS[category].slice();
+    if (['code', 'writing', 'learning'].indexOf(category) !== -1) phrases = phrases.concat(STATUS_VARIANTS.default);
+    // Shuffle each request, then put recently displayed lines at the end.
+    for (var n = phrases.length - 1; n > 0; n--) {
+      var pick = Math.floor(Math.random() * (n + 1));
+      var swap = phrases[n]; phrases[n] = phrases[pick]; phrases[pick] = swap;
+    }
+    var recent = statusRecent[category] || [];
+    phrases = phrases.filter(function(p){ return recent.indexOf(p) === -1; }).concat(
+      phrases.filter(function(p){ return recent.indexOf(p) !== -1; }));
+    return {category: category, phrases: phrases};
+  }
+  var STATUS_ROTATE_MS = 3200;
   // Cloudflare Workers AI image models — same "Creating your image" skeleton
   // treatment as FLUX Klein, just a different backend behind the scenes.
   var CLOUDFLARE_IMAGE_MODEL_KEYS = ['sdxl-lightning', 'flux-1-schnell', 'sdxl-base', 'dreamshaper-8-lcm'];
 
-  function startTypingStatus(bubble, statusKey){
-    var phrases = STATUS_PHRASES[statusKey] || STATUS_PHRASES.default;
+  function startTypingStatus(bubble, statusKey, prompt){
+    stopBubbleTyping(bubble);
+    var selection = typingPhrases(statusKey, prompt);
+    var phrases = selection.phrases;
     var wrap = document.createElement('span');
     wrap.className = 'typing-indicator';
     var orb = document.createElement('span');
@@ -1921,7 +1973,12 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var span = document.createElement('span');
     span.className = 'typing-status';
     var i = 0;
-    span.textContent = phrases[0] + '…';
+    function showPhrase(){
+      span.textContent = phrases[i] + '…';
+      var recent = statusRecent[selection.category] || [];
+      statusRecent[selection.category] = recent.concat(phrases[i]).slice(-4);
+    }
+    showPhrase();
     wrap.appendChild(orb);
     wrap.appendChild(span);
     bubble.innerHTML = '';
@@ -1965,8 +2022,10 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       }, 500);
     }
     var timer = setInterval(function(){
-      i = (i + 1) % phrases.length;
-      span.textContent = phrases[i] + '…';
+      // Hold the final line on unusually long waits instead of looping.
+      if (i + 1 >= phrases.length) { clearInterval(timer); return; }
+      i++;
+      showPhrase();
     }, STATUS_ROTATE_MS);
     bubble._stopTyping = function(){
       clearInterval(timer);
@@ -2237,7 +2296,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     var bubble = document.createElement('div');
     bubble.className = 'msg-bubble' + (opts.error ? ' error' : '') + (role === 'assistant' ? ' md' : '');
     if (opts.typing) {
-      startTypingStatus(bubble, opts.statusKey);
+      startTypingStatus(bubble, opts.statusKey, opts.statusPrompt);
     } else {
       var textHtml = role === 'assistant'
         ? formatMd(text) + (opts.streaming ? '<span class="msg-cursor"></span>' : '')
@@ -4468,6 +4527,8 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 
     var assistantText = '';
     var streamRenderTimer = null;
+    var streamHasRendered = false;
+    var streamLastHtml = null;
     // Narrow mobile layouts pay much more for Markdown parsing and forced
     // scroll layouts. Ten paints per second still feels live while avoiding
     // a full re-render for every token received from the network.
@@ -4502,7 +4563,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       ? 'file_generation'
       : (imageToSend ? 'vision' : (STATUS_PHRASES[currentModel] ? currentModel : 'default'));
     var bubble = renderRow('assistant', '', {
-      typing: true, statusKey: statusKey, modelKey: currentModel,
+      typing: true, statusKey: statusKey, statusPrompt: text, modelKey: currentModel,
     });
     setRowGenerating(bubble, true);
     var wasNewConversation = !state.currentConversationId;
@@ -4623,7 +4684,18 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
       }
       var reader = resp.body.getReader();
       var decoder = new TextDecoder();
+      function renderStreamText(){
+        var html = formatMd(assistantText) + '<span class="msg-cursor"></span>';
+        if (html !== streamLastHtml) {
+          bubble.innerHTML = html;
+          streamLastHtml = html;
+        }
+        streamHasRendered = true;
+      }
       function scheduleStreamRender(){
+        // Paint the first validated text immediately. Later chunks remain
+        // coalesced so rapid token delivery does not flood the browser.
+        if (!streamHasRendered) { renderStreamText(); return; }
         if (streamRenderTimer !== null) return;
         streamRenderTimer = setTimeout(function(){
           streamRenderTimer = null;
@@ -4631,12 +4703,15 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           // coalesced chunk while a reply streams in, so scrolling here
           // would yank the view down continuously on a long answer. The
           // user's scroll position during generation is left alone.
-          bubble.innerHTML = formatMd(assistantText) + '<span class="msg-cursor"></span>';
+          renderStreamText();
         }, streamRenderInterval);
       }
       function pump(){
         return reader.read().then(function(result){
-          if (result.done) return;
+          if (result.done) {
+            assistantText += decoder.decode();
+            return;
+          }
           var chunk = decoder.decode(result.value, { stream: true });
           if (!chunk) return pump();
           stopBubbleTyping(bubble);
