@@ -910,7 +910,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   .model-picker-caret{font-size:.55rem}
   /* anchored left, not right — the button sits at the left edge of the
      composer, so the dropdown must grow rightward to stay on-screen */
-  .model-dropdown{position:fixed;top:50%;left:12px;right:12px;bottom:auto;transform:translateY(-50%);width:auto;min-width:0;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overscroll-behavior:contain;z-index:47}
+  .model-dropdown{position:fixed;top:50%;left:24px;right:24px;bottom:auto;transform:translateY(-50%);width:auto;max-width:340px;margin:0 auto;min-width:0;max-height:min(65vh,420px);max-height:min(65dvh,420px);overscroll-behavior:contain;z-index:47}
   .input-wrap{gap:.3rem}
   .mic-btn,.github-btn,.search-btn{width:30px;height:30px;font-size:.85rem}
   /* a lower cap than desktop's 140px — on a short phone screen, letting the
