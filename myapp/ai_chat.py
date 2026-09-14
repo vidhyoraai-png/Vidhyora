@@ -367,6 +367,8 @@ SDXL_LIGHTNING_MODEL_KEY = 'sdxl-lightning'
 FLUX_1_SCHNELL_MODEL_KEY = 'flux-1-schnell'
 SDXL_BASE_MODEL_KEY = 'sdxl-base'
 DREAMSHAPER_8_LCM_MODEL_KEY = 'dreamshaper-8-lcm'
+FLUX_KONTEXT_DEV_MODEL_KEY = 'flux-kontext-dev'
+QWEN_IMAGE_EDIT_MODEL_KEY = 'qwen-image-edit'
 # The real Google Gemini API (see MODELS entry below) — supersedes the
 # earlier same-named picker option that was actually Gemma-on-NVIDIA under
 # an aspirational label; that one is gone now that this is the genuine
@@ -592,6 +594,24 @@ MODELS = {
         'label': 'DreamShaper 8 LCM',
         'hidden_from_picker': True,
         'description': 'Fast artistic styling — best for stylized, anime, and creative image alterations.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
+    FLUX_KONTEXT_DEV_MODEL_KEY: {
+        'id': 'black-forest-labs/flux.1-kontext-dev',
+        'label': 'FLUX.1 Kontext Dev',
+        'hidden_from_picker': True,
+        'description': 'Edits an uploaded image in place based on your prompt, preserving its overall composition.',
+        'reasoning': False,
+        'vision': False,
+        'image_generation': True,
+    },
+    QWEN_IMAGE_EDIT_MODEL_KEY: {
+        'id': 'qwen-image-edit',
+        'label': 'Qwen Image Edit',
+        'hidden_from_picker': True,
+        'description': 'Edits an uploaded image based on your prompt using a self-hosted Qwen endpoint.',
         'reasoning': False,
         'vision': False,
         'image_generation': True,
