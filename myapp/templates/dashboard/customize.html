@@ -1,0 +1,59 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+{% block title %}Customize{% endblock %}
+{% block page_title %}Customize{% endblock %}
+
+{% block content %}
+<p class="backup-sub" style="color:var(--text);font-size:.88rem;margin:0 0 1.4rem">
+  Site-wide branding controls for the browser icon and the preview people see when your homepage link is shared on WhatsApp or social media.
+</p>
+
+{% if saved %}<div class="save-msg"><i class="fas fa-circle-check"></i> Saved.</div>{% endif %}
+
+<form class="form-card" style="max-width:640px" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="form-group">
+    <label for="{{ form.favicon.id_for_label }}">Favicon</label>
+    <div class="current-thumb">
+      <img src="{% if settings_obj and settings_obj.favicon %}{{ settings_obj.favicon.url }}{% else %}{% static 'favicon.ico' %}{% endif %}" alt="Current favicon" style="width:40px;height:40px;object-fit:contain;background:var(--bg-alt)">
+      <span class="help">{% if settings_obj and settings_obj.favicon %}Current favicon — upload a new one to replace it.{% else %}Using the default EduTrellis favicon — upload one below to replace it.{% endif %}</span>
+    </div>
+    {{ form.favicon }}
+    <div class="help">Square, ideally 512×512px or smaller (PNG or ICO).</div>
+    {{ form.favicon.errors }}
+  </div>
+
+  <div style="border-top:1px solid var(--line);margin:1.4rem 0"></div>
+  <h3 style="font-size:1rem;margin-bottom:1rem">WhatsApp &amp; social link preview</h3>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_title.id_for_label }}">Preview heading</label>
+    {{ form.social_preview_title }}
+    <div class="help">The bold heading displayed with a shared homepage link.</div>
+    {{ form.social_preview_title.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_description.id_for_label }}">Preview description</label>
+    {{ form.social_preview_description }}
+    <div class="help">Keep this concise so WhatsApp does not truncate the important part.</div>
+    {{ form.social_preview_description.errors }}
+  </div>
+
+  <div class="form-group">
+    <label for="{{ form.social_preview_image.id_for_label }}">Preview image</label>
+    <div class="current-thumb">
+      <img src="{% if settings_obj and settings_obj.social_preview_image %}{{ settings_obj.social_preview_image.url }}{% else %}{% static 'img/og-cover.jpg' %}{% endif %}" alt="Current social preview image" style="width:180px;height:95px;object-fit:cover">
+      <span class="help">{% if settings_obj and settings_obj.social_preview_image %}Current preview — upload a new image to replace it.{% else %}Using the default preview image.{% endif %}</span>
+    </div>
+    {{ form.social_preview_image }}
+    <div class="help">1200×630px is recommended for a large, clear WhatsApp preview.</div>
+    {{ form.social_preview_image.errors }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save settings</button>
+  </div>
+</form>
+{% endblock %}

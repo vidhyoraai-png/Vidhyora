@@ -1,0 +1,35 @@
+<tr data-row-id="{{ u.pk }}">
+  <td>{{ u.first_name|default:u.username }} {{ u.last_name }}</td>
+  <td>{{ u.email }}</td>
+  <td>₹{{ u.store_profile.manual_amount_paid|default:0|floatformat:2 }}{% if u.store_profile.manual_payment_received_at %}<span class="sub-line">{{ u.store_profile.manual_payment_received_at|date:"d M Y, h:i A" }}</span>{% endif %}</td>
+  <td>{{ u.store_profile.phone|default:"—" }}</td>
+  <td>
+    {% if u.store_profile.location_consent == 'granted' %}
+      <span class="location-status enabled"><i class="fas fa-location-dot"></i> Enabled</span>
+      <span class="location-coords" data-lat="{{ u.store_profile.location_latitude }}" data-lng="{{ u.store_profile.location_longitude }}">{{ u.store_profile.location_latitude|floatformat:4 }}, {{ u.store_profile.location_longitude|floatformat:4 }}</span>
+    {% elif u.store_profile.location_consent == 'denied' %}
+      <span class="location-status declined"><i class="fas fa-location-crosshairs"></i> Declined</span>
+    {% else %}
+      <span class="location-status unknown"><i class="fas fa-minus"></i> Not asked</span>
+    {% endif %}
+  </td>
+  <td>₹{{ u.store_profile.wallet_balance|default:0|floatformat:0 }}</td>
+  <td>
+    {% if u.is_superuser %}<span class="badge staff">Superuser</span>
+    {% elif u.is_staff %}<span class="badge staff">Staff</span>
+    {% else %}<span class="badge user">Customer</span>{% endif %}
+  </td>
+  <td>{{ u.date_joined|date:"d M Y, h:i A" }}</td>
+  <td>
+    <div class="row-actions">
+      <a class="edit-btn" href="{% url 'dashboard_signup_edit' u.pk %}" title="Edit"><i class="fas fa-pen"></i></a>
+      {% if not u.is_staff and not u.is_superuser %}
+      <button type="button" class="reset-password-btn" data-url="{% url 'dashboard_signup_reset_password' u.pk %}" data-user="{{ u.email|default:u.username }}" title="Reset password for {{ u.email|default:u.username }}"><i class="fas fa-key"></i> Reset password</button>
+      <form method="post" action="{% url 'dashboard_signup_delete' u.pk %}" class="signup-delete-form">
+        {% csrf_token %}
+        <button type="submit" class="del-btn" title="Delete"><i class="fas fa-trash"></i></button>
+      </form>
+      {% endif %}
+    </div>
+  </td>
+</tr>

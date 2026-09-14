@@ -1,0 +1,422 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Signups{% endblock %}
+{% block page_title %}Signups{% endblock %}
+
+{% block extra_head %}
+<style>
+.flash{border-radius:12px;padding:.85rem 1rem;font-size:.88rem;font-weight:600;margin-bottom:1.2rem;display:flex;gap:.5rem;align-items:center}
+.flash.success{background:#e8f8ee;color:#177245}
+.flash.error{background:#fdeaea;color:var(--red)}
+.signup-chart{height:220px;padding:1.2rem 1.4rem 1rem;display:flex;align-items:stretch;gap:.8rem}
+.signup-chart-col{flex:1;min-width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:.4rem}
+.signup-chart-count{font-size:.72rem;font-weight:800;color:var(--head);min-height:1rem}
+.signup-chart-track{width:min(46px,80%);height:140px;background:var(--bg-alt);border-radius:9px 9px 3px 3px;display:flex;align-items:flex-end;overflow:hidden}
+.signup-chart-bar{width:100%;min-height:0;background:linear-gradient(180deg,var(--red),var(--red-dark));border-radius:9px 9px 3px 3px;transition:height .2s}
+.signup-chart-label{font-size:.68rem;color:var(--text);white-space:nowrap}
+.signup-insights{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-bottom:1.6rem}
+.signup-insight{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden}
+.signup-insight-head{padding:1rem 1.2rem;border-bottom:1px solid var(--line)}
+.signup-insight-head h3{font-size:.92rem;font-weight:800;color:var(--head)}
+.payment-insight-body{padding:1.1rem;display:flex;align-items:center;justify-content:center;gap:1.3rem;min-height:190px}
+.payment-donut{width:128px;height:128px;border-radius:50%;display:grid;place-items:center;position:relative;flex:none}
+.payment-donut:after{content:"";position:absolute;width:80px;height:80px;border-radius:50%;background:#fff}
+.payment-donut-center{position:relative;z-index:1;text-align:center;font-family:'Sora',sans-serif;font-size:1.15rem;font-weight:800;color:var(--head)}
+.payment-donut-center small{display:block;font-family:'DM Sans',sans-serif;font-size:.58rem;font-weight:600;color:var(--text)}
+.payment-breakdown{display:flex;flex-direction:column;gap:.7rem;min-width:130px}
+.payment-breakdown div{font-size:.7rem;color:var(--text)}
+.payment-breakdown strong{display:block;font-size:1rem;color:var(--head)}
+.insight-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:.35rem}
+.role-chart{padding:1.15rem 1.2rem;display:flex;flex-direction:column;gap:1rem;min-height:190px;justify-content:center}
+.role-row-head{display:flex;align-items:center;justify-content:space-between;font-size:.74rem;color:var(--head);margin-bottom:.3rem}
+.role-track{height:12px;background:var(--bg-alt);border-radius:50px;overflow:hidden}
+.role-fill{height:100%;background:linear-gradient(90deg,#3b5bdb,#7389e9);border-radius:50px}
+.role-row:first-child .role-fill{background:linear-gradient(90deg,var(--red),#ff5d72)}
+.location-status{display:inline-flex;align-items:center;gap:.3rem;border-radius:50px;padding:.28rem .55rem;font-size:.65rem;font-weight:800;white-space:nowrap}
+.location-status.enabled{background:#e8f8ee;color:#177245}
+.location-status.declined{background:#fff3e2;color:#a45b00}
+.location-status.unknown{background:#eef1f5;color:#697386}
+.location-coords{display:block;margin-top:.3rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.63rem;color:var(--text);white-space:nowrap}
+.reset-password-btn{display:inline-flex;align-items:center;gap:.3rem;border:0;background:none;color:#7d8795;cursor:pointer;font-family:inherit;font-size:.74rem;font-weight:700;white-space:nowrap;transition:color .2s;padding:0}
+.reset-password-btn:hover{color:var(--red)}
+.password-result{display:none;position:fixed;inset:0;z-index:200;background:rgba(7,23,19,.58);padding:1rem;align-items:center;justify-content:center}
+.password-result.open{display:flex}
+.password-result-card{width:min(440px,100%);background:#fff;border-radius:16px;padding:1.35rem;box-shadow:var(--shadow-md)}
+.password-result-card h3{font-size:1rem;margin-bottom:.45rem}
+.password-result-card p{font-size:.8rem;line-height:1.45;margin-bottom:1rem}
+.generated-password{display:flex;gap:.55rem;align-items:center}
+.generated-password code{flex:1;min-width:0;padding:.75rem .85rem;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-alt);color:var(--head);font-size:.9rem;overflow-wrap:anywhere;user-select:all}
+.password-result-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:1rem}
+@media(max-width:800px){.signup-insights{grid-template-columns:1fr}}
+@media(max-width:560px){.signup-chart{gap:.3rem;padding-left:.7rem;padding-right:.7rem}.signup-chart-track{width:75%}.signup-chart-label{font-size:.6rem;transform:rotate(-35deg);margin-top:.2rem}.payment-insight-body{gap:.8rem}.payment-donut{width:112px;height:112px}.payment-donut:after{width:70px;height:70px}}
+</style>
+{% endblock %}
+
+{% block content %}
+{% for message in messages %}
+  <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
+{% endfor %}
+<div id="dashboardFlash"></div>
+
+<div class="stat-grid">
+  <a class="stat-card{% if not active_filter %} active{% endif %}" href="?{% if q %}q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_signups }}</div><div class="stat-lbl">Total Signups</div></div></a>
+  <a class="stat-card{% if active_filter == 'today' %} active{% endif %}" href="?filter=today{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-user-plus"></i></div><div><div class="stat-num">{{ signups_today }}</div><div class="stat-lbl">Joined Today</div></div></a>
+  <a class="stat-card{% if active_filter == 'week' %} active{% endif %}" href="?filter=week{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-calendar-week"></i></div><div><div class="stat-num">{{ signups_last_7_days }}</div><div class="stat-lbl">Last 7 Days</div></div></a>
+  <a class="stat-card{% if active_filter == 'month' %} active{% endif %}" href="?filter=month{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-calendar-days"></i></div><div><div class="stat-num">{{ signups_this_month }}</div><div class="stat-lbl">This Month</div></div></a>
+  <a class="stat-card{% if active_filter == 'paid' %} active{% endif %}" href="?filter=paid{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-indian-rupee-sign"></i></div><div><div class="stat-num">₹{{ total_amount_paid|floatformat:2 }}</div><div class="stat-lbl">Total Amount Paid</div></div></a>
+  <a class="stat-card{% if active_filter == 'location' %} active{% endif %}" href="?filter=location{% if q %}&amp;q={{ q|urlencode }}{% endif %}"><div class="stat-ico"><i class="fas fa-location-dot"></i></div><div><div class="stat-num">{{ location_enabled }}</div><div class="stat-lbl">Location Enabled</div></div></a>
+</div>
+{% if active_filter %}
+<p class="filter-note">
+  Showing <b>{{ filtered_count }}</b> account{{ filtered_count|pluralize }} {{ filter_label }}.
+  <a href="?{% if q %}q={{ q|urlencode }}{% endif %}">Clear filter</a>
+</p>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head"><h3>Signups — last 7 days</h3></div>
+  <div class="signup-chart" role="img" aria-label="Daily signup counts for the last seven days">
+    {% for point in signup_chart %}
+    <div class="signup-chart-col" title="{{ point.label }}: {{ point.count }} signup{{ point.count|pluralize }}">
+      <span class="signup-chart-count">{{ point.count }}</span>
+      <div class="signup-chart-track"><div class="signup-chart-bar" style="height:{{ point.height }}%"></div></div>
+      <span class="signup-chart-label">{{ point.label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="signup-insights">
+  <section class="signup-insight">
+    <div class="signup-insight-head"><h3>Recorded payment coverage</h3></div>
+    <div class="payment-insight-body">
+      <div class="payment-donut" style="background:{% if total_signups %}conic-gradient(#1da851 0 {{ paid_users_pct }}%,#e7eaf0 {{ paid_users_pct }}% 100%){% else %}#e7eaf0{% endif %}">
+        <div class="payment-donut-center">{{ paid_users_pct }}%<small>with payment</small></div>
+      </div>
+      <div class="payment-breakdown">
+        <div><span class="insight-dot" style="background:#1da851"></span>Amount recorded<strong>{{ paid_users }}</strong></div>
+        <div><span class="insight-dot" style="background:#d7dce5"></span>No amount recorded<strong>{{ no_recorded_payment }}</strong></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="signup-insight">
+    <div class="signup-insight-head"><h3>Account roles</h3></div>
+    <div class="role-chart">
+      {% for role in account_roles %}
+      <div class="role-row">
+        <div class="role-row-head"><span>{{ role.label }}</span><strong>{{ role.count }}</strong></div>
+        <div class="role-track"><div class="role-fill" style="width:{{ role.width }}%"></div></div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<details class="panel add-user-panel" id="addUserPanel"{% if add_user_open %} open{% endif %}>
+  <summary><i class="fas fa-user-plus"></i> Add user manually <i class="fas fa-chevron-down chevron"></i></summary>
+  <form method="post" action="{% url 'dashboard_user_add' %}" id="addUserForm">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="dashboard_signups">
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label for="{{ add_user_form.name.id_for_label }}">Full name</label>
+        {{ add_user_form.name }}
+        <div class="help">{{ add_user_form.name.help_text }}</div>
+        {{ add_user_form.name.errors }}
+      </div>
+      <div class="form-group">
+        <label for="{{ add_user_form.email.id_for_label }}">Email</label>
+        {{ add_user_form.email }}
+        {{ add_user_form.email.errors }}
+      </div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label for="{{ add_user_form.phone.id_for_label }}">Phone</label>
+        {{ add_user_form.phone }}
+        {{ add_user_form.phone.errors }}
+      </div>
+      <div class="form-group">
+        <label for="{{ add_user_form.password.id_for_label }}">Password</label>
+        {{ add_user_form.password }}
+        <div class="help">{{ add_user_form.password.help_text }}</div>
+        {{ add_user_form.password.errors }}
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Amount paid (₹) <span class="help">— optional</span></label>
+      <div class="radio-pill-list">{{ add_user_form.amount_paid }}</div>
+      <div class="help">{{ add_user_form.amount_paid.help_text }}</div>
+      {{ add_user_form.amount_paid.errors }}
+    </div>
+    <div class="form-group">
+      <label for="{{ add_user_form.payment_received_at.id_for_label }}">{{ add_user_form.payment_received_at.label }} <span class="help">— optional</span></label>
+      {{ add_user_form.payment_received_at }}
+      <div class="help">{{ add_user_form.payment_received_at.help_text }}</div>
+      {{ add_user_form.payment_received_at.errors }}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Create account</button>
+    </div>
+  </form>
+</details>
+
+<div class="panel" id="customerPanel">
+  {% include 'dashboard/_signup_table_panel.html' %}
+</div>
+
+<div class="password-result" id="passwordResult" role="dialog" aria-modal="true" aria-labelledby="passwordResultTitle">
+  <div class="password-result-card">
+    <h3 id="passwordResultTitle">New password generated</h3>
+    <p>Copy this password now and send it securely. It will not be shown again.</p>
+    <div class="generated-password">
+      <code id="generatedPassword"></code>
+      <button type="button" class="btn btn-primary" id="copyGeneratedPassword"><i class="fas fa-copy"></i> Copy</button>
+    </div>
+    <div class="password-result-actions">
+      <button type="button" class="btn btn-ghost" id="closePasswordResult">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var modal = document.getElementById('passwordResult');
+  var passwordText = document.getElementById('generatedPassword');
+  var copyButton = document.getElementById('copyGeneratedPassword');
+  var customerPanel = document.getElementById('customerPanel');
+  var addUserForm = document.getElementById('addUserForm');
+  var addUserPanel = document.getElementById('addUserPanel');
+  var searchTimer = null;
+
+  function showFlash(type, text){
+    var container = document.getElementById('dashboardFlash');
+    if (!container) return;
+    container.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'flash ' + type;
+    var icon = document.createElement('i');
+    icon.className = 'fas ' + (type === 'error' ? 'fa-circle-exclamation' : 'fa-circle-check');
+    div.appendChild(icon);
+    div.appendChild(document.createTextNode(' ' + text));
+    container.appendChild(div);
+  }
+
+  function jsonRequest(url, options){
+    return fetch(url, options).then(function(response){
+      return response.json().then(function(data){ return {ok: response.ok, status: response.status, data: data}; });
+    });
+  }
+
+  function closePasswordResult(){
+    modal.classList.remove('open');
+    passwordText.textContent = '';
+    copyButton.innerHTML = '<i class="fas fa-copy"></i> Copy';
+  }
+
+  // Delegated (not bound per-button) because rows are added/replaced by the
+  // add-user and search flows below without a full page reload — a listener
+  // attached to a specific button at load time would go dead the moment that
+  // button's row is replaced.
+  document.addEventListener('click', function(event){
+    var button = event.target.closest('.reset-password-btn');
+    if (!button) return;
+    var account = button.getAttribute('data-user');
+    if (!confirm('Generate a new password for ' + account + '? Their current password will stop working immediately.')) return;
+
+    button.disabled = true;
+    jsonRequest(button.getAttribute('data-url'), {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
+      credentials: 'same-origin'
+    })
+      .then(function(result){
+        if (!result.ok) throw new Error(result.data.detail || 'Could not reset the password.');
+        passwordText.textContent = result.data.password;
+        modal.classList.add('open');
+        document.getElementById('closePasswordResult').focus();
+      })
+      .catch(function(error){ alert(error.message); })
+      .finally(function(){ button.disabled = false; });
+  });
+
+  copyButton.addEventListener('click', function(){
+    navigator.clipboard.writeText(passwordText.textContent).then(function(){
+      copyButton.innerHTML = '<i class="fas fa-check"></i> Copied';
+    }).catch(function(){
+      var range = document.createRange();
+      range.selectNodeContents(passwordText);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    });
+  });
+  document.getElementById('closePasswordResult').addEventListener('click', closePasswordResult);
+  modal.addEventListener('click', function(event){ if (event.target === modal) closePasswordResult(); });
+  document.addEventListener('keydown', function(event){ if (event.key === 'Escape' && modal.classList.contains('open')) closePasswordResult(); });
+
+  // ---- delete a customer without navigating away ----
+  document.addEventListener('submit', function(event){
+    var form = event.target.closest('form.signup-delete-form');
+    if (!form) return;
+    event.preventDefault();
+    if (!confirm('Permanently delete this customer? This also deletes all their orders, reviews and cart. This cannot be undone.')) return;
+
+    var row = form.closest('tr');
+    var button = form.querySelector('button[type="submit"]');
+    if (button) button.disabled = true;
+    jsonRequest(form.getAttribute('action'), {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}', 'X-Requested-With': 'XMLHttpRequest'},
+      credentials: 'same-origin'
+    })
+      .then(function(result){
+        if (!result.ok || result.data.status !== 'ok') throw new Error(result.data.detail || 'Could not delete this customer.');
+        if (row) row.remove();
+        var tbody = document.getElementById('signupTableBody');
+        if (tbody && !tbody.querySelector('tr[data-row-id]')) {
+          tbody.innerHTML = '<tr><td colspan="9" class="empty-row">No signups match your search</td></tr>';
+        }
+        updateCustomerCount();
+        showFlash('success', result.data.message || 'Customer deleted.');
+      })
+      .catch(function(error){
+        showFlash('error', error.message);
+        if (button) button.disabled = false;
+      });
+  });
+
+  function updateCustomerCount(){
+    var countEl = document.getElementById('customerCount');
+    if (!countEl) return;
+    var n = document.querySelectorAll('#signupTableBody tr[data-row-id]').length;
+    countEl.textContent = n + ' customer' + (n === 1 ? '' : 's');
+  }
+
+  // ---- live search: replaces only the table panel, never navigates ----
+  function runSearch(){
+    if (!customerPanel) return;
+    var input = document.getElementById('signupSearchInput');
+    var form = document.getElementById('signupSearchForm');
+    if (!input) return;
+    var params = new URLSearchParams();
+    var q = input.value.trim();
+    if (q) params.set('q', q);
+    var activeFilter = form ? form.getAttribute('data-active-filter') : '';
+    if (activeFilter) params.set('filter', activeFilter);
+    var url = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+    fetch(url, {headers: {'X-Requested-With': 'XMLHttpRequest'}, credentials: 'same-origin'})
+      .then(function(response){ return response.text(); })
+      .then(function(html){
+        customerPanel.innerHTML = html;
+        history.replaceState(null, '', url);
+        runLocationResolver();
+      })
+      .catch(function(){});
+  }
+
+  document.addEventListener('submit', function(event){
+    if (event.target && event.target.id === 'signupSearchForm') {
+      event.preventDefault();
+      clearTimeout(searchTimer);
+      runSearch();
+    }
+  });
+  document.addEventListener('input', function(event){
+    if (event.target && event.target.id === 'signupSearchInput') {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(runSearch, 300);
+    }
+  });
+
+  // ---- add user manually, without navigating away ----
+  function clearFormErrors(form){
+    form.querySelectorAll('.errorlist').forEach(function(el){ el.remove(); });
+  }
+  function showFormErrors(form, errors){
+    clearFormErrors(form);
+    Object.keys(errors || {}).forEach(function(field){
+      var input = form.querySelector('[name="' + field + '"]');
+      var group = input ? input.closest('.form-group') : null;
+      var list = document.createElement('ul');
+      list.className = 'errorlist';
+      (errors[field] || []).forEach(function(msg){
+        var li = document.createElement('li');
+        li.textContent = msg;
+        list.appendChild(li);
+      });
+      if (group) { group.appendChild(list); } else { form.insertBefore(list, form.firstChild); }
+    });
+  }
+
+  if (addUserForm) {
+    addUserForm.addEventListener('submit', function(event){
+      event.preventDefault();
+      clearFormErrors(addUserForm);
+      var submitBtn = addUserForm.querySelector('button[type="submit"]');
+      if (submitBtn) submitBtn.disabled = true;
+      jsonRequest(addUserForm.getAttribute('action'), {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        credentials: 'same-origin',
+        body: new FormData(addUserForm)
+      })
+        .then(function(result){
+          if (result.data.status === 'validation_error') {
+            showFormErrors(addUserForm, result.data.errors);
+            return;
+          }
+          if (!result.ok || result.data.status !== 'ok') throw new Error(result.data.detail || 'Could not create the account.');
+          var tbody = document.getElementById('signupTableBody');
+          if (tbody) {
+            var emptyRow = tbody.querySelector('.empty-row');
+            if (emptyRow) emptyRow.closest('tr').remove();
+            if (result.data.row_html) tbody.insertAdjacentHTML('afterbegin', result.data.row_html);
+          }
+          updateCustomerCount();
+          addUserForm.reset();
+          if (addUserPanel) addUserPanel.removeAttribute('open');
+          showFlash('success', result.data.message || 'Account created.');
+        })
+        .catch(function(error){ showFlash('error', error.message); })
+        .finally(function(){ if (submitBtn) submitBtn.disabled = false; });
+    });
+  }
+
+  // Sequential, rate-limited (~1 req/sec) against OpenStreetMap's free public
+  // Nominatim reverse-geocoder — same service/throttle as dashboard/delivery.html's
+  // forward geocoding, no API key involved. Coordinates stay as the visible
+  // fallback until (if) a name resolves, so nothing is ever blank. Exposed as
+  // runLocationResolver so it can re-run against freshly inserted rows after
+  // a live search, not just once at page load.
+  function resolveRow(cells, i){
+    if (i >= cells.length) return;
+    var cell = cells[i];
+    var lat = cell.getAttribute('data-lat');
+    var lng = cell.getAttribute('data-lng');
+    if (!lat || !lng) { setTimeout(function(){ resolveRow(cells, i + 1); }, 0); return; }
+
+    fetch('https://nominatim.openstreetmap.org/reverse?format=json&zoom=10&addressdetails=1&lat=' + encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lng))
+      .then(function(r){ return r.json(); })
+      .then(function(result){
+        var addr = result && result.address;
+        if (!addr) return;
+        var locality = addr.city || addr.town || addr.village || addr.county || addr.state_district;
+        var parts = [locality, addr.state, addr.country].filter(Boolean);
+        if (parts.length) {
+          cell.textContent = parts.join(', ');
+          cell.title = lat + ', ' + lng;
+        }
+      })
+      .catch(function(){})
+      .finally(function(){ setTimeout(function(){ resolveRow(cells, i + 1); }, 1100); });
+  }
+
+  function runLocationResolver(){
+    var cells = Array.prototype.slice.call(document.querySelectorAll('.location-coords[data-lat]'));
+    if (cells.length) resolveRow(cells, 0);
+  }
+
+  runLocationResolver();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "dashboard/base.html" %}
+{% block title %}API Data{% endblock %}
+{% block page_title %}API Data{% endblock %}
+
+{% block extra_head %}
+<style>
+.badge.api-connected{background:#e8fbf0;color:#1da851}
+.badge.api-disconnected{background:var(--red-soft);color:var(--red)}
+.badge.model-frontend{background:#e8f3fb;color:#1a6fb0}
+.badge.model-internal{background:var(--bg-alt);color:var(--text)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-plug"></i></div>
+    <div><div class="stat-num">{{ connected_apis_count }}/{{ total_apis }}</div><div class="stat-lbl">APIs connected</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-robot"></i></div>
+    <div><div class="stat-num">{{ frontend_model_count }}</div><div class="stat-lbl">Models shown in the frontend picker</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-ico"><i class="fas fa-paper-plane"></i></div>
+    <div><div class="stat-num">{{ total_requests }}</div><div class="stat-lbl">Total AI requests served</div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>Connected APIs</h3>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>API</th><th>Status</th><th>Note</th><th>Requests served</th></tr></thead>
+      <tbody>
+        {% for api in apis %}
+        <tr>
+          <td><strong>{{ api.name }}</strong></td>
+          <td>
+            {% if api.connected %}<span class="badge api-connected">Connected</span>
+            {% else %}<span class="badge api-disconnected">Not connected</span>{% endif %}
+          </td>
+          <td>{{ api.note }}</td>
+          <td>{{ api.requests }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" class="empty-row">No APIs configured</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="panel-note">"Requests served" sums every chat reply and generated image recorded against the models each API backs.</p>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>AI models &amp; request counts</h3>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Model</th><th>Shown in frontend?</th><th>Requests</th></tr></thead>
+      <tbody>
+        {% for model in models %}
+        <tr>
+          <td><strong>{{ model.label }}</strong></td>
+          <td>
+            {% if model.in_frontend %}<span class="badge model-frontend">Frontend picker</span>
+            {% else %}<span class="badge model-internal">Internal only</span>{% endif %}
+          </td>
+          <td>{{ model.requests }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="3" class="empty-row">No models configured</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="panel-note">Vidhyora Vision runs automatically whenever a photo is attached, so it is not a separate frontend picker option but still logs its own request count.</p>
+</div>
+{% endblock %}

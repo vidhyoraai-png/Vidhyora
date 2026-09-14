@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.secrets/
+
+# Temporary AI-generated social-media downloads
+media/ai_youtube/
+media/ai_generated/
+
+db.sqlite3
