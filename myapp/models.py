@@ -1,4 +1,6 @@
 from datetime import timedelta
+import hashlib
+import secrets
 import uuid
 
 from django.conf import settings
@@ -880,3 +882,80 @@ class AIAccountMessageSettings(models.Model):
             .replace('{password}', str(password))
             .replace('{access_days}', str(access_days))
         )
+
+
+class AIAPIAccess(models.Model):
+    """Which of ai_chat.MODELS a user's developer API key (see AIAPIKey) is
+    allowed to call directly over HTTP, from their own code — separate from
+    StoreProfile.ai_subscription_until, which only controls in-app chat
+    access on the /AI/ page. Granted per-user by staff (dashboard API
+    Management); a user with no row here, or an empty model_keys, has no
+    developer API access at all and the profile page tells them to contact
+    an admin."""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='ai_api_access')
+    model_keys = models.CharField(
+        max_length=500, blank=True,
+        help_text='Comma-separated ai_chat.MODELS keys (e.g. "sol,terra,luna") this account\'s API key may call.',
+    )
+    granted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+        help_text='Staff account that last changed this grant.',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'AI API Access Grant'
+        verbose_name_plural = 'AI API Access Grants'
+
+    def __str__(self):
+        return f"{self.user} -> {self.model_keys or '(none)'}"
+
+    @property
+    def model_key_list(self):
+        return [key.strip() for key in self.model_keys.split(',') if key.strip()]
+
+
+class AIAPIKey(models.Model):
+    """One user's developer API key for calling their AIAPIAccess-granted
+    models directly (see views.api_chat_completions). Only a salted hash is
+    stored — the raw key is shown once, at generation time, and can never be
+    retrieved again; regenerating replaces it and immediately invalidates
+    the previous key."""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='ai_api_key')
+    key_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    key_prefix = models.CharField(max_length=12, help_text='First few characters, shown in the UI so the user can recognize their key.')
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'AI API Key'
+        verbose_name_plural = 'AI API Keys'
+
+    def __str__(self):
+        return f"{self.user} ({self.key_prefix}…)"
+
+    @staticmethod
+    def _hash(raw_key):
+        return hashlib.sha256(raw_key.encode('utf-8')).hexdigest()
+
+    @classmethod
+    def generate_for(cls, user):
+        """Create (or replace) this user's key and return the one-time raw
+        value — nothing else ever exposes it again."""
+        raw_key = 'vdk_' + secrets.token_urlsafe(32)
+        key_hash = cls._hash(raw_key)
+        key_prefix = raw_key[:11]
+        cls.objects.update_or_create(
+            user=user,
+            defaults={'key_hash': key_hash, 'key_prefix': key_prefix},
+        )
+        return raw_key
+
+    @classmethod
+    def resolve(cls, raw_key):
+        """Look up the owning AIAPIKey for a raw key presented to the API,
+        or None if it doesn't match any stored hash."""
+        raw_key = (raw_key or '').strip()
+        if not raw_key:
+            return None
+        return cls.objects.select_related('user').filter(key_hash=cls._hash(raw_key)).first()

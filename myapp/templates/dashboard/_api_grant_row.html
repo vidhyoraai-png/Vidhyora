@@ -1,0 +1,20 @@
+<tr data-row-id="{{ grant.pk }}">
+  <td>{{ grant.user.first_name|default:grant.user.username }} {{ grant.user.last_name }}</td>
+  <td>{{ grant.user.email }}</td>
+  <td>
+    {% for label in grant.model_label_list %}<span class="badge api-model">{{ label }}</span>{% endfor %}
+  </td>
+  <td>
+    {% if grant.user.ai_api_key %}<span class="badge api-key-active">Key generated</span>
+    {% else %}<span class="badge api-key-none">No key yet</span>{% endif %}
+  </td>
+  <td>{{ grant.updated_at|date:"d M Y, h:i A" }}</td>
+  <td>
+    <div class="row-actions">
+      <form method="post" action="{% url 'dashboard_api_access_revoke' grant.pk %}" class="api-revoke-form" data-user="{{ grant.user.email|default:grant.user.username }}">
+        {% csrf_token %}
+        <button type="submit" class="del-btn" title="Revoke API access"><i class="fas fa-ban"></i></button>
+      </form>
+    </div>
+  </td>
+</tr>

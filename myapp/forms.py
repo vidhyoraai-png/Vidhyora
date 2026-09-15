@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q
 from django.utils.text import slugify
 
+from myapp import ai_chat
 from myapp.models import Order, StoreProfile, PaymentSettings, DropboxSettings, EmailSettings, PWASettings, SiteCustomization
 
 
@@ -31,6 +32,38 @@ class GrantAISubscriptionForm(forms.Form):
         label='Access duration (days)', min_value=1, max_value=3650, initial=365,
         help_text='365 = 1 year, 30 = 1 month.',
     )
+
+    def clean_identifier(self):
+        identifier = self.cleaned_data['identifier'].strip()
+        self.matched_user = User.objects.filter(Q(email__iexact=identifier) | Q(username__iexact=identifier)).first()
+        if not self.matched_user:
+            raise forms.ValidationError(f'No account found for "{identifier}".')
+        return identifier
+
+
+class GrantAPIAccessForm(forms.Form):
+    """Dashboard tool (API Management) for staff to let a customer's own
+    code call specific ai_chat.MODELS directly over HTTP with a developer
+    API key — see AIAPIAccess/AIAPIKey. Separate from
+    GrantAISubscriptionForm's in-app chat access. Looked up by
+    email/username, same as the AI premium grant form."""
+    identifier = forms.CharField(
+        max_length=254, label='Customer email or username',
+        widget=forms.TextInput(attrs={'placeholder': 'e.g. customer@example.com'}),
+    )
+    model_keys = forms.MultipleChoiceField(
+        label='Models this account may call via the API',
+        choices=[],  # populated in __init__ — ai_chat.MODELS isn't known at import/class-definition time
+        widget=forms.CheckboxSelectMultiple,
+        required=False,
+        help_text='Leave all unchecked to revoke API access entirely.',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['model_keys'].choices = [
+            (key, cfg['label']) for key, cfg in ai_chat.MODELS.items() if key != 'vision'
+        ]
 
     def clean_identifier(self):
         identifier = self.cleaned_data['identifier'].strip()

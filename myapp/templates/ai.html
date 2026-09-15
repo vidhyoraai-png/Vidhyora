@@ -268,6 +268,12 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 .image-gallery-item img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .18s}
 .image-gallery-item:hover img{transform:scale(1.06)}
 .image-gallery-date{position:absolute;left:0;right:0;bottom:0;padding:.3rem .4rem;font-size:.6rem;font-weight:700;color:#fff;background:linear-gradient(0deg,rgba(0,0,0,.55),transparent);text-align:left}
+.api-model-chip-list{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem}
+.api-model-chip{background:var(--tint);color:var(--red);font-size:.72rem;font-weight:700;padding:.32rem .6rem;border-radius:50px}
+.api-key-reveal{border:1.5px solid var(--red);background:var(--tint);border-radius:12px;padding:.85rem;margin-bottom:.7rem}
+.api-key-reveal-label{font-size:.74rem;font-weight:700;color:var(--red);margin:0 0 .5rem}
+.api-key-value{font-family:monospace;font-size:.78rem;color:var(--head);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.6rem .7rem;margin-bottom:.6rem;word-break:break-all;user-select:all}
+.api-instructions-code{background:var(--bg-alt);border:1px solid var(--line);border-radius:10px;padding:.8rem .9rem;font-family:monospace;font-size:.72rem;line-height:1.55;color:var(--head);white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 .85rem}
 .theme-combination-intro{font-size:.78rem;line-height:1.5;color:var(--text);margin:0 0 .85rem}
 .theme-combination-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
 .theme-combination{display:flex;align-items:center;gap:.7rem;width:100%;padding:.75rem;border:1.5px solid var(--line);border-radius:12px;background:var(--bg-alt);color:var(--head);font:700 .78rem var(--font-body),sans-serif;text-align:left;cursor:pointer}
@@ -984,6 +990,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
           <button type="button" class="acct-menu-item" data-account-panel="subscription" role="menuitem"><i class="fas fa-crown"></i> Subscription details</button>
           <button type="button" class="acct-menu-item" data-account-panel="reports" role="menuitem"><i class="fas fa-flag"></i> My reports</button>
           <button type="button" class="acct-menu-item" data-account-panel="images" role="menuitem"><i class="fas fa-images"></i> My Images</button>
+          <button type="button" class="acct-menu-item" data-account-panel="api" role="menuitem"><i class="fas fa-key"></i> Get API</button>
           <button type="button" class="acct-menu-item" id="importChatMenuBtn" role="menuitem"><i class="fas fa-file-import"></i> Import chat</button>
           <input type="file" id="importChatInput" accept="application/json,.json" hidden>
           {% if ai_pwa_ready %}<button type="button" class="acct-menu-item" id="installAppMenuBtn" role="menuitem"><i class="fas fa-mobile-screen-button"></i> Install app</button>{% endif %}
@@ -1104,6 +1111,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     <button type="button" class="account-tab" data-account-tab="subscription" role="tab">Subscription</button>
     <button type="button" class="account-tab" data-account-tab="reports" role="tab">Reports</button>
     <button type="button" class="account-tab" data-account-tab="images" role="tab">My Images</button>
+    <button type="button" class="account-tab" data-account-tab="api" role="tab">Get API</button>
   </div>
   <div class="account-content">
     <div class="account-panel" data-account-content="profile">
@@ -1271,6 +1279,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     <div class="account-panel" data-account-content="subscription" hidden><div class="account-loading">Loading subscription…</div></div>
     <div class="account-panel" data-account-content="reports" hidden><div class="account-loading">Loading reports…</div></div>
     <div class="account-panel" data-account-content="images" hidden><div class="account-loading">Loading images…</div></div>
+    <div class="account-panel" data-account-content="api" hidden><div class="account-loading">Loading…</div></div>
   </div>
 </section>
 {% endif %}
@@ -3949,6 +3958,92 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     }).join('') + '</div>';
   }
 
+  function renderAccountApi(apiAccess, revealedKey){
+    var panel = accountModal && accountModal.querySelector('[data-account-content="api"]');
+    if (!panel || !apiAccess) return;
+    if (!apiAccess.granted) {
+      panel.innerHTML = '<div class="account-empty"><i class="fas fa-lock"></i><br><br>' +
+        'Your account does not have developer API access yet.<br>Contact an administrator to request it.</div>';
+      return;
+    }
+    var modelList = apiAccess.models.map(function(m){ return '<span class="api-model-chip">' + escHtml(m.label) + '</span>'; }).join('');
+    var keyBox = '';
+    if (revealedKey) {
+      keyBox = '<div class="api-key-reveal">' +
+        '<p class="api-key-reveal-label"><i class="fas fa-triangle-exclamation"></i> Copy this key now — it will not be shown again.</p>' +
+        '<div class="api-key-value" id="apiKeyRevealValue">' + escHtml(revealedKey) + '</div>' +
+        '<button type="button" class="account-save-btn" id="apiKeyCopyBtn">Copy key</button>' +
+      '</div>';
+    } else if (apiAccess.has_key) {
+      var created = apiAccess.key_created_at ? new Date(apiAccess.key_created_at).toLocaleString() : '';
+      keyBox = '<p class="account-help">Active key: <code>' + escHtml(apiAccess.key_prefix) + '…</code>' + (created ? ' &middot; generated ' + escHtml(created) : '') + '</p>';
+    }
+    var buttonLabel = apiAccess.has_key ? 'Regenerate API key' : 'Generate API key';
+    var warning = apiAccess.has_key
+      ? '<p class="account-help">Regenerating immediately invalidates your current key — update any code using it.</p>' : '';
+    panel.innerHTML =
+      '<h3 class="account-section-title">Your allowed models</h3>' +
+      '<div class="api-model-chip-list">' + modelList + '</div>' +
+      '<hr class="account-divider">' +
+      '<h3 class="account-section-title">API key</h3>' +
+      keyBox + warning +
+      '<div class="account-form-actions"><span class="account-message" id="apiKeyMessage" aria-live="polite"></span>' +
+      '<button type="button" class="account-save-btn" id="apiKeyGenerateBtn">' + buttonLabel + '</button></div>' +
+      '<hr class="account-divider">' +
+      '<h3 class="account-section-title">How to use it</h3>' +
+      '<p class="account-help">Send a POST request with your key as a bearer token. Replace <code>&lt;model&gt;</code> with one of the model keys shown above.</p>' +
+      '<pre class="api-instructions-code">curl -X POST https://' + escHtml(window.location.host) + '/api/v1/chat/ \\\n' +
+      '  -H "Authorization: Bearer YOUR_API_KEY" \\\n' +
+      '  -H "Content-Type: application/json" \\\n' +
+      '  -d \'{"model": "&lt;model&gt;", "message": "Hello!"}\'</pre>' +
+      '<p class="account-help">Or send a full conversation instead of a single message:</p>' +
+      '<pre class="api-instructions-code">{\n  "model": "&lt;model&gt;",\n  "messages": [\n    {"role": "user", "content": "Hello!"},\n    {"role": "assistant", "content": "Hi! How can I help?"},\n    {"role": "user", "content": "Tell me a joke."}\n  ]\n}</pre>' +
+      '<p class="account-help">The response is JSON: <code>{"model": "...", "reply": "...", "created_at": "..."}</code>. ' +
+      'Only models listed above are authorized for your key; any other model returns a 403. Keep your key secret — anyone with it can use your granted models.</p>';
+
+    var generateBtn = document.getElementById('apiKeyGenerateBtn');
+    if (generateBtn) {
+      generateBtn.addEventListener('click', function(){
+        var message = document.getElementById('apiKeyMessage');
+        if (apiAccess.has_key && !confirm('Regenerating will immediately invalidate your current key. Continue?')) return;
+        generateBtn.disabled = true;
+        if (message) { message.textContent = ''; message.classList.remove('success'); }
+        fetch('/AI/api/developer-key/generate/', {
+          method: 'POST', credentials: 'same-origin', headers: { 'X-CSRFToken': csrfToken() },
+        }).then(function(response){
+          return response.json().then(function(body){ return { ok: response.ok, body: body }; });
+        }).then(function(result){
+          if (!result.ok) throw new Error(result.body.detail || 'Could not generate a key.');
+          apiAccess.has_key = true;
+          apiAccess.key_prefix = result.body.api_key.slice(0, 11);
+          apiAccess.key_created_at = new Date().toISOString();
+          renderAccountApi(apiAccess, result.body.api_key);
+        }).catch(function(error){
+          if (message) { message.textContent = error.message; }
+          generateBtn.disabled = false;
+        });
+      });
+    }
+    var copyBtn = document.getElementById('apiKeyCopyBtn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', function(){
+        var value = document.getElementById('apiKeyRevealValue');
+        if (!value) return;
+        var text = value.textContent;
+        var done = function(){ copyBtn.textContent = 'Copied!'; setTimeout(function(){ copyBtn.textContent = 'Copy key'; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function(){});
+        } else {
+          var range = document.createRange();
+          range.selectNodeContents(value);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+          try { document.execCommand('copy'); done(); } catch (e) {}
+        }
+      });
+    }
+  }
+
   function loadAccountData(){
     return fetch('/AI/api/account/', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(function(response){
@@ -3962,13 +4057,16 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         renderAccountSubscription(body.subscription);
         renderAccountReports(body.reports);
         renderAccountImages(body.images);
+        renderAccountApi(body.api_access);
       }).catch(function(error){
         var subscriptionPanel = accountModal && accountModal.querySelector('[data-account-content="subscription"]');
         var reportsPanel = accountModal && accountModal.querySelector('[data-account-content="reports"]');
         var imagesPanel = accountModal && accountModal.querySelector('[data-account-content="images"]');
+        var apiPanel = accountModal && accountModal.querySelector('[data-account-content="api"]');
         if (subscriptionPanel) subscriptionPanel.innerHTML = '<div class="account-empty">' + escHtml(error.message) + '</div>';
         if (reportsPanel) reportsPanel.innerHTML = '<div class="account-empty">' + escHtml(error.message) + '</div>';
         if (imagesPanel) imagesPanel.innerHTML = '<div class="account-empty">' + escHtml(error.message) + '</div>';
+        if (apiPanel) apiPanel.innerHTML = '<div class="account-empty">' + escHtml(error.message) + '</div>';
       });
   }
 

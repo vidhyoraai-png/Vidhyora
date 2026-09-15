@@ -38,6 +38,9 @@ urlpatterns = [
     path('store/dashboard/ai/reports/<int:pk>/status/', views.dashboard_ai_report_status_update, name='dashboard_ai_report_status_update'),
     path('store/dashboard/ai/reports/<int:pk>/delete/', views.dashboard_ai_report_delete, name='dashboard_ai_report_delete'),
     path('store/dashboard/api-data/', views.dashboard_api_data, name='dashboard_api_data'),
+    path('store/dashboard/api-management/', views.dashboard_api_management, name='dashboard_api_management'),
+    path('store/dashboard/api-management/grant/', views.dashboard_api_access_grant, name='dashboard_api_access_grant'),
+    path('store/dashboard/api-management/<int:pk>/revoke/', views.dashboard_api_access_revoke, name='dashboard_api_access_revoke'),
     path('store/dashboard/payment-settings/', views.dashboard_payment_settings, name='dashboard_payment_settings'),
     path('store/dashboard/email-settings/', views.dashboard_email_settings, name='dashboard_email_settings'),
     path('store/dashboard/email-settings/test/', views.dashboard_email_settings_test, name='dashboard_email_settings_test'),
@@ -80,6 +83,12 @@ urlpatterns = [
     path('AI/api/notes/<int:note_id>/delete/', views.ai_note_delete, name='ai_note_delete'),
     path('AI/api/account/', views.ai_account_details, name='ai_account_details'),
     path('AI/api/report/', views.ai_report_submit, name='ai_report_submit'),
+    path('AI/api/developer-key/generate/', views.ai_developer_key_generate, name='ai_developer_key_generate'),
+
+    # Public developer API — a granted user's own code calling their
+    # allowed models directly, authenticated by AIAPIKey (Authorization:
+    # Bearer <key>) rather than a browser session. See views.api_chat_completions.
+    path('api/v1/chat/', views.api_chat_completions, name='api_chat_completions'),
 
     path('AI/api/github/status/', views.github_status, name='github_status'),
     path('AI/api/github/oauth/start/', views.github_oauth_start, name='github_oauth_start'),

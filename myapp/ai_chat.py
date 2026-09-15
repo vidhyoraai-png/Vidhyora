@@ -50,6 +50,15 @@ STREAM_HEDGE_AFTER_SECONDS = getattr(settings, 'AI_STREAM_HEDGE_AFTER_SECONDS', 
 # tail further, but each is a real billable request against a separate key,
 # and the outer retry/failover below still covers the case where both fail.
 STREAM_HEDGE_MAX_ATTEMPTS = getattr(settings, 'AI_STREAM_HEDGE_MAX_ATTEMPTS', 2)
+# Terra and Luna route every text turn onto the dedicated-key Super backend
+# (see the identity override in stream_chat) but, unlike Quick/Ultra/Code,
+# have no shared pool to hedge across — a single key means a bad queue draw
+# on that one endpoint (the same "0.9s to 27s" variance measured above,
+# except with no second copy racing it) is fully exposed to the user as a
+# long wait instead of being absorbed. Giving up on that draw sooner and
+# handing off to the existing (already fast, already hedged) Quick fallback
+# below bounds the worst-case wait without changing the normal-case reply.
+STREAM_TIMEOUT_FLAGSHIP = getattr(settings, 'AI_STREAM_TIMEOUT_FLAGSHIP', 9.0)
 
 # EduTrellis Vision was live-tested to randomly (~1 in 3 tries, reproducible
 # across many prompt-wording variants and even at temperature 0) open with a
@@ -616,26 +625,6 @@ MODELS = {
         'vision': False,
         'image_generation': True,
     },
-    # Last in this dict is last in the model picker — views.ai_page builds the
-    # list straight from this ordering.
-    NEMOTRON_SUPER_MODEL_KEY: {
-        # The only entry that actually runs NVIDIA's Nemotron 3 Super (120B)
-        # endpoint — the older 'reasoning' entry above is labelled "Nemotron
-        # Super" but has always pointed at the Lightning worker. Verified
-        # live against this account: it answers, and enable_thinking=False is
-        # honoured (without it the reply opens with raw "Okay, the user asked
-        # me to..." chain-of-thought), so it stays a 'reasoning' model here.
-        'id': 'nvidia/nemotron-3-super-120b-a12b',
-        'label': 'Nemotron 3 Super',
-        'hidden_from_picker': True,
-        'description': 'Largest reasoning model — best for hard, multi-step problems where depth matters more than speed.',
-        'reasoning': True,
-        'vision': False,
-        # Its own credential, so it is deliberately outside the shared key
-        # pool's failover and hedging — another key in that pool has no
-        # invoke access to this endpoint.
-        'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
-    },
     GEMINI_36_FLASH_MODEL_KEY: {
         # The real Google Gemini API (not NVIDIA-hosted), called through
         # Google's OpenAI-compatible endpoint — see _GEMINI_BASE_URL — so it
@@ -683,6 +672,26 @@ MODELS = {
         'vision': False,
         'api_key_setting': 'OPENROUTER_API_KEY',
         'max_tokens': 8192,
+    },
+    # Last in this dict is last in the model picker — views.ai_page builds the
+    # list straight from this ordering.
+    NEMOTRON_SUPER_MODEL_KEY: {
+        # The only entry that actually runs NVIDIA's Nemotron 3 Super (120B)
+        # endpoint — the older 'reasoning' entry above is labelled "Nemotron
+        # Super" but has always pointed at the Lightning worker. Verified
+        # live against this account: it answers, and enable_thinking=False is
+        # honoured (without it the reply opens with raw "Okay, the user asked
+        # me to..." chain-of-thought), so it stays a 'reasoning' model here.
+        'id': 'nvidia/nemotron-3-super-120b-a12b',
+        'label': 'Nemotron 3 Super',
+        'hidden_from_picker': True,
+        'description': 'Largest reasoning model — best for hard, multi-step problems where depth matters more than speed.',
+        'reasoning': True,
+        'vision': False,
+        # Its own credential, so it is deliberately outside the shared key
+        # pool's failover and hedging — another key in that pool has no
+        # invoke access to this endpoint.
+        'api_key_setting': 'NVIDIA_NEMOTRON_SUPER_API_KEY',
     },
 }
 DEFAULT_MODEL_KEY = CHATGPT_56_MODEL_KEY
@@ -1114,6 +1123,52 @@ def is_natural_image_prompt(text):
     return bool(_NATURAL_IMAGE_RE.match(text))
 
 
+# A longer, paragraph-style visual scene description — the classic pasted-in
+# Midjourney/DALL-E prompt style, just longer and more varied than
+# is_natural_image_prompt's narrow "subject word, then a scene word, within
+# ~200 characters" shape can match. Real gap: "A peaceful green forest with
+# tall trees, soft sunlight, and colorful wildflowers. A clear blue sky,
+# gentle mist, and a small stream flowing through the lush landscape."
+# matched none of the existing detectors (no generate/create verb, no
+# photography-jargon cue like "bokeh"/"cinematic", "forest" isn't in the
+# narrow subject list, and the text runs well past that detector's length
+# window) and got answered as a capability question instead of generated.
+# Unlike _IMAGE_STYLE_CUE_RE's technical-jargon list, this recognises
+# ordinary scenery/nature vocabulary — the words people actually reach for
+# when describing a scene in plain language rather than art-prompt jargon.
+_SCENE_DESCRIPTION_CUE_RE = re.compile(
+    r"\b(?:forest|jungle|meadow|valley|mountains?|hills?|lake|river|stream|"
+    r"waterfall|ocean|sea|beach|shore|desert|garden|field|sky|clouds?|"
+    r"sunsets?|sunrise|moonlight|starry|stars|mist|fog|landscape|scenery|"
+    r"village|castle|skyline|wildflowers?|flowers?|trees?|blossoms?|snow|"
+    r"rainbow|glow(?:ing)?|sparkl(?:e|ing)|shimmer(?:ing)?|lush|vivid|"
+    r"vibrant|serene|peaceful|majestic|golden|colou?rful|breathtaking)\b",
+    re.IGNORECASE,
+)
+# A genuine scene-description prompt describes the SCENE, not the speaker —
+# "I want to visit a forest" or "we saw mountains on our trip" are personal
+# statements/plans, not an image to generate, even though they share the
+# same scenery vocabulary.
+_FIRST_PERSON_INTENT_RE = re.compile(
+    r"\b(?:i|i'm|i am|i've|i have|i'll|we|we're|we've|my|our|mine|me)\b",
+    re.IGNORECASE,
+)
+
+
+def is_scene_description_prompt(text):
+    """Return True for a longer visual-scene description with no request
+    verb and no first-person language — see _SCENE_DESCRIPTION_CUE_RE."""
+    text = (text or '').strip()
+    word_count = len(text.split())
+    if not text or '?' in text or not (3 <= word_count <= 80):
+        return False
+    if _NATURAL_IMAGE_TEXT_REQUEST_RE.search(text) or _FIRST_PERSON_INTENT_RE.search(text):
+        return False
+    if is_image_capability_question(text) or is_image_prompt_writing_request(text):
+        return False
+    return len(_SCENE_DESCRIPTION_CUE_RE.findall(text)) >= 3
+
+
 _IMAGE_FLOW_CANCEL_RE = re.compile(
     r"^\s*(?:no(?:\s+thanks?)?|cancel|stop|never\s*mind|nevermind|"
     r"not\s+now|later|leave\s+it)\s*[.!]*\s*$",
@@ -1438,6 +1493,21 @@ COMPACT_SYSTEM_PROMPT = (
     "Vidhyora team — never NVIDIA, Nemotron, or any other underlying "
     "vendor name. Follow the current-model identity instructions below "
     "when asked who created the underlying model. "
+    "The same rule covers every other meta-question about a named Vidhyora "
+    "model, not just 'who made you': its exact release/launch date, what "
+    "training data or training method was used, who operates or hosts it, "
+    "and its underlying architecture or parameter count. Never attribute "
+    "any of these to NVIDIA, Nemotron, OpenAI, Meta, Llama, Mistral, or any "
+    "other outside company, and never invent a specific date, dataset "
+    "name, training technique, or infrastructure provider that was not "
+    "actually given to you elsewhere in this prompt — Vidhyora does not "
+    "publish those internal specifics, so say plainly that detail isn't "
+    "published rather than guessing, while still confirming the model is "
+    "developed, trained, and operated by the Vidhyora team. For "
+    "capabilities and limitations, answer from this mode's own description "
+    "given below (chat, reasoning, coding, image understanding/generation, "
+    "file/document handling, web search, etc — whichever genuinely apply) "
+    "instead of inventing technical specifics like context-window size. "
     "Respond like an excellent conversational assistant: lead with the answer, "
     "infer intent from context, and be direct without sounding robotic. Avoid "
     "generic openings such as 'Certainly' or 'As an AI', avoid repeating the "
@@ -1840,6 +1910,16 @@ def _is_model_unavailable_error(exc):
     )
 
 
+def _is_unconfigured_key_error(exc):
+    """True for the ValueError _get_client raises when a model's
+    api_key_setting has no value in settings (env var/secrets file never
+    set) — a permanent deployment gap, not a transient upstream failure.
+    Without this check it fell through to the generic 'taking longer than
+    expected' message, which reads as a network blip and gives staff no clue
+    that a key is simply missing."""
+    return isinstance(exc, ValueError) and 'is not configured' in str(exc).lower()
+
+
 # First-time-in-AI-chat onboarding (see views.ai_chat_send and
 # StoreProfile.ai_onboarded/ai_onboarding_pending). Asking is the model's
 # job; recording the answer is not — same reasoning as My Notes above, since
@@ -1937,7 +2017,8 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
     if identity_key in (CHATGPT_56_MODEL_KEY, TERRA_MODEL_KEY) and not cfg.get('vision'):
         cfg = {**cfg, 'id': identity_cfg['id'],
                'api_key_setting': identity_cfg['api_key_setting'],
-               'reasoning': identity_cfg['reasoning']}
+               'reasoning': identity_cfg['reasoning'],
+               'timeout': STREAM_TIMEOUT_FLAGSHIP}
     current_content = messages[-1].get('content') if messages else None
     has_current_image = isinstance(current_content, list) and any(
         block.get('type') == 'image_url' for block in current_content
@@ -2422,10 +2503,16 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
             # identity-suffix override, so the swap silently exposed NVIDIA's
             # backend on a model that was supposed to look like Google's.
             same_provider = api_key_setting is None or api_key_setting.startswith('NVIDIA_')
+            # An unconfigured dedicated key (Luna/Terra/Sol/gpt-oss-20b never
+            # given their own env var) is exactly the "worker failing outright"
+            # case above, just detected before any request even goes out —
+            # it should get the same one-attempt-on-Quick treatment instead of
+            # surfacing a permanent deployment gap as a user-facing error on
+            # every single turn.
             can_fallback = (
                 same_provider
                 and MODELS['quick']['id'] != kwargs['model']
-                and (transient or _is_model_unavailable_error(exc))
+                and (transient or _is_model_unavailable_error(exc) or _is_unconfigured_key_error(exc))
             )
             # A dead/exhausted/rate-limited key fails identically no matter
             # how many times it's retried, so move to the next key in the
@@ -2450,8 +2537,19 @@ def stream_chat(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=None,
             if can_fallback:
                 kwargs['model'] = MODELS['quick']['id']
                 # Quick runs on the shared key pool, so a model that had its
-                # own dedicated key joins the pool (and its failover) here.
-                api_key_setting = 'NVIDIA_LUNA_API_KEY' if identity_key == CHATGPT_56_MODEL_KEY else None
+                # own dedicated key joins the pool (and its failover) here —
+                # unless that dedicated key is itself what's broken
+                # (unconfigured or invalid/revoked), in which case keeping it
+                # for the fallback attempt would just repeat the same failure
+                # instead of actually recovering.
+                key_is_broken = _is_unconfigured_key_error(exc) or (
+                    bool(api_key_setting) and _is_key_level_error(exc)
+                )
+                api_key_setting = (
+                    'NVIDIA_LUNA_API_KEY'
+                    if identity_key == CHATGPT_56_MODEL_KEY and not key_is_broken
+                    else None
+                )
                 if not key_pool and api_key_setting is None:
                     key_pool = nvidia_key_pool()
                 key_index = 0

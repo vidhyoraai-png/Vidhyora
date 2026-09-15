@@ -32,7 +32,7 @@ from . import (
     web_search,
 )
 from .middleware import CanonicalHostMiddleware, PublicAssetCacheMiddleware
-from .models import ActiveUserSession, AIAccountMessageSettings, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
+from .models import ActiveUserSession, AIAccountMessageSettings, AIAPIAccess, AIAPIKey, AIGeneratedFile, AIBlock, AIConversation, AIMessage, AINote, AIReport, AIUserImage, GitHubConnection, Order, Payment, PWASettings, SiteCustomization, StoreProfile
 from .views import (
     AI_CURRENT_CONVERSATION_SESSION_KEY, AI_FREE_MESSAGE_LIMIT,
     _ai_document_instruction,
@@ -537,6 +537,30 @@ class NVIDIAImageGenerationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(flux_response.call_args.args[1], 'a girl sitting in a park')
+        self.assertEqual(flux_response.call_args.args[2], '')
+
+    def test_paragraph_scene_description_routes_to_image_generation(self):
+        """Live-observed: a longer, paragraph-style scene description (the
+        classic pasted-in art-prompt style, just in plain language rather
+        than photography jargon) matched none of the existing detectors and
+        got answered with 'Yes, I can generate images. Please tell me
+        what you'd like...' instead of actually generating it, even though
+        a full description was already given — see
+        ai_chat.is_scene_description_prompt."""
+        prompt = (
+            'A peaceful green forest with tall trees, soft sunlight, and '
+            'colorful wildflowers. A clear blue sky, gentle mist, and a '
+            'small stream flowing through the lush landscape.'
+        )
+        with patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux_response:
+            response = self.client.post(
+                '/AI/api/send/',
+                data=json.dumps({'message': prompt, 'model': ai_chat.CHATGPT_56_MODEL_KEY}),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(flux_response.call_args.args[1], prompt)
         self.assertEqual(flux_response.call_args.args[2], '')
 
     def test_reply_to_image_questions_combines_original_request_and_details(self):
@@ -2033,6 +2057,57 @@ class AIResponseReliabilityTests(TestCase):
 
         self.assertEqual(calls, [0])
 
+    def test_unconfigured_dedicated_key_falls_back_to_quick_instead_of_erroring(self):
+        """A dedicated model (Luna/Terra/Sol/gpt-oss-20b) whose env var was
+        never set on this deployment must not surface a scary error on every
+        single turn — it should recover the same way a transient upstream
+        failure does, by handing the turn to Quick on the shared pool,
+        instead of raising the bare 'is not configured' ValueError."""
+        def create(**kwargs):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='quick answer'),
+            )])])
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            if api_key_setting == 'NVIDIA_GPT_OSS_API_KEY':
+                raise ValueError('NVIDIA_GPT_OSS_API_KEY is not configured.')
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one']),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client),                 patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hello'}], model_key='gpt-oss-20b',
+            ))
+
+        self.assertEqual(result, 'quick answer')
+
+    def test_unconfigured_luna_key_does_not_retry_itself_and_falls_back(self):
+        """Luna keeps its own dedicated key even when routed to Quick/Code
+        (see the identity override in stream_chat) — but if that key is
+        itself what's unconfigured, re-pinning the fallback attempt to the
+        same broken setting would just repeat the failure forever. It must
+        drop to the shared pool instead, same as any other dedicated model."""
+        def create(**kwargs):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='quick answer'),
+            )])])
+
+        calls = []
+
+        def fake_get_client(api_key_setting=None, key_index=0):
+            calls.append(api_key_setting)
+            if api_key_setting == 'NVIDIA_LUNA_API_KEY':
+                raise ValueError('NVIDIA_LUNA_API_KEY is not configured.')
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with self.settings(NVIDIA_API_KEYS=['key-one']),                 patch('myapp.ai_chat._get_client', side_effect=fake_get_client),                 patch('myapp.ai_chat.time.sleep'):
+            result = ''.join(ai_chat.stream_chat(
+                [{'role': 'user', 'content': 'hello'}], model_key='quick',
+                identity_model_key=ai_chat.CHATGPT_56_MODEL_KEY,
+            ))
+
+        self.assertEqual(result, 'quick answer')
+        self.assertEqual(calls, ['NVIDIA_LUNA_API_KEY', None])
+
     def test_chatgpt_identity_leak_is_caught_and_forced_to_a_safe_answer(self):
         """Live-observed: asked 'are you copy of gpt?' / 'who are you?', the
         ChatGPT 5.6 persona sometimes answered 'developed by researchers
@@ -2569,6 +2644,7 @@ class AIResponseReliabilityTests(TestCase):
             'I am based on the Nemotron base model from NVIDIA.',
             'I was developed by NVIDIA, not OpenAI.',
             'A' * 600 + ' To be clear, I was actually built by NVIDIA.',
+            'My name is Nemotron.',
         ):
             cleaned = _chatgpt_public_reply(leak)
             for vendor in ('nvidia', 'nemotron', 'llama', 'mistral'):
@@ -2582,6 +2658,83 @@ class AIResponseReliabilityTests(TestCase):
             'Llama is an open-weights model family released by Meta.',
         ):
             self.assertEqual(_chatgpt_public_reply(factual), factual)
+
+    def test_vidhyora_mode_wrong_persona_identity_is_rewritten(self):
+        """Live-observed: after switching the picker away from the ChatGPT
+        5.6 persona (Sol/Terra/Luna) mid-conversation, a plain Vidhyora mode
+        (Ultra/Quick/Code) sometimes opens by echoing that persona's own
+        earlier self-introduction ("I'm ChatGPT 5.6 Sol...") instead of its
+        own identity — the model pattern-matching its own prior reply still
+        sitting in conversation history. _vidhyora_public_reply is the
+        mirror of _chatgpt_public_reply for this reverse direction."""
+        from myapp.views import _vidhyora_public_reply
+
+        cases = [
+            ("Hello! I'm ChatGPT 5.6 Sol in Vidhyora AI. How can I help you today?",
+             'Vidhyora Ultra'),
+            ("Hi! I'm ChatGPT 5.6 Terra in Vidhyora AI. How can I help you today?",
+             'Vidhyora Quick'),
+            ("Hello! I'm ChatGPT 5.6 Luna in Vidhyora AI. How can I help you today?",
+             'Vidhyora Code'),
+            ("As ChatGPT 5.6, I can help with that.", 'Vidhyora Ultra'),
+        ]
+        for reply, label in cases:
+            cleaned = _vidhyora_public_reply(reply, label)
+            self.assertNotIn('chatgpt', cleaned.lower(), msg=reply)
+            self.assertIn(label, cleaned, msg=reply)
+
+        # A reply that only discusses/compares ChatGPT in passing, or already
+        # uses its own correct name, must survive untouched.
+        for factual in (
+            "Unlike ChatGPT, I'm Vidhyora Quick and I can also generate images for you.",
+            "Hi! I'm Vidhyora Ultra. How can I help you today?",
+        ):
+            self.assertEqual(_vidhyora_public_reply(factual, 'Vidhyora Quick'), factual)
+
+    def test_vidhyora_mode_backend_vendor_leak_is_rewritten(self):
+        """Live-observed: Vidhyora Quick answered "Who trained me?" with
+        "My underlying models are trained by researchers from NVIDIA."
+        despite COMPACT_SYSTEM_PROMPT's explicit instruction to attribute
+        Vidhyora-branded modes to "the Vidhyora team" and never name the
+        underlying vendor. _vidhyora_public_reply reuses
+        _chatgpt_public_reply's vendor-leak detection patterns (only the
+        replacement text differs), so this covers the same phrasings its
+        ChatGPT-persona counterpart already does."""
+        from myapp.views import _vidhyora_public_reply
+
+        for leak in (
+            'My underlying models are trained by researchers from NVIDIA.',
+            'I was trained by NVIDIA.',
+            'My underlying model was developed by NVIDIA.',
+            "I'm an NVIDIA model.",
+            'I was trained by Meta on the Llama architecture.',
+            'I am based on the Nemotron base model from NVIDIA.',
+            # Live-observed via the developer API: a distinct "self-naming"
+            # phrasing the attribution/identity patterns above don't cover.
+            'My name is Nemotron. I am created by the Vidhyora team researchers.',
+            # Meta-questions beyond "who made you" (release date, operator,
+            # third-person self-reference) use verbs/subjects the original
+            # attribution pattern didn't cover.
+            'I was released by NVIDIA in 2024.',
+            'I am operated by NVIDIA.',
+            'This model is maintained by NVIDIA.',
+            'This assistant was created by NVIDIA.',
+        ):
+            cleaned = _vidhyora_public_reply(leak, 'Vidhyora Quick')
+            for vendor in ('nvidia', 'nemotron', 'llama', 'mistral'):
+                self.assertNotIn(vendor, cleaned.lower(), msg=leak)
+
+        # A genuine answer *about* those companies must survive untouched —
+        # the word itself is not the problem, claiming it built this
+        # assistant is (same rule as _chatgpt_public_reply's own test).
+        for factual in (
+            'NVIDIA is a semiconductor company founded in 1993.',
+            'GPUs are made by NVIDIA and AMD.',
+            'Llama is an open-weights model family released by Meta.',
+            'The AI model built by NVIDIA is impressive.',
+            'NVIDIA released a new GPU model last year.',
+        ):
+            self.assertEqual(_vidhyora_public_reply(factual, 'Vidhyora Quick'), factual)
 
     def test_ai_home_link_is_normalized_to_one_site_root_url(self):
         from myapp.views import _chatgpt_public_reply
@@ -3515,6 +3668,213 @@ class AIAccountProfileTests(TestCase):
         response = self.client.get('/AI/api/account/')
 
         self.assertEqual(response.status_code, 401)
+
+
+class AIAPIAccessTests(TestCase):
+    """Dashboard API Management (staff granting a customer's own code
+    direct access to specific ai_chat.MODELS) and the resulting developer
+    key generation + public /api/v1/chat/ endpoint — see AIAPIAccess/
+    AIAPIKey in models.py and dashboard_api_management/api_chat_completions
+    in views.py."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='api-admin@example.com', email='api-admin@example.com',
+            password='test-password-123', is_staff=True,
+        )
+        self.customer = User.objects.create_user(
+            username='api-customer@example.com', email='api-customer@example.com',
+            password='test-password-123',
+        )
+        StoreProfile.objects.create(user=self.customer, phone='9000000001')
+
+    def test_non_staff_cannot_reach_the_dashboard_grant_page(self):
+        self.client.force_login(self.customer)
+
+        response = self.client.get('/store/dashboard/api-management/')
+
+        self.assertRedirects(response, '/')
+
+    def test_staff_can_grant_and_the_grant_appears_in_the_list(self):
+        self.client.force_login(self.staff)
+
+        response = self.client.post('/store/dashboard/api-management/grant/', {
+            'identifier': self.customer.email,
+            'model_keys': ['sol', 'terra'],
+        }, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['status'], 'ok')
+        self.assertFalse(body['revoked'])
+        access = AIAPIAccess.objects.get(user=self.customer)
+        self.assertEqual(sorted(access.model_key_list), ['sol', 'terra'])
+        self.assertEqual(access.granted_by, self.staff)
+
+    def test_grant_with_no_models_checked_revokes_access(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol,terra', granted_by=self.staff)
+        self.client.force_login(self.staff)
+
+        response = self.client.post('/store/dashboard/api-management/grant/', {
+            'identifier': self.customer.email,
+            'model_keys': [],
+        }, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['revoked'])
+        access = AIAPIAccess.objects.get(user=self.customer)
+        self.assertEqual(access.model_key_list, [])
+
+    def test_staff_can_revoke_from_the_row_button(self):
+        access = AIAPIAccess.objects.create(user=self.customer, model_keys='sol', granted_by=self.staff)
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            f'/store/dashboard/api-management/{access.pk}/revoke/',
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        access.refresh_from_db()
+        self.assertEqual(access.model_key_list, [])
+
+    def test_unknown_identifier_is_rejected(self):
+        self.client.force_login(self.staff)
+
+        response = self.client.post('/store/dashboard/api-management/grant/', {
+            'identifier': 'nobody@example.com',
+            'model_keys': ['sol'],
+        }, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['status'], 'validation_error')
+        self.assertFalse(AIAPIAccess.objects.filter(user__email='nobody@example.com').exists())
+
+    def test_key_generation_requires_a_grant_first(self):
+        self.client.force_login(self.customer)
+
+        response = self.client.post('/AI/api/developer-key/generate/')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(AIAPIKey.objects.filter(user=self.customer).exists())
+
+    def test_granted_user_can_generate_a_key_exactly_once_shown(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol,terra', granted_by=self.staff)
+        self.client.force_login(self.customer)
+
+        response = self.client.post('/AI/api/developer-key/generate/')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body['api_key'].startswith('vdk_'))
+        self.assertEqual(sorted(m['key'] for m in body['models']), ['sol', 'terra'])
+        # The account API never exposes the raw key again, only a prefix.
+        account = self.client.get('/AI/api/account/').json()
+        self.assertTrue(account['api_access']['has_key'])
+        self.assertNotIn(body['api_key'], json.dumps(account))
+        self.assertEqual(account['api_access']['key_prefix'], body['api_key'][:11])
+
+    def test_regenerating_invalidates_the_previous_key(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol', granted_by=self.staff)
+        self.client.force_login(self.customer)
+        first_key = self.client.post('/AI/api/developer-key/generate/').json()['api_key']
+        second_key = self.client.post('/AI/api/developer-key/generate/').json()['api_key']
+
+        self.assertNotEqual(first_key, second_key)
+        old = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'sol', 'message': 'hi'}),
+            content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {first_key}',
+        )
+        self.assertEqual(old.status_code, 401)
+
+    def test_chat_api_rejects_missing_or_invalid_key(self):
+        response = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'sol', 'message': 'hi'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 401)
+
+        response = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'sol', 'message': 'hi'}),
+            content_type='application/json', HTTP_AUTHORIZATION='Bearer not-a-real-key',
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_chat_api_rejects_a_model_not_granted_to_this_key(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol', granted_by=self.staff)
+        raw_key = AIAPIKey.generate_for(self.customer)
+
+        response = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'terra', 'message': 'hi'}),
+            content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('not authorized', response.json()['error'])
+
+    def test_chat_api_rejects_an_image_only_model_even_if_granted(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol,flux-klein-4b', granted_by=self.staff)
+        raw_key = AIAPIKey.generate_for(self.customer)
+
+        response = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'flux-klein-4b', 'message': 'hi'}),
+            content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('does not support the chat API', response.json()['error'])
+
+    def test_chat_api_requires_model_and_message_fields(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol', granted_by=self.staff)
+        raw_key = AIAPIKey.generate_for(self.customer)
+
+        no_model = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'message': 'hi'}),
+            content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+        )
+        self.assertEqual(no_model.status_code, 400)
+
+        no_message = self.client.post(
+            '/api/v1/chat/', data=json.dumps({'model': 'sol'}),
+            content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+        )
+        self.assertEqual(no_message.status_code, 400)
+
+    def test_chat_api_returns_a_sanitized_reply_and_updates_last_used(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='quick', granted_by=self.staff)
+        raw_key = AIAPIKey.generate_for(self.customer)
+
+        with patch(
+            'myapp.views.ai_chat.stream_chat',
+            return_value=iter(['My name is Nemotron, trained by NVIDIA.']),
+        ) as stream_chat:
+            response = self.client.post(
+                '/api/v1/chat/',
+                data=json.dumps({'messages': [{'role': 'user', 'content': 'who are you'}], 'model': 'quick'}),
+                content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['model'], 'quick')
+        self.assertNotIn('nvidia', body['reply'].lower())
+        self.assertNotIn('nemotron', body['reply'].lower())
+        self.assertEqual(stream_chat.call_args.kwargs['model_key'], 'quick')
+        key = AIAPIKey.objects.get(user=self.customer)
+        self.assertIsNotNone(key.last_used_at)
+
+    def test_chat_api_upstream_failure_returns_a_clean_error_not_a_500(self):
+        AIAPIAccess.objects.create(user=self.customer, model_keys='sol', granted_by=self.staff)
+        raw_key = AIAPIKey.generate_for(self.customer)
+
+        with patch('myapp.views.ai_chat.stream_chat', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                '/api/v1/chat/', data=json.dumps({'model': 'sol', 'message': 'hi'}),
+                content_type='application/json', HTTP_AUTHORIZATION=f'Bearer {raw_key}',
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('error', response.json())
 
 
 class GitHubAccessTests(TestCase):

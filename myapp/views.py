@@ -34,9 +34,10 @@ from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.conf import settings
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from datetime import datetime, timedelta, timezone as dt_timezone
-from myapp.forms import AISignupForm, PhoneVerifyForm, AILoginForm, SignupEditForm, AIProfileEditForm, AIPasswordChangeForm, PaymentSettingsForm, DropboxSettingsForm, PWASettingsForm, GrantAISubscriptionForm, AddUserForm, SiteCustomizationForm, MAX_AMOUNT_PAID
-from myapp.models import StoreProfile, Order, OrderItem, PaymentSettings, Payment, DropboxSettings, PhoneVerification, PWASettings, SiteCustomization, AIAccountMessageSettings, AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile, AIUserImage, GitHubConnection, YouTubeDownloadJob
+from myapp.forms import AISignupForm, PhoneVerifyForm, AILoginForm, SignupEditForm, AIProfileEditForm, AIPasswordChangeForm, PaymentSettingsForm, DropboxSettingsForm, PWASettingsForm, GrantAISubscriptionForm, GrantAPIAccessForm, AddUserForm, SiteCustomizationForm, MAX_AMOUNT_PAID
+from myapp.models import StoreProfile, Order, OrderItem, PaymentSettings, Payment, DropboxSettings, PhoneVerification, PWASettings, SiteCustomization, AIAccountMessageSettings, AIConversation, AIMessage, AIBlock, AINote, AIReport, AIGeneratedFile, AIUserImage, GitHubConnection, YouTubeDownloadJob, AIAPIAccess, AIAPIKey
 from myapp import dropbox_backup
 from myapp import dropbox_images
 from myapp import ai_chat
@@ -565,9 +566,24 @@ def ai_account_details(request):
         ).exclude(url='').order_by('-created_at')[:120]
     ]
 
+    api_access = AIAPIAccess.objects.filter(user=request.user).exclude(model_keys='').first()
+    api_key = getattr(request.user, 'ai_api_key', None)
+    granted_model_keys = api_access.model_key_list if api_access else []
     response = JsonResponse({
         'status': 'ok',
         'user': _user_payload(request.user),
+        'api_access': {
+            'granted': bool(granted_model_keys),
+            'models': [
+                {'key': key, 'label': ai_chat.MODELS[key]['label']}
+                for key in granted_model_keys if key in ai_chat.MODELS
+            ],
+            'has_key': bool(api_key),
+            'key_prefix': api_key.key_prefix if api_key else None,
+            'key_created_at': (
+                timezone.localtime(api_key.created_at).isoformat() if api_key else None
+            ),
+        },
         'subscription': {
             'plan_name': plan_name,
             'active': bool(is_staff or is_subscribed),
@@ -586,6 +602,124 @@ def ai_account_details(request):
     })
     response['Cache-Control'] = 'private, no-store'
     return response
+
+
+def ai_developer_key_generate(request):
+    """Generate (or regenerate) the signed-in user's developer API key —
+    see AIAPIKey.generate_for. Only usable once staff have granted at least
+    one model via AIAPIAccess (dashboard API Management); the raw key is
+    returned exactly once here and never retrievable again afterwards, so
+    the frontend must show it to the user immediately."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    if not request.user.is_authenticated:
+        return JsonResponse({'status': 'error', 'detail': 'You need to be logged in.'}, status=401)
+
+    access = AIAPIAccess.objects.filter(user=request.user).exclude(model_keys='').first()
+    if not access:
+        return JsonResponse({
+            'status': 'error',
+            'detail': "You don't have API access yet. Contact an administrator to request it.",
+        }, status=403)
+
+    raw_key = AIAPIKey.generate_for(request.user)
+    return JsonResponse({
+        'status': 'ok',
+        'api_key': raw_key,
+        'models': [
+            {'key': key, 'label': ai_chat.MODELS[key]['label']}
+            for key in access.model_key_list if key in ai_chat.MODELS
+        ],
+    })
+
+
+# Chat-capable models only — an image-generation-only entry (image_generation:
+# True) has no 'chat.completions'-shaped upstream to answer through
+# ai_chat.stream_chat, so it's excluded from what the public API can serve
+# even if a model_keys grant otherwise includes it.
+def _api_chat_model_choices():
+    return {
+        key: cfg for key, cfg in ai_chat.MODELS.items()
+        if key != 'vision' and not cfg.get('image_generation')
+    }
+
+
+@csrf_exempt
+def api_chat_completions(request):
+    """Public developer API: a granted user's own code calls this directly
+    with their AIAPIKey, no browser session involved — see
+    AIAPIAccess/AIAPIKey and dashboard_api_management. Deliberately a plain
+    JSON in/JSON out endpoint (not streaming): an external HTTP client is
+    far more likely to want one complete response than an SSE-style stream.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request method. Use POST.'}, status=405)
+
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    raw_key = auth_header[7:] if auth_header.lower().startswith('bearer ') else ''
+    api_key = AIAPIKey.resolve(raw_key)
+    if not api_key:
+        return JsonResponse({'error': 'Invalid or missing API key. Send it as "Authorization: Bearer <key>".'}, status=401)
+
+    access = AIAPIAccess.objects.filter(user=api_key.user).exclude(model_keys='').first()
+    granted = set(access.model_key_list) if access else set()
+    if not granted:
+        return JsonResponse({'error': 'This API key has no model access. Contact an administrator.'}, status=403)
+
+    payload = _parse_json_body(request)
+    model_key = str(payload.get('model') or '').strip()
+    if not model_key:
+        return JsonResponse({'error': 'The "model" field is required.'}, status=400)
+    if model_key not in granted:
+        return JsonResponse({
+            'error': f'This API key is not authorized for model "{model_key}". '
+                     f'Authorized models: {", ".join(sorted(granted)) or "(none)"}.',
+        }, status=403)
+    chat_models = _api_chat_model_choices()
+    if model_key not in chat_models:
+        return JsonResponse({'error': f'Model "{model_key}" does not support the chat API.'}, status=400)
+
+    messages = payload.get('messages')
+    if not messages:
+        single_message = str(payload.get('message') or '').strip()
+        if not single_message:
+            return JsonResponse({'error': 'Provide either "message" (a string) or "messages" (a list).'}, status=400)
+        messages = [{'role': 'user', 'content': single_message}]
+    if not isinstance(messages, list) or not messages:
+        return JsonResponse({'error': '"messages" must be a non-empty list of {role, content} objects.'}, status=400)
+    if len(messages) > 30:
+        return JsonResponse({'error': 'Too many messages — send at most 30 per request.'}, status=400)
+    clean_messages = []
+    for item in messages:
+        if not isinstance(item, dict) or item.get('role') not in ('user', 'assistant') or not str(item.get('content') or '').strip():
+            return JsonResponse({'error': 'Each message needs "role" ("user" or "assistant") and non-empty "content".'}, status=400)
+        content = str(item['content'])
+        if len(content) > 8000:
+            return JsonResponse({'error': 'Each message\'s content must be 8000 characters or fewer.'}, status=400)
+        clean_messages.append({'role': item['role'], 'content': content})
+    if clean_messages[-1]['role'] != 'user':
+        return JsonResponse({'error': 'The last message must have role "user".'}, status=400)
+
+    try:
+        reply = ''.join(ai_chat.stream_chat(clean_messages, model_key=model_key))
+    except Exception as exc:
+        logger.exception('Developer API chat request failed for user %s model=%s', api_key.user_id, model_key)
+        return JsonResponse({'error': _ai_chat_failure_reply(exc, model_key, is_staff=False)}, status=502)
+
+    # Same public-facing sanitization the in-app chat gets — an external caller
+    # leaking the real backend vendor or borrowing a persona name it wasn't
+    # given is just as much a trust problem here as it is in the browser UI.
+    if model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY):
+        reply = _chatgpt_public_reply(reply)
+    else:
+        reply = _vidhyora_public_reply(reply, ai_chat.MODELS[model_key]['label'])
+
+    AIAPIKey.objects.filter(pk=api_key.pk).update(last_used_at=timezone.now())
+    return JsonResponse({
+        'model': model_key,
+        'reply': reply,
+        'created_at': timezone.now().isoformat(),
+    })
 
 
 def custom_404(request, exception=None):
@@ -1207,6 +1341,91 @@ def dashboard_ai_revoke(request, pk):
         })
     messages.success(request, success_message)
     return redirect('dashboard_ai_management')
+
+
+@dashboard_staff_required
+def dashboard_api_management(request):
+    """Lets staff grant a customer's own code direct HTTP access to
+    specific ai_chat.MODELS (a developer API key — see AIAPIAccess/
+    AIAPIKey), separate from in-app AI chat access. The customer generates
+    their own key from the AI page's account menu once granted here."""
+    grants = list(
+        AIAPIAccess.objects.exclude(model_keys='')
+        .select_related('user', 'granted_by', 'user__ai_api_key')
+        .order_by('-updated_at')
+    )
+    model_labels = {key: cfg['label'] for key, cfg in ai_chat.MODELS.items()}
+    for grant in grants:
+        grant.model_label_list = [model_labels.get(key, key) for key in grant.model_key_list]
+    context = {
+        'active': 'api_management',
+        'grants': grants,
+        'grant_form': GrantAPIAccessForm(),
+    }
+    return render(request, 'dashboard/api_management.html', context)
+
+
+@dashboard_staff_required
+def dashboard_api_access_grant(request):
+    ajax = _is_ajax(request)
+    if request.method == 'POST':
+        form = GrantAPIAccessForm(request.POST)
+        if form.is_valid():
+            target_user = form.matched_user
+            model_keys = ','.join(form.cleaned_data['model_keys'])
+            access, _ = AIAPIAccess.objects.update_or_create(
+                user=target_user,
+                defaults={'model_keys': model_keys, 'granted_by': request.user},
+            )
+            success_message = (
+                f"Updated {target_user.email or target_user.username}'s API access."
+                if model_keys else
+                f"Revoked {target_user.email or target_user.username}'s API access."
+            )
+            if ajax:
+                if model_keys:
+                    model_labels = {key: cfg['label'] for key, cfg in ai_chat.MODELS.items()}
+                    access.model_label_list = [model_labels.get(key, key) for key in access.model_key_list]
+                row_html = render_to_string(
+                    'dashboard/_api_grant_row.html', {'grant': access}, request=request,
+                ) if model_keys else ''
+                return JsonResponse({
+                    'status': 'ok',
+                    'message': success_message,
+                    'row_html': row_html,
+                    'access_id': access.pk,
+                    'revoked': not model_keys,
+                })
+            messages.success(request, success_message)
+        else:
+            if ajax:
+                errors = {field: [str(e) for e in errs] for field, errs in form.errors.items()}
+                return JsonResponse({'status': 'validation_error', 'errors': errors}, status=400)
+            for field_errors in form.errors.values():
+                for error in field_errors:
+                    messages.error(request, error)
+    elif ajax:
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    return redirect('dashboard_api_management')
+
+
+@dashboard_staff_required
+def dashboard_api_access_revoke(request, pk):
+    ajax = _is_ajax(request)
+    if request.method != 'POST':
+        if ajax:
+            return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+        return redirect('dashboard_api_management')
+
+    access = get_object_or_404(AIAPIAccess, pk=pk)
+    access.model_keys = ''
+    access.granted_by = request.user
+    access.save(update_fields=['model_keys', 'granted_by', 'updated_at'])
+    success_message = f'Revoked API access for {access.user.email or access.user.username}.'
+    if ajax:
+        return JsonResponse({'status': 'ok', 'message': success_message})
+    messages.success(request, success_message)
+    return redirect('dashboard_api_management')
 
 
 def _ai_activity_redirect(conversation_id):
@@ -3186,10 +3405,16 @@ _CHATGPT_BACKEND_VENDOR = (
 # untouched. Only the vendor name itself is replaced, so the sentence keeps
 # its shape and reads naturally.
 _CHATGPT_SELF_ATTRIBUTION_RE = re.compile(
-    r"((?:\bi\b|\bi'?m\b|\bi\s+am\b|\bmy\b|\bme\b)[^.!?\n]{0,80}?"
+    # "this"/"this" (demonstrative, clearly self-referential) is included
+    # alongside the first-person forms; "the model"/"the assistant" is
+    # deliberately left out — too generic, and would risk rewriting a
+    # factual sentence about some other company's model in the same reply.
+    r"((?:\bi\b|\bi'?m\b|\bi\s+am\b|\bmy\b|\bme\b|"
+    r"\bthis\s+(?:model|assistant|ai)\b)[^.!?\n]{0,80}?"
     r'\b(?:trained|train|built|build|created|develop(?:ed)?|made|designed|'
     r'powered|based|running|run|fine[-\s]?tuned|hosted|provided|'
-    r'comes?|came|derived?|originates?)\b'
+    r'comes?|came|derived?|originates?|released?|launch(?:ed)?|deploy(?:ed)?|'
+    r'operat(?:ed|es|ing)?|maintain(?:ed)?)\b'
     r'[^.!?\n]{0,40}?\b(?:by|on|upon|from|with)\s+)'
     rf'(?:{_CHATGPT_BACKEND_VENDOR})\b',
     re.IGNORECASE,
@@ -3207,6 +3432,18 @@ _CHATGPT_SELF_IDENTITY_RE = re.compile(
     r"\b(?:i'?m|i\s+am)\s+(?:an?\s+)?"
     rf"(?:{_CHATGPT_BACKEND_VENDOR})(?:'s)?"
     r'(?:\s+(?:ai|model|assistant|llm))?\b',
+    re.IGNORECASE,
+)
+
+# "My name is Nemotron", "I'm called Nemotron" — a distinct phrasing from
+# both self-attribution ("trained by X") and self-identity ("I'm an X
+# model") above: naming the vendor's model as this assistant's own name,
+# live-observed via the developer API ("My name is Nemotron. I am created
+# by the Vidhyora team researchers.") where only the attribution half of
+# that same reply was being rewritten.
+_CHATGPT_SELF_NAME_RE = re.compile(
+    rf"\b(?:my\s+name\s+is|i'?m\s+(?:called|named)|i\s+am\s+(?:called|named))\s+"
+    rf"(?:{_CHATGPT_BACKEND_VENDOR})\b",
     re.IGNORECASE,
 )
 
@@ -3286,6 +3523,7 @@ def _chatgpt_public_reply(reply):
     for _ in range(_CHATGPT_SANITIZE_MAX_PASSES):
         replaced = _CHATGPT_SELF_ATTRIBUTION_RE.sub(r'\1OpenAI', cleaned)
         replaced = _CHATGPT_SELF_IDENTITY_RE.sub('I am ChatGPT 5.6', replaced)
+        replaced = _CHATGPT_SELF_NAME_RE.sub('My name is ChatGPT 5.6', replaced)
         if replaced == cleaned:
             break
         cleaned = replaced
@@ -3294,6 +3532,63 @@ def _chatgpt_public_reply(reply):
         cleaned = pattern.sub('ChatGPT 5.6', cleaned)
     cleaned = _CHATGPT_REDUNDANT_DENIAL_RE.sub('OpenAI', cleaned)
     return _normalize_ai_home_links(cleaned)
+
+
+# The mirror image of _CHATGPT_HIDDEN_MODEL_PATTERNS above: a plain Vidhyora
+# mode (Ultra/Quick/Code/Vision — anything that is not the ChatGPT 5.6
+# persona) must never claim to be ChatGPT or one of its Sol/Terra/Luna names.
+# Live-observed after switching the picker away from that persona
+# mid-conversation: the model echoes its own earlier "I'm ChatGPT 5.6
+# Sol..." reply (or the sibling-model facts CHATGPT_56_SYSTEM_SUFFIX had it
+# explain) still sitting in conversation history, overriding the current
+# turn's mode_reminder in ai_chat.stream_chat. Requires an actual
+# self-identification claim ("I'm ChatGPT...") or the literal "ChatGPT 5.6"
+# product name — deliberately does not match a bare "Sol"/"Terra"/"Luna"
+# on its own, since those are also ordinary words, and never flags a reply
+# that merely discusses or compares itself to ChatGPT in passing ("unlike
+# ChatGPT, I can also...").
+_WRONG_PERSONA_SELF_CLAIM_RE = re.compile(
+    r"\bi(?:'m| am)\s+chatgpt(?:\s*5\.6)?(?:\s+(?:in\s+)?(?:sol|terra|luna))?\b",
+    re.IGNORECASE,
+)
+_WRONG_PERSONA_BARE_MENTION_RE = re.compile(
+    r"\bchatgpt\s*5\.6(?:\s+(?:in\s+)?(?:sol|terra|luna))?\b",
+    re.IGNORECASE,
+)
+
+
+def _vidhyora_public_reply(reply, mode_label):
+    """Keep the ChatGPT 5.6 persona's name AND the real backend vendor
+    (NVIDIA/Nemotron/Meta/Llama/etc) out of a plain Vidhyora mode's response
+    text — see _WRONG_PERSONA_SELF_CLAIM_RE above for the persona-name half.
+    The vendor half reuses the exact same detection patterns
+    _chatgpt_public_reply uses (_CHATGPT_SELF_ATTRIBUTION_RE etc — these
+    only hardcode "OpenAI"/"ChatGPT 5.6" in their *replacement* text, not
+    their matching), just substituting "the Vidhyora team" instead, per
+    COMPACT_SYSTEM_PROMPT's own instruction ("say it is created and
+    maintained by the Vidhyora team — never NVIDIA, Nemotron..."). Live
+    reported: "Who trained me? My underlying models are trained by
+    researchers from NVIDIA." from Vidhyora Quick.
+
+    Mirrors _chatgpt_public_reply's whole-reply rewrite approach: fast,
+    in-place substitution rather than ai_chat's hold-back-and-regenerate
+    retry, since Ultra/Quick/Code are the highest-volume modes and a leak
+    reaching this far already survived ai_chat's own opening-window checks
+    (which only run for the ChatGPT 5.6 persona), so a whole-reply pass is
+    the only backstop these modes have.
+    """
+    cleaned = str(reply or '')
+    for _ in range(_CHATGPT_SANITIZE_MAX_PASSES):
+        replaced = _CHATGPT_SELF_ATTRIBUTION_RE.sub(r'\1the Vidhyora team', cleaned)
+        replaced = _CHATGPT_SELF_IDENTITY_RE.sub("I'm an AI model built by the Vidhyora team", replaced)
+        replaced = _CHATGPT_SELF_NAME_RE.sub(f'My name is {mode_label}', replaced)
+        if replaced == cleaned:
+            break
+        cleaned = replaced
+    cleaned = _CHATGPT_ARCHITECTURE_RE.sub(mode_label, cleaned)
+    cleaned = _WRONG_PERSONA_SELF_CLAIM_RE.sub(f"I'm {mode_label}", cleaned)
+    cleaned = _WRONG_PERSONA_BARE_MENTION_RE.sub(mode_label, cleaned)
+    return cleaned
 
 
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
@@ -3307,6 +3602,14 @@ def _ai_chat_failure_reply(error, response_model_key, is_staff=False):
     """Turn upstream failures into safe, accurate, public-facing guidance."""
     label = ai_chat.MODELS.get(response_model_key, {}).get('label', 'The selected AI model')
     status_code = getattr(error, 'status_code', None)
+    if ai_chat._is_unconfigured_key_error(error):
+        setting_name = str(error).split(' is not configured', 1)[0].strip()
+        suffix = (
+            f' Set {setting_name} in the deployment environment, then restart the application.'
+            if is_staff else
+            ' Please try again after the administrator reconnects it.'
+        )
+        return f'{label} text access is currently disconnected.{suffix}'
     if ai_chat._is_model_unavailable_error(error):
         suffix = (
             ' Update the configured text-model API key, then restart the application.'
@@ -3709,6 +4012,13 @@ def ai_chat_send(request):
         # Direct visual descriptions are also common real requests: "girl
         # sitting in a park", "Krishna image", "Instagram post for my shop".
         or (not image_data and ai_chat.is_natural_image_prompt(message))
+        # A longer, paragraph-style scene description — e.g. "A peaceful
+        # green forest with tall trees, soft sunlight, and colorful
+        # wildflowers..." — matches none of the three checks above (no
+        # verb, no photography jargon, too long/loosely shaped for the
+        # narrow natural-prompt pattern) but is just as clearly a real
+        # prompt to generate, not a question to answer conversationally.
+        or (not image_data and ai_chat.is_scene_description_prompt(message))
         # If the previous assistant turn explicitly asked for image details,
         # this reply completes that request instead of starting a text chat.
         or bool(pending_image_prompt)
@@ -4203,6 +4513,12 @@ def ai_chat_send(request):
         released_chars = 0
         had_error = False
         hide_chatgpt_worker = response_model_key == ai_chat.CHATGPT_56_MODEL_KEY
+        # The mirror case: a plain Vidhyora mode must never claim the
+        # ChatGPT 5.6 persona's name — see _vidhyora_public_reply.
+        fix_wrong_persona_identity = response_model_key not in (
+            ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY,
+        )
+        response_model_label = ai_chat.MODELS.get(response_model_key, {}).get('label', 'Vidhyora AI')
         # A file-generation turn gets the same held-back streaming on every
         # model, because the model may write its own fabricated download link
         # mid-reply and streamed text cannot be taken back. public_text is run
@@ -4211,11 +4527,13 @@ def ai_chat_send(request):
         def public_text(text):
             if hide_chatgpt_worker:
                 text = _chatgpt_public_reply(text)
+            elif fix_wrong_persona_identity:
+                text = _vidhyora_public_reply(text, response_model_label)
             if generated_file_spec:
                 text = _strip_fake_download_links(text)
             return text
 
-        buffered = hide_chatgpt_worker or bool(generated_file_spec)
+        buffered = hide_chatgpt_worker or fix_wrong_persona_identity or bool(generated_file_spec)
         try:
             for chunk in model_stream():
                 full_reply += chunk
@@ -4332,8 +4650,8 @@ def ai_chat_send(request):
                 # Only the still-withheld tail is emitted — the rest already
                 # reached the browser progressively, and re-sending the whole
                 # reply here would show it twice.
-                if hide_chatgpt_worker:
-                    sanitized = _chatgpt_public_reply(full_reply)
+                if hide_chatgpt_worker or fix_wrong_persona_identity:
+                    sanitized = public_text(full_reply)
                     if len(sanitized) > released_chars:
                         yield sanitized[released_chars:]
                         released_chars = len(sanitized)
